@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
 import { formatPeriodCount } from "@/lib/period-count";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import type { DateRange } from "@/lib/date-range";
@@ -168,15 +170,24 @@ export default function AssetsPage() {
   /** Việc cần làm trước khi xoá được tài sản đang mở hộp thoại; null = đang kiểm tra. */
   const [deleteSteps, setDeleteSteps] = useState<AssetDeleteStep[] | null>(null);
 
-  // Filters
-  const [filterBranch, setFilterBranch] = useState("ALL");
-  const [filterWarehouse, setFilterWarehouse] = useState("ALL");
-  const [filterDepartment, setFilterDepartment] = useState("ALL");
-  const [filterGroup, setFilterGroup] = useState("ALL");
-  const [filterStatus, setFilterStatus] = useState("ALL");
-  /** Lọc theo ngày mua (khách yêu cầu 03/10/2026). */
-  const [purchaseRange, setPurchaseRange] = useState<DateRange>({ from: "", to: "" });
-  const [searchQuery, setSearchQuery] = useState("");
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026): ô lọc gắn `filterDraft`, tải dữ liệu dùng `appliedFilters`.
+  // purchaseRange = lọc theo ngày mua (khách yêu cầu 03/10/2026).
+  const {
+    draft: filterDraft,
+    applied: appliedFilters,
+    update: updateFilters,
+    apply: applyFilters,
+    applyNow: applyFiltersNow,
+    dirty: filtersDirty,
+  } = useAppliedFilters({
+    branch: "ALL",
+    warehouse: "ALL",
+    department: "ALL",
+    group: "ALL",
+    status: "ALL",
+    purchaseRange: { from: "", to: "" } as DateRange,
+    searchQuery: "",
+  });
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -214,11 +225,10 @@ export default function AssetsPage() {
     window.setTimeout(() => {
       setView("records");
       setFocusCode(focus.code);
-      setSearchQuery(focus.code);
-      if (focus.branch) setFilterBranch(focus.branch);
+      applyFiltersNow(focus.branch ? { searchQuery: focus.code, branch: focus.branch } : { searchQuery: focus.code });
       scrollToDoc(focus.code);
     }, 0);
-  }, []);
+  }, [applyFiltersNow]);
   // Khấu hao/phân bổ chia theo số kỳ nên hay ra số lẻ; bảng tài sản chỉ đọc tới đồng.
   const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value || 0);
   /** Biểu mẫu bên trái hiện ra khi được tạo mới hoặc khi đang sửa một tài sản. */
@@ -293,14 +303,15 @@ export default function AssetsPage() {
 
   const loadAssets = async () => {
     const params = new URLSearchParams();
-    if (filterBranch !== "ALL") params.set("branchCode", filterBranch);
-    if (filterWarehouse !== "ALL") params.set("warehouseCode", filterWarehouse);
-    if (filterDepartment !== "ALL") params.set("departmentCode", filterDepartment);
-    if (filterGroup !== "ALL") params.set("assetGroup", filterGroup);
-    if (filterStatus !== "ALL") params.set("status", filterStatus);
-    if (purchaseRange.from) params.set("purchaseFrom", purchaseRange.from);
-    if (purchaseRange.to) params.set("purchaseTo", purchaseRange.to);
-    if (searchQuery.trim()) params.set("q", searchQuery.trim());
+    const f = appliedFilters;
+    if (f.branch !== "ALL") params.set("branchCode", f.branch);
+    if (f.warehouse !== "ALL") params.set("warehouseCode", f.warehouse);
+    if (f.department !== "ALL") params.set("departmentCode", f.department);
+    if (f.group !== "ALL") params.set("assetGroup", f.group);
+    if (f.status !== "ALL") params.set("status", f.status);
+    if (f.purchaseRange.from) params.set("purchaseFrom", f.purchaseRange.from);
+    if (f.purchaseRange.to) params.set("purchaseTo", f.purchaseRange.to);
+    if (f.searchQuery.trim()) params.set("q", f.searchQuery.trim());
 
     const response = await fetch(`/api/assets?${params.toString()}`, {
       headers: getSessionHeaders(),
@@ -308,18 +319,26 @@ export default function AssetsPage() {
     if (response.ok) {
       const rows = (await response.json()) as Asset[];
       setAssets(rows);
-      if (!searchQuery.trim()) setUnsearchedAssets(rows);
+      if (!f.searchQuery.trim()) setUnsearchedAssets(rows);
     }
   };
 
+  // Danh mục không phụ thuộc bộ lọc: tải một lần khi vào màn.
   useEffect(() => {
     if (!loading) {
       window.setTimeout(() => {
         void loadMasterData();
+      }, 0);
+    }
+  }, [loading]);
+
+  useEffect(() => {
+    if (!loading) {
+      window.setTimeout(() => {
         void loadAssets();
       }, 0);
     }
-  }, [loading, filterBranch, filterWarehouse, filterDepartment, filterGroup, filterStatus, searchQuery, purchaseRange.from, purchaseRange.to]);
+  }, [loading, appliedFilters]);
 
   // Update default warehouse in form when branchCode changes
   useEffect(() => {
@@ -350,16 +369,16 @@ export default function AssetsPage() {
 
   // Filter warehouse list
   const availableFilterWarehouses = useMemo(() => {
-    if (filterBranch === "ALL") return warehouses;
-    const filtered = warehouses.filter((w) => !w.branch || w.branch === filterBranch || w.branch === "ALL");
+    if (filterDraft.branch === "ALL") return warehouses;
+    const filtered = warehouses.filter((w) => !w.branch || w.branch === filterDraft.branch || w.branch === "ALL");
     return filtered.length > 0 ? filtered : warehouses;
-  }, [warehouses, filterBranch]);
+  }, [warehouses, filterDraft.branch]);
 
   const availableFilterDepartments = useMemo(() => {
-    if (filterBranch === "ALL") return departments;
-    const filtered = departments.filter((d) => !d.branch || d.branch === filterBranch || d.branch === "ALL");
+    if (filterDraft.branch === "ALL") return departments;
+    const filtered = departments.filter((d) => !d.branch || d.branch === filterDraft.branch || d.branch === "ALL");
     return filtered.length > 0 ? filtered : departments;
-  }, [departments, filterBranch]);
+  }, [departments, filterDraft.branch]);
 
   const assetGroupOptions = useMemo(() => {
     if (assetGroups.length > 0) {
@@ -380,6 +399,7 @@ export default function AssetsPage() {
   }, [unsearchedAssets]);
 
   /** Gợi ý dưới ô tìm kiếm: mỗi mã một dòng, khớp không cần dấu / hoa thường / đúng thứ tự từ. */
+  const searchQuery = filterDraft.searchQuery;
   const searchSuggestions = useMemo(() => {
     if (!searchQuery.trim()) return [];
     const seen = new Set<string>();
@@ -825,8 +845,8 @@ export default function AssetsPage() {
                         {rows.map((row) => (
                           <tr
                             key={row.code}
-                            onClick={() => setFilterDepartment(row.code)}
-                            className={`cursor-pointer border-t border-slate-100 hover:bg-blue-50 ${filterDepartment === row.code ? "bg-blue-50" : ""}`}
+                            onClick={() => applyFiltersNow({ department: row.code })}
+                            className={`cursor-pointer border-t border-slate-100 hover:bg-blue-50 ${appliedFilters.department === row.code ? "bg-blue-50" : ""}`}
                             title="Bấm để lọc danh sách theo phòng ban này"
                           >
                             <td className="px-4 py-2 font-bold text-slate-900">{row.name}</td>
@@ -1381,12 +1401,8 @@ export default function AssetsPage() {
                 <div>
                   <label className="text-[11px] font-semibold text-slate-500 block mb-1">Cửa hàng</label>
                   <select
-                    value={filterBranch}
-                    onChange={(e) => {
-                      setFilterBranch(e.target.value);
-                      setFilterWarehouse("ALL");
-                      setFilterDepartment("ALL");
-                    }}
+                    value={filterDraft.branch}
+                    onChange={(e) => updateFilters({ branch: e.target.value, warehouse: "ALL", department: "ALL" })}
                     className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:border-blue-500"
                   >
                     <option value="ALL">Tất cả cửa hàng</option>
@@ -1401,8 +1417,8 @@ export default function AssetsPage() {
                 <div>
                   <label className="text-[11px] font-semibold text-slate-500 block mb-1">Vị trí / Kho</label>
                   <select
-                    value={filterWarehouse}
-                    onChange={(e) => setFilterWarehouse(e.target.value)}
+                    value={filterDraft.warehouse}
+                    onChange={(e) => updateFilters({ warehouse: e.target.value })}
                     className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:border-blue-500"
                   >
                     <option value="ALL">Tất cả kho</option>
@@ -1417,8 +1433,8 @@ export default function AssetsPage() {
                 <div>
                   <label className="text-[11px] font-semibold text-slate-500 block mb-1">Phòng ban</label>
                   <select
-                    value={filterDepartment}
-                    onChange={(e) => setFilterDepartment(e.target.value)}
+                    value={filterDraft.department}
+                    onChange={(e) => updateFilters({ department: e.target.value })}
                     className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:border-blue-500"
                   >
                     <option value="ALL">Tất cả phòng ban</option>
@@ -1433,8 +1449,8 @@ export default function AssetsPage() {
                 <div>
                   <label className="text-[11px] font-semibold text-slate-500 block mb-1">Nhóm tài sản</label>
                   <select
-                    value={filterGroup}
-                    onChange={(e) => setFilterGroup(e.target.value)}
+                    value={filterDraft.group}
+                    onChange={(e) => updateFilters({ group: e.target.value })}
                     className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:border-blue-500"
                   >
                     <option value="ALL">Tất cả nhóm</option>
@@ -1449,8 +1465,8 @@ export default function AssetsPage() {
                 <div>
                   <label className="text-[11px] font-semibold text-slate-500 block mb-1">Trạng thái</label>
                   <select
-                    value={filterStatus}
-                    onChange={(e) => setFilterStatus(e.target.value)}
+                    value={filterDraft.status}
+                    onChange={(e) => updateFilters({ status: e.target.value })}
                     className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:border-blue-500"
                   >
                     <option value="ALL">Tất cả trạng thái</option>
@@ -1465,11 +1481,14 @@ export default function AssetsPage() {
                   <input
                     type="text"
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onChange={(e) => updateFilters({ searchQuery: e.target.value })}
                     onFocus={() => setSearchFocused(true)}
                     // Trễ một nhịp để bấm được vào gợi ý trước khi danh sách đóng.
                     onBlur={() => window.setTimeout(() => setSearchFocused(false), 150)}
-                    onKeyDown={(e) => { if (e.key === "Escape") setSearchFocused(false); }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setSearchFocused(false);
+                      if (e.key === "Enter") { setSearchFocused(false); applyFilters(); }
+                    }}
                     placeholder="Mã, tên, ghi chú... (không cần dấu)"
                     className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs focus:border-blue-500"
                   />
@@ -1480,7 +1499,7 @@ export default function AssetsPage() {
                           <button
                             type="button"
                             onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => { setSearchQuery(asset.code); setSearchFocused(false); }}
+                            onClick={() => { applyFiltersNow({ ...filterDraft, searchQuery: asset.code }); setSearchFocused(false); }}
                             className="w-full px-2.5 py-1.5 text-left hover:bg-blue-50"
                           >
                             <span className="font-medium text-slate-800">{asset.name}</span>
@@ -1496,7 +1515,10 @@ export default function AssetsPage() {
 
             {/* Table */}
             <div className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-200 px-4 py-2">
-              <DateRangeFilter label="Ngày mua" value={purchaseRange} onChange={setPurchaseRange} />
+              <div className="flex flex-wrap items-end gap-3">
+                <DateRangeFilter label="Ngày mua" value={filterDraft.purchaseRange} onChange={(purchaseRange) => updateFilters({ purchaseRange })} />
+                <FilterApplyButton dirty={filtersDirty} onApply={applyFilters} />
+              </div>
               <ExportExcelButton fileName="danh_sach_tai_san" sheetName="Tai san" targetId="asset-table" />
             </div>
             <div id="asset-table" className="overflow-x-auto overflow-y-auto flex-1 custom-scrollbar max-h-[560px]">

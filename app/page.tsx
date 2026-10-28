@@ -18,6 +18,8 @@ import {
 } from "@/lib/auth-demo";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 import { money as formatVndMoney } from "@/lib/format-number";
 
 interface DocumentItem {
@@ -63,15 +65,20 @@ const DEFAULT_DASHBOARD_PERIOD = new Date().toISOString().slice(0, 7);
 export default function Home() {
   const router = useRouter();
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [filterStatus, setFilterStatus] = useState("ALL");
-  /** Lọc "Chứng từ vận hành" theo ngày tạo (khách yêu cầu 03/10/2026). */
-  const [documentRange, setDocumentRange] = useState<DateRange>({ from: "", to: "" });
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026) — gồm cả chọn cửa hàng ở đầu trang.
+  /** documentRange: lọc "Chứng từ vận hành" theo ngày tạo (khách yêu cầu 03/10/2026). */
+  const filters = useAppliedFilters<{ dashboardPeriod: string; globalBranch: string; searchQuery: string; filterStatus: string; documentRange: DateRange }>({
+    dashboardPeriod: DEFAULT_DASHBOARD_PERIOD,
+    globalBranch: "ALL",
+    searchQuery: "",
+    filterStatus: "ALL",
+    documentRange: { from: "", to: "" },
+  });
+  const { dashboardPeriod, globalBranch, searchQuery, filterStatus, documentRange } = filters.applied;
+  const { applyNow: applyFiltersNow } = filters;
   const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [dashboardPeriod, setDashboardPeriod] = useState(DEFAULT_DASHBOARD_PERIOD);
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [dashboardError, setDashboardError] = useState("");
-  const [globalBranch, setGlobalBranch] = useState("ALL");
   const [isBranchLocked, setIsBranchLocked] = useState(false);
   const [dynamicBranchOptions, setDynamicBranchOptions] = useState<Array<{ code: string; label: string }>>([]);
 
@@ -171,23 +178,28 @@ export default function Home() {
       }
 
       window.setTimeout(() => {
+        applyFiltersNow({ globalBranch: initialBranch });
         setUser(parsedSession);
-        setGlobalBranch(initialBranch);
         setIsBranchLocked(locked);
         setIsCheckingAuth(false);
         fetchDocuments();
-        fetchDashboard(DEFAULT_DASHBOARD_PERIOD, initialBranch);
       }, 0);
     } catch {
       localStorage.removeItem(SESSION_KEY);
       router.push("/login");
     }
-  }, [fetchDashboard, router]);
+  }, [applyFiltersNow, fetchDocuments, router]);
 
-  const handleBranchChange = (code: string) => {
-    setGlobalBranch(code);
-    localStorage.setItem("global_branch_code", code);
-    fetchDashboard(dashboardPeriod, code);
+  // Dashboard tải theo kỳ + cửa hàng ĐANG ÁP DỤNG; chỉ chạy lại sau khi bấm Lọc.
+  useEffect(() => {
+    if (!user || !dashboardPeriod) return;
+    const timer = window.setTimeout(() => void fetchDashboard(dashboardPeriod, globalBranch), 0);
+    return () => window.clearTimeout(timer);
+  }, [user, dashboardPeriod, globalBranch, fetchDashboard]);
+
+  const applyFilters = () => {
+    if (filters.draft.globalBranch !== globalBranch) localStorage.setItem("global_branch_code", filters.draft.globalBranch);
+    filters.apply();
   };
 
   const expenseOf = (value: DashboardPnl) => value.cogs + value.payroll + value.capex + value.otherOpex + value.otherExpense;
@@ -321,8 +333,8 @@ export default function Home() {
             {/* Global Branch Selector */}
             <div className="relative">
               <select
-                value={globalBranch}
-                onChange={(e) => handleBranchChange(e.target.value)}
+                value={filters.draft.globalBranch}
+                onChange={(e) => filters.update({ globalBranch: e.target.value })}
                 disabled={isBranchLocked}
                 className="pl-3 pr-8 py-1.5 bg-slate-100 border border-slate-200 rounded-lg focus:ring-2 focus:ring-[#2563eb]/20 focus:border-[#2563eb] text-xs font-semibold outline-none cursor-pointer appearance-none transition-all disabled:opacity-75 disabled:cursor-not-allowed"
               >
@@ -342,8 +354,11 @@ export default function Home() {
                 search
               </span>
               <input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                value={filters.draft.searchQuery}
+                onChange={(e) => filters.update({ searchQuery: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") applyFilters();
+                }}
                 className="pl-10 pr-4 py-1.5 bg-slate-100 rounded-lg border-none focus:ring-2 focus:ring-[#2563eb] text-xs w-64 outline-none transition-all"
                 placeholder="Tìm chứng từ, đối tác, nguồn tiền..."
                 type="text"
@@ -389,17 +404,14 @@ export default function Home() {
             </div>
             <div className="flex items-center gap-3">
               <MonthInput
-                value={dashboardPeriod}
-                onChange={(value) => {
-                  setDashboardPeriod(value);
-                  if (value) void fetchDashboard(value, globalBranch);
-                }}
+                value={filters.draft.dashboardPeriod}
+                onChange={(value) => filters.update({ dashboardPeriod: value })}
                 className="w-40 shadow-sm"
                 ariaLabel="Kỳ báo cáo"
               />
               <select
-                value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value)}
+                value={filters.draft.filterStatus}
+                onChange={(e) => filters.update({ filterStatus: e.target.value })}
                 className="bg-white border border-slate-200 text-slate-700 px-3 py-1.5 rounded-lg text-xs outline-none focus:ring-2 focus:ring-[#2563eb] shadow-sm font-semibold"
               >
                 <option value="ALL">Tất cả trạng thái</option>
@@ -407,6 +419,7 @@ export default function Home() {
                 <option value="COMPLETED">Hoàn tất</option>
                 <option value="DRAFT">Lưu nháp</option>
               </select>
+              <FilterApplyButton dirty={filters.dirty} onApply={applyFilters} />
               {canExportDocuments && (
                 <ExportExcelButton
                   fileName="chung_tu_van_hanh"
@@ -596,7 +609,10 @@ export default function Home() {
           <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
               <h4 className="text-base font-bold text-slate-900">Chứng từ vận hành</h4>
-              <DateRangeFilter label="" value={documentRange} onChange={setDocumentRange} className="ml-auto mr-4" />
+              <div className="ml-auto mr-4 flex flex-wrap items-end gap-2">
+                <DateRangeFilter label="" value={filters.draft.documentRange} onChange={(value) => filters.update({ documentRange: value })} />
+                <FilterApplyButton dirty={filters.dirty} onApply={applyFilters} />
+              </div>
               {canCreateDocuments && (
                 <button 
                   onClick={() => setIsCreateOpen(true)}

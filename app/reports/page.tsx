@@ -2,6 +2,8 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 import { DonutLegendChart, MoneyBarChart } from "@/components/charts/ReportCharts";
 import type { DateRange } from "@/lib/date-range";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
@@ -278,20 +280,32 @@ export default function ReportsPage() {
   const href = "/reports";
   const { user, loading } = useModuleAuth(href);
   const [active, setActive] = useState("dashboard");
-  const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
-  const [reportDate, setReportDate] = useState(new Date().toISOString().slice(0, 10));
   /** Báo cáo thu chi ngày nạp kèm tab Tiền về đủ chưa, cho bảng "Đối chiếu tiền vào đã đủ chưa". */
   const [reconDailyCash, setReconDailyCash] = useState<DailyCashData | null>(null);
-  const [shift, setShift] = useState("FULL");
-  const [branchCode, setBranchCode] = useState("ALL");
-  const [scenario, setScenario] = useState("BASE");
-  const [cashSourceView, setCashSourceView] = useState<"month" | "year">("month");
-  // Sổ doanh thu: để trống khoảng ngày = lấy trọn tháng đang chọn, giống mọi tab khác.
-  const [ledgerFrom, setLedgerFrom] = useState("");
-  /** Khoảng ngày cho tab Vận hành / Nhật ký thao tác (khách yêu cầu 03/10/2026); trống = cả kỳ. */
-  const [opsRange, setOpsRange] = useState<DateRange>({ from: "", to: "" });
-  const [ledgerTo, setLedgerTo] = useState("");
-  const [ledgerChannel, setLedgerChannel] = useState("");
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026): ô lọc gắn `filterDraft`; số liệu, các tab con
+  // (Hoạch định, Xu hướng doanh thu, Ngân sách...) nhận bản đang áp dụng bên dưới.
+  // ledgerFrom/To trống = trọn tháng đang chọn (Sổ doanh thu); opsRange = khoảng ngày tab Vận hành /
+  // Nhật ký thao tác (khách yêu cầu 03/10/2026), trống = cả kỳ.
+  const {
+    draft: filterDraft,
+    applied: appliedFilters,
+    update: updateFilters,
+    apply: applyFilters,
+    applyNow: applyFiltersNow,
+    dirty: filtersDirty,
+  } = useAppliedFilters({
+    period: new Date().toISOString().slice(0, 7),
+    reportDate: new Date().toISOString().slice(0, 10),
+    shift: "FULL",
+    branchCode: "ALL",
+    scenario: "BASE",
+    cashSourceView: "month" as "month" | "year",
+    ledgerFrom: "",
+    ledgerTo: "",
+    ledgerChannel: "",
+    opsRange: { from: "", to: "" } as DateRange,
+  });
+  const { period, reportDate, shift, branchCode, scenario, cashSourceView, ledgerFrom, ledgerTo, ledgerChannel, opsRange } = appliedFilters;
   const [data, setData] = useState<ReportData | null>(null);
   const [tabLoading, setTabLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -432,6 +446,12 @@ export default function ReportsPage() {
       }, 0);
     }
   }, [loading, loadMoneySources]);
+
+  /** Bấm Lọc: áp dụng bộ lọc; ở Sổ doanh thu đang chờ thì đây cũng là lệnh tải. */
+  const applyReportFilters = () => {
+    applyFilters();
+    if (active === "revenue-ledger") setLedgerArmed(true);
+  };
 
   const handleTabChange = (newTab: string) => {
     if (newTab !== active) {
@@ -805,16 +825,16 @@ export default function ReportsPage() {
       <StickyFilterBar>
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Kỳ báo cáo">
-          <MonthInput className="mt-1.5 w-40" value={period} onChange={setPeriod} ariaLabel="Kỳ báo cáo" />
+          <MonthInput className="mt-1.5 w-40" value={filterDraft.period} onChange={(value) => updateFilters({ period: value })} ariaLabel="Kỳ báo cáo" />
         </Field>
         <Field label="Phạm vi cửa hàng">
-          <select className="control w-56" value={branchCode} onChange={(event) => setBranchCode(event.target.value)}>
+          <select className="control w-56" value={filterDraft.branchCode} onChange={(event) => updateFilters({ branchCode: event.target.value })}>
             {visibleBranchScopeOptions(user).map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
           </select>
         </Field>
         {active === "cashflow" && (
           <Field label="Kịch bản">
-            <select className="control w-40" value={scenario} onChange={(event) => setScenario(event.target.value)}>
+            <select className="control w-40" value={filterDraft.scenario} onChange={(event) => updateFilters({ scenario: event.target.value })}>
               <option value="BASE">Cơ sở</option>
               <option value="UPSIDE">Tích cực</option>
               <option value="DOWNSIDE">Thận trọng</option>
@@ -823,7 +843,7 @@ export default function ReportsPage() {
         )}
         {active === "cash-source" && (
           <Field label="Xem theo">
-            <select className="control w-40" value={cashSourceView} onChange={(event) => setCashSourceView(event.target.value === "year" ? "year" : "month")}>
+            <select className="control w-40" value={filterDraft.cashSourceView} onChange={(event) => updateFilters({ cashSourceView: event.target.value === "year" ? "year" : "month" })}>
               <option value="month">Tháng</option>
               <option value="year">Cả năm</option>
             </select>
@@ -833,10 +853,10 @@ export default function ReportsPage() {
         {["daily-cash", "revenue-settlement"].includes(active) && (
           <>
             <Field label={active === "daily-cash" ? "Ngày thu chi" : "Ngày đối chiếu"}>
-              <DateInput className="mt-1.5 w-40" value={reportDate} onChange={setReportDate} ariaLabel={active === "daily-cash" ? "Ngày thu chi" : "Ngày đối chiếu"} />
+              <DateInput className="mt-1.5 w-40" value={filterDraft.reportDate} onChange={(value) => updateFilters({ reportDate: value })} ariaLabel={active === "daily-cash" ? "Ngày thu chi" : "Ngày đối chiếu"} />
             </Field>
             <Field label="Ca">
-              <select className="control w-36" value={shift} onChange={(event) => setShift(event.target.value)}>
+              <select className="control w-36" value={filterDraft.shift} onChange={(event) => updateFilters({ shift: event.target.value })}>
                 <option value="FULL">Cả ngày</option>
                 <option value="MORNING">Ca sáng</option>
                 <option value="EVENING">Ca tối</option>
@@ -847,28 +867,29 @@ export default function ReportsPage() {
         {active === "revenue-ledger" && (
           <>
             <Field label="Từ ngày">
-              <DateInput className="mt-1.5 w-40" value={ledgerFrom} onChange={setLedgerFrom} ariaLabel="Doanh thu từ ngày" />
+              <DateInput className="mt-1.5 w-40" value={filterDraft.ledgerFrom} onChange={(value) => updateFilters({ ledgerFrom: value })} ariaLabel="Doanh thu từ ngày" />
             </Field>
             <Field label="Đến ngày">
-              <DateInput className="mt-1.5 w-40" value={ledgerTo} onChange={setLedgerTo} ariaLabel="Doanh thu đến ngày" />
+              <DateInput className="mt-1.5 w-40" value={filterDraft.ledgerTo} onChange={(value) => updateFilters({ ledgerTo: value })} ariaLabel="Doanh thu đến ngày" />
             </Field>
             <Field label="Kênh bán">
-              <select className="control w-44" value={ledgerChannel} onChange={(event) => setLedgerChannel(event.target.value)}>
+              <select className="control w-44" value={filterDraft.ledgerChannel} onChange={(event) => updateFilters({ ledgerChannel: event.target.value })}>
                 <option value="">Tất cả kênh</option>
                 {ledger?.channels.map((name) => <option key={name} value={name}>{name}</option>)}
               </select>
             </Field>
-            {(ledgerFrom || ledgerTo || ledgerChannel) && (
+            {(filterDraft.ledgerFrom || filterDraft.ledgerTo || filterDraft.ledgerChannel || ledgerFrom || ledgerTo || ledgerChannel) && (
               <button
                 type="button"
                 className="self-end rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50"
-                onClick={() => { setLedgerFrom(""); setLedgerTo(""); setLedgerChannel(""); }}
+                onClick={() => applyFiltersNow({ ledgerFrom: "", ledgerTo: "", ledgerChannel: "" })}
               >
                 Bỏ lọc
               </button>
             )}
           </>
         )}
+        <FilterApplyButton dirty={filtersDirty} onApply={applyReportFilters} />
         <button type="button" className="icon-button" title="Tải lại số liệu và danh mục nguồn tiền — sửa Nguồn tiền tổng bên Cấu hình xong bấm nút này là thấy ngay, không cần đăng nhập lại" onClick={() => { reportCacheRef.current.clear(); void loadData(); void loadMoneySources(); }}>
           <span className="material-symbols-outlined text-lg">refresh</span>
         </button>
@@ -892,7 +913,10 @@ export default function ReportsPage() {
 
       {(active === "operations" || active === "activity") && (
         <section className="mb-4 rounded-lg border border-slate-200 bg-white px-4 py-3">
-          <DateRangeFilter label="Khoảng ngày (để trống = cả kỳ đang chọn)" value={opsRange} onChange={setOpsRange} />
+          <div className="flex flex-wrap items-end gap-3">
+            <DateRangeFilter label="Khoảng ngày (để trống = cả kỳ đang chọn)" value={filterDraft.opsRange} onChange={(value) => updateFilters({ opsRange: value })} />
+            <FilterApplyButton dirty={filtersDirty} onApply={applyReportFilters} />
+          </div>
         </section>
       )}
 
@@ -1287,7 +1311,7 @@ export default function ReportsPage() {
           </p>
           <button
             type="button"
-            onClick={() => setLedgerArmed(true)}
+            onClick={applyReportFilters}
             className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700"
           >
             <span className="material-symbols-outlined text-base">play_arrow</span>

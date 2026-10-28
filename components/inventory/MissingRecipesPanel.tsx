@@ -1,5 +1,7 @@
 "use client";
 
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useFilterDraft } from "@/lib/use-applied-filters";
 import { useCallback, useEffect, useState } from "react";
 import { MonthInput } from "@/components/DateInput";
 import CopyableText from "@/components/CopyableText";
@@ -62,6 +64,11 @@ export default function MissingRecipesPanel({ sessionKey, branchOptions, default
     return () => window.clearTimeout(timer);
   }, [load]);
 
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026).
+  const bar = useFilterDraft({ month, branchCode }, (draft) => {
+    setMonth(draft.month);
+    setBranchCode(draft.branchCode);
+  });
   const sold = report?.sold || [];
   const components = report?.components || [];
 
@@ -79,14 +86,15 @@ export default function MissingRecipesPanel({ sessionKey, branchOptions, default
         <div className="flex flex-wrap items-end gap-2">
           <label className="text-xs font-bold text-slate-500">
             Tháng
-            <MonthInput className="control mt-1" value={month} onChange={setMonth} />
+            <MonthInput className="control mt-1" value={bar.draft.month} onChange={(value) => bar.update({ month: value })} />
           </label>
           <label className="text-xs font-bold text-slate-500">
             Cửa hàng
-            <select className="control mt-1" value={branchCode} onChange={(event) => setBranchCode(event.target.value)}>
+            <select className="control mt-1" value={bar.draft.branchCode} onChange={(event) => bar.update({ branchCode: event.target.value })}>
               {branchOptions.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
             </select>
           </label>
+          <FilterApplyButton dirty={bar.dirty} onApply={bar.apply} loading={loading} />
           <button type="button" title="Tải lại" onClick={() => void load()} className="icon-button">
             <span className={`material-symbols-outlined text-lg ${loading ? "animate-spin" : ""}`}>refresh</span>
           </button>

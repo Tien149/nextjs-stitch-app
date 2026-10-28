@@ -15,6 +15,8 @@ import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySo
 import { money as formatVndMoney, unitPrice } from "@/lib/format-number";
 
 import { ActionIcon } from "@/components/ActionIcon";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 type OpeningBalance = {
   id: string;
   period: string;
@@ -139,11 +141,18 @@ export default function OpeningBalancesPage() {
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [balances, setBalances] = useState<OpeningBalance[]>([]);
   const [form, setForm] = useState<OpeningBalanceForm>(emptyForm);
-  const [branchScope, setBranchScope] = useState("ALL");
-  const [balanceTypeFilter, setBalanceTypeFilter] = useState("ALL");
-  const [statusFilter, setStatusFilter] = useState("ALL");
-  /** Lọc theo kỳ số dư (khách yêu cầu 03/10/2026): kỳ giao với khoảng ngày là hiện. */
-  const [periodRange, setPeriodRange] = useState<DateRange>({ from: "", to: "" });
+  /**
+   * periodRange: lọc theo kỳ số dư (khách yêu cầu 03/10/2026): kỳ giao với khoảng ngày là hiện.
+   * Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026).
+   */
+  const filters = useAppliedFilters<{ branchScope: string; balanceTypeFilter: string; statusFilter: string; periodRange: DateRange }>({
+    branchScope: "ALL",
+    balanceTypeFilter: "ALL",
+    statusFilter: "ALL",
+    periodRange: { from: "", to: "" },
+  });
+  const { branchScope, balanceTypeFilter, statusFilter, periodRange } = filters.applied;
+  const { applyNow: applyFiltersNow } = filters;
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -171,14 +180,14 @@ export default function OpeningBalancesPage() {
     }
     window.setTimeout(() => {
       const initialBranch = resolveInitialBranchScope(session);
-      setBranchScope(initialBranch);
+      applyFiltersNow({ branchScope: initialBranch });
       if (initialBranch !== "ALL") {
         setForm((current) => ({ ...current, branchCode: initialBranch }));
       }
       setUser(session);
       setIsCheckingAuth(false);
     }, 0);
-  }, [router]);
+  }, [router, applyFiltersNow]);
 
   const formatCurrency = (amount: number) => formatVndMoney(amount);
 
@@ -272,8 +281,16 @@ export default function OpeningBalancesPage() {
   useEffect(() => {
     if (!isCheckingAuth) {
       window.setTimeout(() => {
-        void loadBalances();
         void loadMasterData();
+      }, 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCheckingAuth, branchScope]);
+
+  useEffect(() => {
+    if (!isCheckingAuth) {
+      window.setTimeout(() => {
+        void loadBalances();
       }, 0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -540,7 +557,6 @@ export default function OpeningBalancesPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <BranchScopeSelect session={user} value={branchScope} onChange={setBranchScope} />
           {canManageOpeningBalances && (
             <button
               type="button"
@@ -1143,10 +1159,11 @@ export default function OpeningBalancesPage() {
                 <p className="text-xs text-slate-500 mt-1">Chốt số dư sau khi kế toán kiểm tra đúng kỳ, chi nhánh và nguồn tiền.</p>
               </div>
               <div className="flex flex-col sm:flex-row sm:items-end flex-wrap gap-2">
-                <DateRangeFilter label="Kỳ số dư" value={periodRange} onChange={setPeriodRange} showPresets={false} />
+                <BranchScopeSelect session={user} value={filters.draft.branchScope} onChange={(value) => filters.update({ branchScope: value })} className="self-end" />
+                <DateRangeFilter label="Kỳ số dư" value={filters.draft.periodRange} onChange={(value) => filters.update({ periodRange: value })} showPresets={false} />
                 <select
-                  value={balanceTypeFilter}
-                  onChange={(event) => setBalanceTypeFilter(event.target.value)}
+                  value={filters.draft.balanceTypeFilter}
+                  onChange={(event) => filters.update({ balanceTypeFilter: event.target.value })}
                   className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white text-slate-700 cursor-pointer"
                 >
                   <option value="ALL">Tất cả loại</option>
@@ -1157,8 +1174,8 @@ export default function OpeningBalancesPage() {
                   ))}
                 </select>
                 <select
-                  value={statusFilter}
-                  onChange={(event) => setStatusFilter(event.target.value)}
+                  value={filters.draft.statusFilter}
+                  onChange={(event) => filters.update({ statusFilter: event.target.value })}
                   className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white text-slate-700 cursor-pointer"
                 >
                   <option value="ALL">Tất cả trạng thái</option>
@@ -1166,6 +1183,7 @@ export default function OpeningBalancesPage() {
                   <option value="CONFIRMED">Đã chốt</option>
                   <option value="POSTED">Đã ghi sổ (Import)</option>
                 </select>
+                <FilterApplyButton dirty={filters.dirty} onApply={filters.apply} loading={isLoading} />
                 <ExportExcelButton
                   fileName="so_du_dau_ky"
                   sheetName="So du dau ky"

@@ -5,6 +5,8 @@ import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { ModuleFrame } from "@/components/ModuleFrame";
 import { DateInput } from "@/components/DateInput";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 import { displayRoleName, storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { SESSION_KEY, type DemoSession } from "@/lib/auth-demo";
 
@@ -33,12 +35,15 @@ export default function AuditLogsPage() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
 
-  // Filters state
-  const [branchCode, setBranchCode] = useState("ALL");
-  const [moduleFilter, setModuleFilter] = useState("ALL");
-  const [search, setSearch] = useState("");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026).
+  const { draft, applied, update, apply, dirty } = useAppliedFilters({
+    branchCode: "ALL",
+    moduleFilter: "ALL",
+    search: "",
+    startDate: "",
+    endDate: "",
+  });
+  const { branchCode, moduleFilter, search, startDate, endDate } = applied;
 
   // Modal detail log state
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
@@ -99,7 +104,7 @@ export default function AuditLogsPage() {
       window.setTimeout(() => void loadLogs(), 0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCheckingAuth, branchCode, moduleFilter, startDate, endDate]);
+  }, [isCheckingAuth, branchCode, moduleFilter, search, startDate, endDate]);
 
   if (isCheckingAuth) {
     return (
@@ -175,12 +180,12 @@ export default function AuditLogsPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5">
             <div>
               <label className="text-[11px] font-semibold text-slate-500 block mb-1">Cửa hàng / Chi nhánh</label>
               <select
-                value={branchCode}
-                onChange={(e) => setBranchCode(e.target.value)}
+                value={draft.branchCode}
+                onChange={(e) => update({ branchCode: e.target.value })}
                 className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:border-blue-500 outline-none"
               >
                 <option value="ALL">Tất cả chi nhánh</option>
@@ -195,8 +200,8 @@ export default function AuditLogsPage() {
             <div>
               <label className="text-[11px] font-semibold text-slate-500 block mb-1">Phân hệ</label>
               <select
-                value={moduleFilter}
-                onChange={(e) => setModuleFilter(e.target.value)}
+                value={draft.moduleFilter}
+                onChange={(e) => update({ moduleFilter: e.target.value })}
                 className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:border-blue-500 outline-none"
               >
                 <option value="ALL">Tất cả phân hệ</option>
@@ -212,8 +217,8 @@ export default function AuditLogsPage() {
             <div>
               <label className="text-[11px] font-semibold text-slate-500 block mb-1">Từ ngày</label>
               <DateInput
-                value={startDate}
-                onChange={setStartDate}
+                value={draft.startDate}
+                onChange={(value) => update({ startDate: value })}
                 className="w-full"
                 ariaLabel="Từ ngày"
               />
@@ -222,8 +227,8 @@ export default function AuditLogsPage() {
             <div>
               <label className="text-[11px] font-semibold text-slate-500 block mb-1">Đến ngày</label>
               <DateInput
-                value={endDate}
-                onChange={setEndDate}
+                value={draft.endDate}
+                onChange={(value) => update({ endDate: value })}
                 className="w-full"
                 ariaLabel="Đến ngày"
               />
@@ -233,15 +238,17 @@ export default function AuditLogsPage() {
               <label className="text-[11px] font-semibold text-slate-500 block mb-1">Từ khóa tìm kiếm</label>
               <input
                 type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                value={draft.search}
+                onChange={(e) => update({ search: e.target.value })}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") void loadLogs();
+                  if (e.key === "Enter") apply();
                 }}
                 placeholder="Tên, mã, hành động..."
                 className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs focus:border-blue-500 outline-none"
               />
             </div>
+
+            <FilterApplyButton dirty={dirty} onApply={apply} loading={loading} className="col-span-2 md:col-span-1" />
           </div>
         </div>
 

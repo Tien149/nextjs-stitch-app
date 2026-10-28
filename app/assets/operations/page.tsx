@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useId, useMemo, useState } from "react";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
 import { inDateRange, type DateRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
@@ -171,12 +172,16 @@ export default function AssetOperationsPage() {
     residualValue: "0",
   });
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026): *Draft gắn ô chọn, bản còn lại đang áp dụng.
   const [depreciationYear, setDepreciationYear] = useState(new Date().toISOString().slice(0, 4));
+  const [depreciationYearDraft, setDepreciationYearDraft] = useState(depreciationYear);
   /**
    * Khoảng thời gian cho các tab danh sách (khách yêu cầu 03/10/2026): bảo trì theo ngày dự kiến,
    * sửa chữa theo ngày báo hỏng, kiểm kê theo ngày kiểm, thanh lý theo ngày thanh lý.
    */
   const [opsRange, setOpsRange] = useState<DateRange>({ from: "", to: "" });
+  const [opsRangeDraft, setOpsRangeDraft] = useState<DateRange>({ from: "", to: "" });
+  const opsRangeDirty = opsRangeDraft.from !== opsRange.from || opsRangeDraft.to !== opsRange.to;
   const [maintenance, setMaintenance] = useState({
     maintenanceType: "Bảo trì định kỳ",
     scheduledDate: new Date().toISOString().slice(0, 10),
@@ -514,6 +519,7 @@ export default function AssetOperationsPage() {
 
   // Năm đang chọn có thể biến mất sau khi tải lại dữ liệu, khi đó rơi về năm mới nhất còn số liệu.
   const activeDepreciationYear = depreciationYears.includes(depreciationYear) ? depreciationYear : depreciationYears[0];
+  const draftDepreciationYear = depreciationYears.includes(depreciationYearDraft) ? depreciationYearDraft : activeDepreciationYear;
 
   // Mỗi tài sản một dòng: 12 cột là số khấu hao từng tháng của năm đang chọn, lũy kế và
   // giá trị còn lại lấy theo kỳ gần nhất mà tài sản đó đã chạy trong năm.
@@ -620,11 +626,14 @@ export default function AssetOperationsPage() {
 
       {["maintenance", "damage", "disposal", "stocktake"].includes(active) && (
         <div className="mb-4 rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm">
-          <DateRangeFilter
-            label={{ maintenance: "Ngày bảo trì dự kiến", damage: "Ngày báo hỏng", disposal: "Ngày thanh lý", stocktake: "Ngày kiểm kê" }[active as "maintenance"]}
-            value={opsRange}
-            onChange={setOpsRange}
-          />
+          <div className="flex flex-wrap items-end gap-3">
+            <DateRangeFilter
+              label={{ maintenance: "Ngày bảo trì dự kiến", damage: "Ngày báo hỏng", disposal: "Ngày thanh lý", stocktake: "Ngày kiểm kê" }[active as "maintenance"]}
+              value={opsRangeDraft}
+              onChange={setOpsRangeDraft}
+            />
+            <FilterApplyButton dirty={opsRangeDirty} onApply={() => setOpsRange(opsRangeDraft)} />
+          </div>
         </div>
       )}
 
@@ -1060,8 +1069,8 @@ export default function AssetOperationsPage() {
             <Panel title="Lịch sử khấu hao" reload={loadData} exportFileName="lich_su_khau_hao">
               <select
                 className="control h-8 w-32 text-xs py-0"
-                value={activeDepreciationYear}
-                onChange={(e) => setDepreciationYear(e.target.value)}
+                value={draftDepreciationYear}
+                onChange={(e) => setDepreciationYearDraft(e.target.value)}
                 aria-label="Năm khấu hao"
                 data-no-export
               >
@@ -1069,6 +1078,10 @@ export default function AssetOperationsPage() {
                   <option key={year} value={year}>Năm {year}</option>
                 ))}
               </select>
+              <FilterApplyButton
+                dirty={draftDepreciationYear !== activeDepreciationYear}
+                onApply={() => setDepreciationYear(draftDepreciationYear)}
+              />
             </Panel>
             <Table
               headers={[

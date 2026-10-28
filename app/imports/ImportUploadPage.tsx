@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
 import type { DateRange } from "@/lib/date-range";
 import RevenueDaySummary from "@/app/imports/RevenueDaySummary";
 import RevenuePreviewEditor, {
@@ -347,6 +348,8 @@ export default function ImportUploadPage({
   const [batches, setBatches] = useState<Batch[]>([]);
   const [batchTotal, setBatchTotal] = useState(0);
   /** Lọc lịch sử import theo ngày tạo batch (khách yêu cầu 03/10/2026). */
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026): ô ngày gắn bản nháp, tải lịch sử theo bản đã áp dụng.
+  const [historyRangeDraft, setHistoryRangeDraft] = useState<DateRange>({ from: "", to: "" });
   const [historyRange, setHistoryRange] = useState<DateRange>({ from: "", to: "" });
   const [batchListLoading, setBatchListLoading] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState<BatchDetail | null>(null);
@@ -1574,7 +1577,14 @@ export default function ImportUploadPage({
           <div className="p-5 border-b border-slate-200 flex items-center justify-between">
             <div>
               <h2 className="font-bold">Lịch sử import</h2>
-              <DateRangeFilter label="Ngày import" value={historyRange} onChange={setHistoryRange} className="mt-2" />
+              <div className="mt-2 flex flex-wrap items-end gap-2">
+                <DateRangeFilter label="Ngày import" value={historyRangeDraft} onChange={setHistoryRangeDraft} />
+                <FilterApplyButton
+                  dirty={historyRangeDraft.from !== historyRange.from || historyRangeDraft.to !== historyRange.to}
+                  onApply={() => setHistoryRange(historyRangeDraft)}
+                  loading={batchListLoading}
+                />
+              </div>
               <p className="text-xs text-slate-500 mt-1">
                 {batchTotal === 0
                   ? "Bấm một dòng để xem chi tiết."

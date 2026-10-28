@@ -5,6 +5,7 @@ import { storeLabel } from "@/lib/branch-labels";
 import { MoneyInput } from "@/components/MoneyInput";
 import { QuantityInput } from "@/components/QuantityInput";
 import { money } from "@/components/reports/report-ui";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
 
 /**
  * Màn "Số liệu trước khi lên phần mềm" (khách 19/10/2026): nhập tay số P&L THỰC TẾ từng tháng
@@ -39,7 +40,9 @@ const people = (value: number) => (Math.round(value * 100) / 100).toLocaleString
 
 export default function PnlHistoryTab({ year: pageYear, branchCode, onSaved }: { year: string; branchCode: string; onSaved?: () => void }) {
   const [editor, setEditor] = useState<Editor | null>(null);
+  // Ô Năm chỉ chạy khi bấm Lọc (khách 28/10/2026): yearDraft gắn ô chọn, year là năm đang tải.
   const [year, setYear] = useState(pageYear);
+  const [yearDraft, setYearDraft] = useState(pageYear);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
@@ -234,10 +237,11 @@ export default function PnlHistoryTab({ year: pageYear, branchCode, onSaved }: {
             </p>
           </div>
           <label className="ml-auto text-xs font-bold text-slate-600">Năm
-            <select className="control mt-1 !w-28" value={year} onChange={(e) => setYear(e.target.value)}>
+            <select className="control mt-1 !w-28" value={yearDraft} onChange={(e) => setYearDraft(e.target.value)}>
               {[...new Set([...yearOptions, pageYear])].filter((value) => Number(value) <= cutoffYear).sort().reverse().map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </label>
+          <FilterApplyButton dirty={yearDraft !== year} onApply={() => setYear(yearDraft)} loading={loading} />
           <button type="button" disabled={!editor || months.length === 0} onClick={() => void exportTemplate()}
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
             Xuất file mẫu

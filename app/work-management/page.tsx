@@ -26,6 +26,8 @@ import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { inDateRange, type DateRange } from "@/lib/date-range";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 
 const emptyData: WorkListData = {
   items: [],
@@ -56,14 +58,18 @@ export default function WorkManagementPage() {
   const [data, setData] = useState<WorkListData>(emptyData);
   const [view, setView] = useState<WorkView>("LIST");
   const [branchCode, setBranchCode] = useState("ALL");
-  const [status, setStatus] = useState("ALL");
-  const [departmentCode, setDepartmentCode] = useState("ALL");
-  const [assignee, setAssignee] = useState("ALL");
-  const [priority, setPriority] = useState("ALL");
-  /** Lọc theo hạn hoàn thành (khách yêu cầu 03/10/2026) — Danh sách + Kanban; Lịch đã theo tháng. */
-  const [dueRange, setDueRange] = useState<DateRange>({ from: "", to: "" });
-  const [searchDraft, setSearchDraft] = useState("");
-  const [search, setSearch] = useState("");
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026). Cửa hàng ở đầu trang (ModuleFrame) vẫn chạy ngay.
+  /** dueRange: lọc theo hạn hoàn thành (khách yêu cầu 03/10/2026) — Danh sách + Kanban; Lịch đã theo tháng. */
+  const filters = useAppliedFilters<{ status: string; departmentCode: string; assignee: string; priority: string; dueRange: DateRange; search: string }>({
+    status: "ALL",
+    departmentCode: "ALL",
+    assignee: "ALL",
+    priority: "ALL",
+    dueRange: { from: "", to: "" },
+    search: "",
+  });
+  const { status, departmentCode, assignee, priority, dueRange } = filters.applied;
+  const search = filters.applied.search.trim();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
@@ -80,11 +86,6 @@ export default function WorkManagementPage() {
       return () => window.clearTimeout(timer);
     }
   }, [loading, user]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setSearch(searchDraft.trim()), 250);
-    return () => window.clearTimeout(timer);
-  }, [searchDraft]);
 
   const loadData = useCallback(async () => {
     const params = new URLSearchParams({ branchCode, status, departmentCode, assignee, priority });
@@ -204,8 +205,11 @@ export default function WorkManagementPage() {
             <div className="relative min-w-52 flex-1">
               <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-lg text-slate-400">search</span>
               <input
-                value={searchDraft}
-                onChange={(event) => setSearchDraft(event.target.value)}
+                value={filters.draft.search}
+                onChange={(event) => filters.update({ search: event.target.value })}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") filters.apply();
+                }}
                 placeholder="Tìm mã, tiêu đề, người phụ trách..."
                 className="h-9 w-full rounded-lg border border-slate-200 pl-10 pr-3 text-sm outline-none focus:border-blue-500"
               />
@@ -218,24 +222,27 @@ export default function WorkManagementPage() {
             )}
           </div>
           <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            <Filter value={status} onChange={setStatus}>
+            <Filter value={filters.draft.status} onChange={(value) => filters.update({ status: value })}>
               <option value="ALL">Tất cả trạng thái</option>
               {workStatusOrder.map((item) => <option key={item} value={item}>{workStatusLabels[item]}</option>)}
             </Filter>
-            <Filter value={departmentCode} onChange={setDepartmentCode}>
+            <Filter value={filters.draft.departmentCode} onChange={(value) => filters.update({ departmentCode: value })}>
               <option value="ALL">Tất cả phòng ban</option>
               {data.departments.map((item) => <option key={`${item.code}-${item.branch}`} value={item.code}>{item.name}</option>)}
             </Filter>
-            <Filter value={assignee} onChange={setAssignee}>
+            <Filter value={filters.draft.assignee} onChange={(value) => filters.update({ assignee: value })}>
               <option value="ALL">Tất cả người phụ trách</option>
               {Array.from(new Set(data.users.map((item) => item.name))).map((name) => <option key={name} value={name}>{name}</option>)}
             </Filter>
-            <Filter value={priority} onChange={setPriority}>
+            <Filter value={filters.draft.priority} onChange={(value) => filters.update({ priority: value })}>
               <option value="ALL">Tất cả mức ưu tiên</option>
               {Object.entries(workPriorityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </Filter>
           </div>
-          <DateRangeFilter label="Hạn hoàn thành" value={dueRange} onChange={setDueRange} className="mt-2" />
+          <div className="mt-2 flex flex-wrap items-end gap-3">
+            <DateRangeFilter label="Hạn hoàn thành" value={filters.draft.dueRange} onChange={(value) => filters.update({ dueRange: value })} />
+            <FilterApplyButton dirty={filters.dirty} onApply={filters.apply} />
+          </div>
         </div>
       </StickyFilterBar>
 

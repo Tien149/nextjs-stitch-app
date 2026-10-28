@@ -22,6 +22,8 @@ import { VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat
 import { TemplatesTab, type PurchaseTemplate, type TemplateUnitConversion } from "./templates-tab";
 import { PriceListsTab } from "./price-lists-tab";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 import { vnToday, vnTomorrow, type DateRange } from "@/lib/date-range";
 import { SendPurchaseOrderDialog } from "./send-po-dialog";
 import { ApproveRequestDialog } from "./approve-request-dialog";
@@ -149,7 +151,8 @@ export default function ProcurementPage() {
   const [requestRows, setRequestRows] = useState<RequestRow[]>([emptyRequestRow()]);
   /** Tab Yêu cầu mua: form tạo/sửa mở khi cần, danh sách lọc theo cửa hàng / phòng ban / trạng thái / ngày. */
   const [showRequestForm, setShowRequestForm] = useState(false);
-  const [requestFilter, setRequestFilter] = useState(() => ({
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026): ô lọc gắn `draft`, tải/lọc danh sách theo bản đã áp dụng.
+  const requestFilters = useAppliedFilters(() => ({
     branchCode: "ALL",
     departmentCode: "ALL",
     status: "ALL",
@@ -158,8 +161,12 @@ export default function ProcurementPage() {
     to: vnToday(),
     search: "",
   }));
+  const requestFilter = requestFilters.applied;
+  const requestFilterDraft = requestFilters.draft;
+  const applyRequestFilterNow = requestFilters.applyNow;
   const [requestList, setRequestList] = useState<{ rows: PurchaseRequest[]; truncated: boolean } | null>(null);
   /** Tab So sánh giá: lọc PR có báo giá theo ngày yêu cầu (03/10/2026). Trống = 100 PR mới nhất. */
+  const [quoteRangeDraft, setQuoteRangeDraft] = useState<DateRange>({ from: "", to: "" });
   const [quoteRange, setQuoteRange] = useState<DateRange>({ from: "", to: "" });
   const [quoteRangeRequests, setQuoteRangeRequests] = useState<PurchaseRequest[] | null>(null);
 
@@ -178,7 +185,10 @@ export default function ProcurementPage() {
   const [quotePriceSource, setQuotePriceSource] = useState<Record<string, string>>({});
 
   /** Tab Đơn mua hàng: lọc cửa hàng / phòng ban / trạng thái / ngày đặt / đã gửi NCC (03/10/2026). */
-  const [orderFilter, setOrderFilter] = useState({ branchCode: "ALL", departmentCode: "ALL", status: "ALL", sent: "ALL", from: vnToday(), to: vnToday(), search: "" });
+  const orderFilters = useAppliedFilters(() => ({ branchCode: "ALL", departmentCode: "ALL", status: "ALL", sent: "ALL", from: vnToday(), to: vnToday(), search: "" }));
+  const orderFilter = orderFilters.applied;
+  const orderFilterDraft = orderFilters.draft;
+  const applyOrderFilterNow = orderFilters.applyNow;
   /** Phiếu được trỏ tới từ link chứng từ (/open/<mã> → ?tab=&code=&date=): tô sáng + cuộn tới. */
   const [focusCode, setFocusCode] = useState("");
   useEffect(() => {
@@ -188,11 +198,12 @@ export default function ProcurementPage() {
       setActive(focus.tab);
       setFocusCode(focus.code);
       const range = { from: focus.date, to: focus.date };
-      if (focus.tab === "orders") setOrderFilter((current) => ({ ...current, branchCode: focus.branch || current.branchCode, departmentCode: "ALL", status: "ALL", sent: "ALL", ...range, search: focus.code }));
-      else setRequestFilter((current) => ({ ...current, branchCode: focus.branch || current.branchCode, departmentCode: "ALL", status: "ALL", ...range, search: focus.code }));
+      const branch = focus.branch ? { branchCode: focus.branch } : {};
+      if (focus.tab === "orders") applyOrderFilterNow({ ...branch, departmentCode: "ALL", status: "ALL", sent: "ALL", ...range, search: focus.code });
+      else applyRequestFilterNow({ ...branch, departmentCode: "ALL", status: "ALL", ...range, search: focus.code });
       scrollToDoc(focus.code);
     }, 0);
-  }, []);
+  }, [applyOrderFilterNow, applyRequestFilterNow]);
   /** Ô số liệu đầu màn (view=stats) theo cửa hàng của bộ lọc tab đang mở. */
   const [stats, setStats] = useState<{ branchCode: string; requests: number; waitingRequests: number; ordersByStatus: Record<string, number> } | null>(null);
   const [orderList, setOrderList] = useState<{ rows: PurchaseOrder[]; truncated: boolean } | null>(null);
@@ -621,13 +632,13 @@ export default function ProcurementPage() {
     setFocusCode(code);
     scrollToDoc(code);
     setActive("orders");
-    setOrderFilter((current) => ({ ...current, status: "ALL", sent: "ALL", from: "", to: "", search: code }));
+    applyOrderFilterNow({ status: "ALL", sent: "ALL", from: "", to: "", search: code });
   };
   const showRequest = (code: string) => {
     setFocusCode(code);
     scrollToDoc(code);
     setActive("requests");
-    setRequestFilter((current) => ({ ...current, status: "ALL", from: "", to: "", search: code }));
+    applyRequestFilterNow({ status: "ALL", from: "", to: "", search: code });
   };
   const requestOrderLinks = (request: PurchaseRequest) => {
     const orders = ordersOf(request);
@@ -1261,7 +1272,7 @@ export default function ProcurementPage() {
         {/* PO đã nhận hàng = Hoàn tất (kể cả đóng thiếu) + Nhận một phần (khách 27/10/2026); bấm để lọc danh sách. */}
         <button
           type="button"
-          onClick={() => { setActive("orders"); setOrderFilter((current) => ({ ...current, status: "RECEIVED" })); }}
+          onClick={() => { setActive("orders"); applyOrderFilterNow({ status: "RECEIVED" }); }}
           className="text-left bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:border-teal-300"
           title="Xem danh sách PO đã nhận hàng"
         >
@@ -1585,25 +1596,25 @@ export default function ProcurementPage() {
             </div>
 
             {/* Lọc theo cửa hàng, phòng ban, trạng thái, khoảng ngày yêu cầu (khách yêu cầu 03/10/2026). */}
-            <div className="px-4 sm:px-5 pb-4 grid grid-cols-2 lg:grid-cols-6 gap-3">
+            <div className="px-4 sm:px-5 pb-4 grid grid-cols-2 lg:grid-cols-7 gap-3">
               <Field label="Cửa hàng">
-                <select className="control" value={requestFilter.branchCode} onChange={(e) => setRequestFilter({ ...requestFilter, branchCode: e.target.value, departmentCode: "ALL" })}>
+                <select className="control" value={requestFilterDraft.branchCode} onChange={(e) => requestFilters.update({ branchCode: e.target.value, departmentCode: "ALL" })}>
                   <option value="ALL">Tất cả cửa hàng</option>
                   {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                 </select>
               </Field>
               <Field label="Phòng ban">
-                <select className="control" value={singleDepartment || requestFilter.departmentCode} disabled={Boolean(singleDepartment)} onChange={(e) => setRequestFilter({ ...requestFilter, departmentCode: e.target.value })}>
+                <select className="control" value={singleDepartment || requestFilterDraft.departmentCode} disabled={Boolean(singleDepartment)} onChange={(e) => requestFilters.update({ departmentCode: e.target.value })}>
                   {!singleDepartment && <option value="ALL">Tất cả phòng ban</option>}
                   {data.departments
                     .filter((item) => !ownDepartments || ownDepartments.includes(item.code.toUpperCase()))
-                    .filter((item) => requestFilter.branchCode === "ALL" || !item.branch || item.branch === "ALL" || item.branch === requestFilter.branchCode)
-                    .map((item) => <option key={item.id} value={item.code}>{item.name}{item.branch && item.branch !== "ALL" && requestFilter.branchCode === "ALL" ? ` (${storeLabel(item.branch)})` : ""}</option>)}
+                    .filter((item) => requestFilterDraft.branchCode === "ALL" || !item.branch || item.branch === "ALL" || item.branch === requestFilterDraft.branchCode)
+                    .map((item) => <option key={item.id} value={item.code}>{item.name}{item.branch && item.branch !== "ALL" && requestFilterDraft.branchCode === "ALL" ? ` (${storeLabel(item.branch)})` : ""}</option>)}
                   {!ownDepartments && <option value="NONE">Chưa gán phòng ban</option>}
                 </select>
               </Field>
               <Field label="Trạng thái">
-                <select className="control" value={requestFilter.status} onChange={(e) => setRequestFilter({ ...requestFilter, status: e.target.value })}>
+                <select className="control" value={requestFilterDraft.status} onChange={(e) => requestFilters.update({ status: e.target.value })}>
                   <option value="ALL">Tất cả trạng thái</option>
                   <option value="WAITING">Chờ thu mua duyệt</option>
                   <option value="ORDERED">Đã lên PO</option>
@@ -1614,14 +1625,15 @@ export default function ProcurementPage() {
                 </select>
               </Field>
               <Field label="Từ ngày">
-                <DateInput className="control" value={requestFilter.from} onChange={(value) => setRequestFilter({ ...requestFilter, from: value })} ariaLabel="Từ ngày" />
+                <DateInput className="control" value={requestFilterDraft.from} onChange={(value) => requestFilters.update({ from: value })} ariaLabel="Từ ngày" />
               </Field>
               <Field label="Đến ngày">
-                <DateInput className="control" value={requestFilter.to} onChange={(value) => setRequestFilter({ ...requestFilter, to: value })} ariaLabel="Đến ngày" />
+                <DateInput className="control" value={requestFilterDraft.to} onChange={(value) => requestFilters.update({ to: value })} ariaLabel="Đến ngày" />
               </Field>
               <Field label="Tìm mã / lý do / mặt hàng">
-                <input className="control" value={requestFilter.search} placeholder="Gõ để tìm..." onChange={(e) => setRequestFilter({ ...requestFilter, search: e.target.value })} />
+                <input className="control" value={requestFilterDraft.search} placeholder="Gõ để tìm..." onChange={(e) => requestFilters.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") requestFilters.apply(); }} />
               </Field>
+              <FilterApplyButton dirty={requestFilters.dirty} onApply={requestFilters.apply} />
             </div>
             <p className="px-4 sm:px-5 pb-3 text-xs text-slate-500">
               {requestList === null ? "Đang tải..." : <>Đang hiện <b>{filteredRequests.length}</b> yêu cầu · giá dự kiến <b>{money(filteredRequests.reduce((sum, request) => sum + requestTotal(request), 0))} đ</b>{requestList.truncated ? " — khoảng ngày quá rộng, chỉ hiện 2.000 phiếu mới nhất." : ""}</>}
@@ -1893,7 +1905,10 @@ export default function ProcurementPage() {
 
           <section className="space-y-4 min-w-0">
             <div className="table-panel shadow-sm p-4 flex flex-wrap items-end justify-between gap-3">
-              <DateRangeFilter label="Ngày yêu cầu mua" value={quoteRange} onChange={setQuoteRange} />
+              <div className="flex flex-wrap items-end gap-3">
+                <DateRangeFilter label="Ngày yêu cầu mua" value={quoteRangeDraft} onChange={setQuoteRangeDraft} />
+                <FilterApplyButton dirty={quoteRangeDraft.from !== quoteRange.from || quoteRangeDraft.to !== quoteRange.to} onApply={() => setQuoteRange(quoteRangeDraft)} />
+              </div>
               <p className="text-xs text-slate-500">{quotedRequests.length} yêu cầu có báo giá{!quoteRange.from && !quoteRange.to ? " (trong 100 yêu cầu mới nhất)" : ""}</p>
             </div>
             {quotedRequests.map((request) => {
@@ -2068,46 +2083,47 @@ export default function ProcurementPage() {
           </div>
 
           {/* Lọc theo cửa hàng, phòng ban, trạng thái, ngày đặt, đã gửi NCC chưa (khách yêu cầu 03/10/2026). */}
-          <div className="px-4 sm:px-5 pt-4 grid grid-cols-2 lg:grid-cols-7 gap-3">
+          <div className="px-4 sm:px-5 pt-4 grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-3">
             <Field label="Cửa hàng">
-              <select className="control" value={orderFilter.branchCode} onChange={(e) => setOrderFilter({ ...orderFilter, branchCode: e.target.value, departmentCode: "ALL" })}>
+              <select className="control" value={orderFilterDraft.branchCode} onChange={(e) => orderFilters.update({ branchCode: e.target.value, departmentCode: "ALL" })}>
                 <option value="ALL">Tất cả cửa hàng</option>
                 {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
               </select>
             </Field>
             <Field label="Phòng ban">
-              <select className="control" value={singleDepartment || orderFilter.departmentCode} disabled={Boolean(singleDepartment)} onChange={(e) => setOrderFilter({ ...orderFilter, departmentCode: e.target.value })}>
+              <select className="control" value={singleDepartment || orderFilterDraft.departmentCode} disabled={Boolean(singleDepartment)} onChange={(e) => orderFilters.update({ departmentCode: e.target.value })}>
                 {!singleDepartment && <option value="ALL">Tất cả phòng ban</option>}
                 {data.departments
                   .filter((item) => !ownDepartments || ownDepartments.includes(item.code.toUpperCase()))
-                  .filter((item) => orderFilter.branchCode === "ALL" || !item.branch || item.branch === "ALL" || item.branch === orderFilter.branchCode)
-                  .map((item) => <option key={item.id} value={item.code}>{item.name}{item.branch && item.branch !== "ALL" && orderFilter.branchCode === "ALL" ? ` (${storeLabel(item.branch)})` : ""}</option>)}
+                  .filter((item) => orderFilterDraft.branchCode === "ALL" || !item.branch || item.branch === "ALL" || item.branch === orderFilterDraft.branchCode)
+                  .map((item) => <option key={item.id} value={item.code}>{item.name}{item.branch && item.branch !== "ALL" && orderFilterDraft.branchCode === "ALL" ? ` (${storeLabel(item.branch)})` : ""}</option>)}
                 {!ownDepartments && <option value="NONE">Chưa gán phòng ban</option>}
               </select>
             </Field>
             <Field label="Trạng thái">
-              <select className="control" value={orderFilter.status} onChange={(e) => setOrderFilter({ ...orderFilter, status: e.target.value })}>
+              <select className="control" value={orderFilterDraft.status} onChange={(e) => orderFilters.update({ status: e.target.value })}>
                 <option value="ALL">Tất cả trạng thái</option>
                 {["DRAFT", "APPROVED", "PARTIALLY_RECEIVED", "COMPLETED", "CANCELLED"].map((status) => <option key={status} value={status}>{orderStatusLabel(status)}</option>)}
                 <option value="RECEIVED">Đã nhận hàng (Hoàn tất + Nhận một phần)</option>
               </select>
             </Field>
             <Field label="Gửi NCC">
-              <select className="control" value={orderFilter.sent} onChange={(e) => setOrderFilter({ ...orderFilter, sent: e.target.value })}>
+              <select className="control" value={orderFilterDraft.sent} onChange={(e) => orderFilters.update({ sent: e.target.value })}>
                 <option value="ALL">Tất cả</option>
                 <option value="YES">Đã gửi NCC</option>
                 <option value="NO">Chưa gửi NCC</option>
               </select>
             </Field>
             <Field label="Từ ngày">
-              <DateInput className="control" value={orderFilter.from} onChange={(value) => setOrderFilter({ ...orderFilter, from: value })} ariaLabel="Từ ngày" />
+              <DateInput className="control" value={orderFilterDraft.from} onChange={(value) => orderFilters.update({ from: value })} ariaLabel="Từ ngày" />
             </Field>
             <Field label="Đến ngày">
-              <DateInput className="control" value={orderFilter.to} onChange={(value) => setOrderFilter({ ...orderFilter, to: value })} ariaLabel="Đến ngày" />
+              <DateInput className="control" value={orderFilterDraft.to} onChange={(value) => orderFilters.update({ to: value })} ariaLabel="Đến ngày" />
             </Field>
             <Field label="Tìm mã / NCC / mặt hàng">
-              <input className="control" value={orderFilter.search} placeholder="Gõ để tìm..." onChange={(e) => setOrderFilter({ ...orderFilter, search: e.target.value })} />
+              <input className="control" value={orderFilterDraft.search} placeholder="Gõ để tìm..." onChange={(e) => orderFilters.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") orderFilters.apply(); }} />
             </Field>
+            <FilterApplyButton dirty={orderFilters.dirty} onApply={orderFilters.apply} />
           </div>
           <p className="px-4 sm:px-5 py-3 text-xs text-slate-500 border-b border-slate-100">
             {orderList === null ? "Đang tải..." : <>Đang hiện <b>{filteredOrders.length}</b> đơn · tổng tiền <b>{money(filteredOrders.reduce((sum, order) => sum + order.totalAmount, 0))} đ</b> · đã gửi NCC <b>{filteredOrders.filter((order) => order.shareToken).length}</b>{orderList.truncated ? " — khoảng ngày quá rộng, chỉ hiện 2.000 đơn mới nhất." : ""}</>}

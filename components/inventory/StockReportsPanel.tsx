@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useFilterDraft } from "@/lib/use-applied-filters";
 import { DateInput } from "@/components/DateInput";
 import CopyableText from "@/components/CopyableText";
 import { SearchableSelect } from "@/components/SearchableSelect";
@@ -235,7 +237,15 @@ export default function StockReportsPanel(props: Props) {
   const [reportType, setReportType] = useState("ALL");
 
   const storeKey = store.toUpperCase();
-  const warehouseOptions = warehouses.filter((row) => store === "ALL" || (row.branch || "").toUpperCase() === storeKey);
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026).
+  const bar = useFilterDraft({ store, warehouse, goodsGroup, search, from: range.from, to: range.to }, (draft) => {
+    setStore(draft.store);
+    setWarehouse(draft.warehouse);
+    setGoodsGroup(draft.goodsGroup);
+    setSearch(draft.search);
+    setRange({ from: draft.from, to: draft.to });
+  });
+  const warehouseOptions = warehouses.filter((row) => bar.draft.store === "ALL" || (row.branch || "").toUpperCase() === bar.draft.store.toUpperCase());
   const warehouseName = (code: string) => warehouses.find((row) => row.code === code)?.name || "";
   const keyword = foldSearchText(search.trim());
 
@@ -413,16 +423,15 @@ export default function StockReportsPanel(props: Props) {
             </button>
           </div>
         </div>
-        <div className="grid grid-cols-1 *:min-w-0 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-1 *:min-w-0 sm:grid-cols-3 lg:grid-cols-7 gap-3">
           <label className="text-xs font-bold text-slate-500">Cửa hàng
             <select
               className="control mt-1"
-              value={store}
+              value={bar.draft.store}
               onChange={(e) => {
                 const next = e.target.value;
-                setStore(next);
-                const picked = warehouses.find((row) => row.code === warehouse);
-                if (next !== "ALL" && picked && (picked.branch || "").toUpperCase() !== next.toUpperCase()) setWarehouse("ALL");
+                const picked = warehouses.find((row) => row.code === bar.draft.warehouse);
+                bar.update({ store: next, ...(next !== "ALL" && picked && (picked.branch || "").toUpperCase() !== next.toUpperCase() ? { warehouse: "ALL" } : {}) });
               }}
             >
               <option value="ALL">Tất cả cửa hàng</option>
@@ -430,27 +439,28 @@ export default function StockReportsPanel(props: Props) {
             </select>
           </label>
           <label className="text-xs font-bold text-slate-500">Kho
-            <select className="control mt-1" value={warehouse} onChange={(e) => setWarehouse(e.target.value)}>
+            <select className="control mt-1" value={bar.draft.warehouse} onChange={(e) => bar.update({ warehouse: e.target.value })}>
               <option value="ALL">Tất cả kho</option>
               {warehouseOptions.map((row) => <option key={row.code} value={row.code}>{row.name || row.code}</option>)}
             </select>
           </label>
           <label className="text-xs font-bold text-slate-500">Nhóm hàng hóa
-            <select className="control mt-1" value={goodsGroup} onChange={(e) => setGoodsGroup(e.target.value)}>
+            <select className="control mt-1" value={bar.draft.goodsGroup} onChange={(e) => bar.update({ goodsGroup: e.target.value })}>
               <option value="ALL">Tất cả nhóm</option>
               {groupOptions.map((group) => <option key={group} value={group}>{group}</option>)}
               <option value={NO_GROUP}>(Chưa gán nhóm)</option>
             </select>
           </label>
           <label className="text-xs font-bold text-slate-500">Từ ngày
-            <DateInput className="control mt-1" value={range.from} onChange={(value) => setRange({ ...range, from: value })} />
+            <DateInput className="control mt-1" value={bar.draft.from} onChange={(value) => bar.update({ from: value })} />
           </label>
           <label className="text-xs font-bold text-slate-500">Đến ngày
-            <DateInput className="control mt-1" value={range.to} onChange={(value) => setRange({ ...range, to: value })} />
+            <DateInput className="control mt-1" value={bar.draft.to} onChange={(value) => bar.update({ to: value })} />
           </label>
           <label className="text-xs font-bold text-slate-500">Tìm mã / tên hàng
-            <input className="control mt-1" placeholder="Gõ mã hoặc tên..." value={search} onChange={(e) => setSearch(e.target.value)} />
+            <input className="control mt-1" placeholder="Gõ mã hoặc tên..." value={bar.draft.search} onChange={(e) => bar.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") bar.apply(); }} />
           </label>
+          <FilterApplyButton dirty={bar.dirty} onApply={bar.apply} />
         </div>
       </section>
 

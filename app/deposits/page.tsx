@@ -14,6 +14,8 @@ import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySo
 import CopyableText from "@/components/CopyableText";
 import { PartnerPicker } from "@/components/PartnerPicker";
 import { money as formatVndMoney } from "@/lib/format-number";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 
 type DepositHistory = {
   id: string;
@@ -117,11 +119,19 @@ export default function DepositsPage() {
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [deposits, setDeposits] = useState<Deposit[]>([]);
   const [form, setForm] = useState(emptyForm);
-  const [search, setSearch] = useState("");
-  /** Lọc theo trạng thái trên trình duyệt (bấm thẻ tổng phía trên bảng); "ALL" = mọi trạng thái. */
-  const [statusFilter, setStatusFilter] = useState("ALL");
-  /** Lọc theo ngày nhận cọc (khách yêu cầu 03/10/2026); thẻ tổng theo trạng thái cũng theo khoảng này. */
-  const [receivedRange, setReceivedRange] = useState<DateRange>({ from: "", to: "" });
+  /**
+   * statusFilter: lọc theo trạng thái trên trình duyệt (bấm thẻ tổng phía trên bảng); "ALL" = mọi trạng thái.
+   * receivedRange: lọc theo ngày nhận cọc (khách yêu cầu 03/10/2026); thẻ tổng theo trạng thái cũng theo khoảng này.
+   * Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026).
+   */
+  const filters = useAppliedFilters<{ search: string; statusFilter: string; receivedRange: DateRange; branchScope: string }>({
+    search: "",
+    statusFilter: "ALL",
+    receivedRange: { from: "", to: "" },
+    branchScope: "ALL",
+  });
+  const { search, statusFilter, receivedRange, branchScope } = filters.applied;
+  const { applyNow: applyFiltersNow } = filters;
   const [focusedCode, setFocusedCode] = useState("");
   const [focusedHistoryId, setFocusedHistoryId] = useState("");
   const [hasLoadedDeposits, setHasLoadedDeposits] = useState(false);
@@ -130,7 +140,6 @@ export default function DepositsPage() {
   const [branches, setBranches] = useState<MasterDataOption[]>([]);
   const [partners, setPartners] = useState<MasterDataOption[]>([]);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
-  const [branchScope, setBranchScope] = useState("ALL");
   /** Phiếu cọc đang sửa; null nghĩa là biểu mẫu đang ở chế độ tạo mới. */
   const [editingDeposit, setEditingDeposit] = useState<Deposit | null>(null);
   const [deletingDeposit, setDeletingDeposit] = useState<Deposit | null>(null);
@@ -159,12 +168,11 @@ export default function DepositsPage() {
       }
       window.setTimeout(() => {
         const query = new URLSearchParams(window.location.search);
-        setSearch(query.get("search")?.trim() || "");
+        const initialBranch = resolveInitialBranchScope(session);
+        applyFiltersNow({ search: query.get("search")?.trim() || "", branchScope: initialBranch });
         setFocusedCode(query.get("focus")?.trim() || "");
         setFocusedHistoryId(query.get("history")?.trim() || "");
         setUser(session);
-        const initialBranch = resolveInitialBranchScope(session);
-        setBranchScope(initialBranch);
         if (initialBranch !== "ALL") {
           setForm((current) => ({ ...current, branchCode: initialBranch }));
         }
@@ -174,7 +182,7 @@ export default function DepositsPage() {
       localStorage.removeItem(SESSION_KEY);
       router.push("/login?next=/deposits");
     }
-  }, [router]);
+  }, [router, applyFiltersNow]);
 
   const formatCurrency = (amount: number) => formatVndMoney(amount);
   const canCreateDeposits = user ? canPerformAction(user, "create") : false;
@@ -243,12 +251,12 @@ export default function DepositsPage() {
     setHasLoadedDeposits(true);
   };
 
-  const clearDepositSearch = async () => {
-    setSearch("");
+  const clearDepositSearch = () => {
+    // Ô tìm đổi thì effect bên dưới tự tải lại danh sách.
+    filters.applyNow({ search: "" });
     setFocusedCode("");
     setFocusedHistoryId("");
     router.replace("/deposits");
-    await loadDeposits("");
   };
 
   const loadMasterData = async () => {
@@ -289,12 +297,20 @@ export default function DepositsPage() {
   useEffect(() => {
     if (!isCheckingAuth) {
       window.setTimeout(() => {
-        loadDeposits();
         loadMasterData();
       }, 0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCheckingAuth, branchScope]);
+
+  useEffect(() => {
+    if (!isCheckingAuth) {
+      window.setTimeout(() => {
+        loadDeposits();
+      }, 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCheckingAuth, branchScope, search]);
 
   const handlePartnerChange = (code: string) => {
     const p = partners.find(item => item.code === code);
@@ -501,7 +517,6 @@ export default function DepositsPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <BranchScopeSelect session={user} value={branchScope} onChange={setBranchScope} />
           <p className="hidden text-xs font-bold text-slate-500 sm:block">{user?.role}</p>
         </div>
       </header>
@@ -675,22 +690,11 @@ export default function DepositsPage() {
               <p className="text-xs text-slate-500 mt-1">Cấn trừ không được vượt số tiền còn lại.</p>
             </div>
             <div className="flex gap-2">
-              <input
-                value={search}
-                onChange={(event) => {
-                  setSearch(event.target.value);
-                  setFocusedCode("");
-                  setFocusedHistoryId("");
-                }}
-                className="border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                placeholder="Tìm mã/khách hàng/đối tượng..."
-              />
-              <button onClick={() => void loadDeposits()} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Tìm</button>
               <ExportExcelButton fileName="tien_coc" sheetName="Tien coc" targetId="deposit-table" className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50 inline-flex items-center gap-1.5" />
-              {(search || focusedCode) && (
+              {(search || filters.draft.search || focusedCode) && (
                 <button
                   type="button"
-                  onClick={() => void clearDepositSearch()}
+                  onClick={clearDepositSearch}
                   className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50"
                 >
                   Xóa lọc
@@ -699,19 +703,33 @@ export default function DepositsPage() {
             </div>
           </div>
 
-          <div className="border-b border-slate-200 px-5 py-3">
-            <DateRangeFilter label="Ngày nhận cọc" value={receivedRange} onChange={setReceivedRange} />
+          <div className="flex flex-wrap items-end gap-3 border-b border-slate-200 px-5 py-3">
+            <BranchScopeSelect session={user} value={filters.draft.branchScope} onChange={(value) => filters.update({ branchScope: value })} />
+            <DateRangeFilter label="Ngày nhận cọc" value={filters.draft.receivedRange} onChange={(value) => filters.update({ receivedRange: value })} />
+            <input
+              value={filters.draft.search}
+              onChange={(event) => {
+                filters.update({ search: event.target.value });
+                setFocusedCode("");
+                setFocusedHistoryId("");
+              }}
+              onKeyDown={(event) => { if (event.key === "Enter") filters.apply(); }}
+              className="h-10 min-w-[220px] border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              placeholder="Tìm mã/khách hàng/đối tượng..."
+            />
+            {/* Lọc không đổi gì vẫn tải lại danh sách (thay nút Tìm cũ). */}
+            <FilterApplyButton dirty={filters.dirty} onApply={() => (filters.dirty ? filters.apply() : void loadDeposits())} loading={!hasLoadedDeposits} />
           </div>
           <div className="flex gap-2 overflow-x-auto border-b border-slate-200 px-5 py-3 custom-scrollbar">
             {[{ status: "ALL", ...allSummary }, ...statusSummaries].map((summary) => {
-              const active = statusFilter === summary.status;
+              const active = filters.draft.statusFilter === summary.status;
               return (
                 <button
                   key={summary.status}
                   type="button"
-                  onClick={() => setStatusFilter(summary.status)}
+                  onClick={() => filters.update({ statusFilter: summary.status })}
                   className={`min-w-[150px] shrink-0 rounded-lg border px-3 py-2 text-left transition ${active ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500" : "border-slate-200 bg-white hover:bg-slate-50"}`}
-                  title="Bấm để lọc bảng theo trạng thái này"
+                  title="Chọn trạng thái rồi bấm Lọc để lọc bảng"
                 >
                   <p className={`text-xs font-bold ${active ? "text-blue-700" : "text-slate-500"}`}>
                     {summary.status === "ALL" ? "Tất cả" : statusLabels[summary.status] || summary.status}

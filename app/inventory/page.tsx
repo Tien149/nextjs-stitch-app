@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { priceDeviation } from "@/lib/supplier-price-list";
 import { DocLink } from "@/components/DocLink";
 import { focusRowClass, readDocFocus, scrollToDoc } from "@/lib/doc-focus";
+import { useFilterDraft } from "@/lib/use-applied-filters";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
 import { DateInput, DateTimeInput, MonthInput } from "@/components/DateInput";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
@@ -232,6 +234,27 @@ export default function InventoryPage() {
   const [messageSeq, setMessageSeq] = useState(0);
   const setMessage = (text: string) => { setMessageText(text); setMessageSeq((seq) => seq + 1); };
   const messageRef = useRef<HTMLParagraphElement>(null);
+  /**
+   * Thông báo nổi "đã lưu" (khách 28/10/2026: lưu định lượng / ghi nhận phiếu xong không biết đã được
+   * chưa, phải kiểm tra lại mới thấy). Tự ẩn sau vài giây; thông báo đầu trang vẫn giữ chi tiết.
+   */
+  const [toast, setToast] = useState<{ text: string; seq: number } | null>(null);
+  /** Đang gửi lệnh lên máy chủ: hiện lớp "Đang xử lý…" và chặn bấm lần hai (khách 28/10/2026). */
+  const [busy, setBusy] = useState(0);
+  const runBusy = async <T,>(work: () => Promise<T>): Promise<T> => {
+    setBusy((count) => count + 1);
+    try {
+      return await work();
+    } finally {
+      setBusy((count) => Math.max(0, count - 1));
+    }
+  };
+  const notifySaved = (text: string) => setToast((current) => ({ text, seq: (current?.seq || 0) + 1 }));
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
   const [reportStore, setReportStore] = useState("ALL");
   // Ô tìm mã / tên hàng của tab Tồn kho — áp cho cả ba bảng của tab.
   const [stockSearch, setStockSearch] = useState("");
@@ -271,6 +294,40 @@ export default function InventoryPage() {
   const [outboundType, setOutboundType] = useState("ALL");
   /** Khoảng NGÀY CHỨNG TỪ của danh sách phiếu nhập/xuất — mặc định 90 ngày gần nhất, gửi lên server. */
   const [flowRange, setFlowRange] = useState({ from: daysAgo(90), to: today() });
+  /** Thanh lọc phiếu Chế biến: ngày dùng chung với Nhập / Xuất; chỉ chạy khi bấm Lọc. */
+  const productionListFilter = useFilterDraft(
+    { from: flowRange.from, to: flowRange.to, ...productionFilter },
+    ({ from, to, ...rest }) => {
+      setFlowRange({ from, to });
+      setProductionFilter(rest);
+    },
+  );
+  /** Thanh lọc Báo cáo hủy hàng: chỉ chạy khi bấm Lọc. */
+  const wasteReportDraft = useFilterDraft(wasteReportFilter, setWasteReportFilter);
+  /** Thanh lọc Điều chuyển: chỉ chạy khi bấm Lọc (khách 28/10/2026). Ngày dùng chung với Nhập / Xuất. */
+  const transferFilter = useFilterDraft(
+    { search: transferSearch, store: transferStore, from: flowRange.from, to: flowRange.to, fromWarehouse: transferFromWarehouse, toWarehouse: transferToWarehouse },
+    (draft) => {
+      setTransferSearch(draft.search);
+      setTransferStore(draft.store);
+      setFlowRange({ from: draft.from, to: draft.to });
+      setTransferFromWarehouse(draft.fromWarehouse);
+      setTransferToWarehouse(draft.toWarehouse);
+    },
+  );
+  /** Thanh lọc Nhập / Xuất kho: chỉ chạy khi bấm Lọc (khách 28/10/2026). */
+  const flowFilter = useFilterDraft(
+    { search: flowSearch, from: flowRange.from, to: flowRange.to, branch: flowBranch, warehouse: flowWarehouse, inType: inboundType, outType: outboundType, partner: flowPartner },
+    (draft) => {
+      setFlowSearch(draft.search);
+      setFlowRange({ from: draft.from, to: draft.to });
+      setFlowBranch(draft.branch);
+      setFlowWarehouse(draft.warehouse);
+      setInboundType(draft.inType);
+      setOutboundType(draft.outType);
+      setFlowPartner(draft.partner);
+    },
+  );
   /** Phiếu được trỏ tới từ link chứng từ (/open/<mã> → ?tab=&code=&date=&branch=): tô sáng + cuộn tới. */
   const [focusCode, setFocusCode] = useState("");
 
@@ -327,6 +384,37 @@ export default function InventoryPage() {
   const [goodsGroupFilter, setGoodsGroupFilter] = useState("ALL");
   /** ALL / ACTIVE / INACTIVE — mã bị ngưng vẫn phải nhìn thấy được để bật lại hàng loạt. */
   const [itemStatusFilter, setItemStatusFilter] = useState("ALL");
+  // Các thanh lọc danh sách của tab Mặt hàng / Định lượng / Giá thành: chỉ chạy khi bấm Lọc (khách 28/10/2026).
+  const itemListFilter = useFilterDraft(
+    { search: itemSearch, type: itemTypeFilter, goodsGroup: goodsGroupFilter, revenueGroup: revenueGroupFilter, status: itemStatusFilter },
+    (draft) => {
+      setItemSearch(draft.search);
+      setItemTypeFilter(draft.type);
+      setGoodsGroupFilter(draft.goodsGroup);
+      setRevenueGroupFilter(draft.revenueGroup);
+      setItemStatusFilter(draft.status);
+    },
+  );
+  const recipeListFilter = useFilterDraft(
+    { search: recipeSearch, ingredient: recipeIngredientSearch, store: recipeStoreFilter, kitchen: recipeKitchenFilter, month: recipeMonth },
+    (draft) => {
+      setRecipeSearch(draft.search);
+      setRecipeIngredientSearch(draft.ingredient);
+      setRecipeStoreFilter(draft.store);
+      setRecipeKitchenFilter(draft.kitchen);
+      setRecipeMonth(draft.month);
+    },
+  );
+  const costListFilter = useFilterDraft(
+    { month: costMonth, group: costGroupFilter, store: costStoreFilter, kitchen: costKitchenFilter, search: costSearch },
+    (draft) => {
+      setCostMonth(draft.month);
+      setCostGroupFilter(draft.group);
+      setCostStoreFilter(draft.store);
+      setCostKitchenFilter(draft.kitchen);
+      setCostSearch(draft.search);
+    },
+  );
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
   const [supplierPrices, setSupplierPrices] = useState<{ key: string; prices: Array<{ itemId: string; unitCode: string; unitPrice: number; vatRate: number | null; stockUnitPrice: number; priceListCode: string; effectiveFrom: string; effectiveTo: string | null }> }>({ key: "", prices: [] });
@@ -802,8 +890,6 @@ export default function InventoryPage() {
     || foldSearchText(transaction.code).includes(keyword)
     || foldSearchText(transaction.lineSummary?.searchText || "").includes(keyword)
     || transaction.lines.some((line) => foldSearchText(line.item.code).includes(keyword) || foldSearchText(line.item.name).includes(keyword));
-  /** Kho chọn được ở ô lọc: kho của nhà hàng đang lọc (hoặc mọi kho khi xem tất cả nhà hàng). */
-  const flowWarehouseOptions = warehouseOptions.filter((warehouse) => flowBranch === "ALL" || warehouse.branch === flowBranch || !warehouse.branch);
   const matchesFlowWarehouse = (row: { warehouseCode: string }) =>
     flowWarehouse === "ALL" || (row.warehouseCode || "").toUpperCase() === flowWarehouse.toUpperCase();
   const inboundRows = flowRows("IN").filter((row) =>
@@ -1596,20 +1682,29 @@ export default function InventoryPage() {
       })),
     }, `Đã ghi nhận phiếu nhập kho (${manualLines.length} dòng).`);
     if (ok) {
-      clearManualLines();
-      setStockForm((current) => ({ ...current, vatAmount: "", purchaseCost: "", referenceCode: "" }));
+      afterStockSaved(ok?.code);
     }
+  };
+
+  /**
+   * Ghi nhận phiếu Nhập / Xuất xong: khung ghi nhận trở về phiếu MỚI trống (giữ cửa hàng, kho, ngày, loại
+   * để lập tiếp), phiếu vừa tạo được tô sáng trong danh sách bên dưới (khách 28/10/2026).
+   */
+  const afterStockSaved = (code?: string | null) => {
+    clearManualLines();
+    setStockForm((current) => ({ ...current, itemId: "", inputUnitCode: "", quantity: "1", unitCost: "", vatAmount: "", discountRate: "", discountAmount: "", purchaseCost: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "", lineNote: "", allocationMonths: "", pnlItemCode: "" }));
+    if (code) setFocusCode(code);
   };
 
   /** Huỷ lần nhận hàng PO từ chính phiếu nhập NM-… (chỉ lần nhận mới nhất của PO, thứ tự ngược lại). */
   const cancelPoReceipt = async (transaction: Transaction) => {
     if (!window.confirm(`Huỷ lần nhận ${transaction.code} (PO ${transaction.referenceCode || ""})?\n\nHệ thống hoàn kho theo phiếu này, trả lại số chưa nhận trên PO và trừ công nợ NCC tương ứng. Sau đó nhận lại với số đúng.`)) return;
     setMessage("");
-    const response = await fetch("/api/procurement", {
+    const response = await runBusy(() => fetch("/api/procurement", {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...getSessionHeaders() },
       body: JSON.stringify({ action: "CANCEL_RECEIPT", stockTransactionId: transaction.id }),
-    });
+    }));
     const payload = await response.json();
     if (!response.ok) {
       setMessage(payload.error || "Không huỷ được lần nhận");
@@ -1661,7 +1756,7 @@ export default function InventoryPage() {
       setMessage(lineErrors.join(" · "));
       return;
     }
-    const response = await fetch("/api/procurement", {
+    const response = await runBusy(() => fetch("/api/procurement", {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...getSessionHeaders() },
       body: JSON.stringify({
@@ -1671,7 +1766,7 @@ export default function InventoryPage() {
         receivedDate: grpoDate,
         purchaseCost: Number(grpoPurchaseCost || 0) || 0,
       }),
-    });
+    }));
     const payload = await response.json() as { error?: string; assetsCreated?: number; receipts?: Array<{ orderCode: string; warehouseCode: string; receiptCode: string | null }> };
     if (response.ok) {
       // Nói rõ hàng đã đi đâu: phiếu nhập kho cho hàng hoá, sổ tài sản cho dòng TOOL/ASSET.
@@ -1680,15 +1775,18 @@ export default function InventoryPage() {
       const parts = receipt ? [`phiếu ${receipt.receiptCode} vào kho ${receipt.warehouseCode}`] : [];
       if ((payload.assetsCreated || 0) > 0) parts.push(`${payload.assetsCreated} tài sản/CCDC đã vào sổ Tài sản & Khấu hao`);
       setMessage(`Đã nhận hàng từ ${orders.map((order) => order.code).join(", ")}: ${parts.join(" · ") || "cập nhật thành công"}.`);
+      notifySaved(receipt?.receiptCode ? `Đã ghi nhận phiếu ${receipt.receiptCode} (nhận hàng từ ${orders.map((order) => order.code).join(", ")}).` : `Đã nhận hàng từ ${orders.map((order) => order.code).join(", ")}.`);
       clearGrpoOrders();
       await loadData();
       await loadReceivablePOs();
+      afterStockSaved(receipt?.receiptCode);
     } else {
       setMessage(payload.error || "Không nhận được hàng từ PO");
     }
   };
 
-  const send = async (body: object, success: string) => {
+  const send = (body: object, success: string) => runBusy(() => sendNow(body, success));
+  const sendNow = async (body: object, success: string) => {
     setMessage("");
     let response: Response;
     try {
@@ -1719,18 +1817,21 @@ export default function InventoryPage() {
     // Máy chủ cần người dùng xác nhận (vd rã lại ngày đã rã): trả nguyên phản hồi để nơi gọi hỏi.
     if (response.status === 409 && payload?.needsRerunConfirm) return payload;
     setMessage(response.ok ? success : payload.error || "Không thực hiện được thao tác");
-    if (response.ok) await loadData();
+    if (response.ok) {
+      notifySaved(success);
+      await loadData();
+    }
     return response.ok ? payload : null;
   };
 
   /** Thao tác trên phiếu điều chuyển chờ duyệt: lỗi trả về cho hộp thoại tự hiện (lớp phủ che thông báo đầu trang). */
   const postTransferRequest = async (body: object, success: string): Promise<{ ok: boolean; error?: string }> => {
     try {
-      const response = await fetch("/api/inventory", {
+      const response = await runBusy(() => fetch("/api/inventory", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getSessionHeaders() },
         body: JSON.stringify(body),
-      });
+      }));
       const payload = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) return { ok: false, error: payload.error || `Máy chủ phản hồi lỗi ${response.status}` };
       setMessage(success);
@@ -1943,11 +2044,11 @@ export default function InventoryPage() {
       cogsRepost?: CogsRepostResult[];
     } | null = null;
     try {
-      response = await fetch("/api/inventory", {
+      response = await runBusy(() => fetch("/api/inventory", {
         method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json", ...getSessionHeaders() },
         body: JSON.stringify(body),
-      });
+      }));
       payload = await response.json();
     } catch {
       setMessage("Không lưu được định lượng: mất kết nối hoặc máy chủ phản hồi lỗi (rã lại nhiều ngày có thể quá thời gian chờ). Tải lại trang để kiểm tra.");
@@ -1977,8 +2078,11 @@ export default function InventoryPage() {
       ? ` Đã rã lại ${reruns.length} lần rã: ${reruns.map((rerun) => `${rerun.oldRunCode} → ${rerun.newRunCode || "gỡ bỏ (không còn doanh thu)"}`).join(", ")}. Nếu kỳ này đã bấm Tính giá vốn & giá thành thì bấm lại.`
       : "";
     const cogsText = cogsRepostMessage(payload?.cogsRepost);
-    setMessage(`${editing ? `Đã sửa định lượng ${editing.label}.` : "Đã tạo phiên bản định lượng mới."}${rerunText}${cogsText ? ` ${cogsText}` : ""}`);
-    if (editing) cancelRecipeEdit();
+    const savedText = editing ? `Đã sửa định lượng ${editing.label}.` : `Đã tạo phiên bản định lượng mới cho ${recipeForm.productCode}.`;
+    setMessage(`${savedText}${rerunText}${cogsText ? ` ${cogsText}` : ""}`);
+    notifySaved(savedText);
+    // Lưu xong form trở về trống để tạo món khác — trước đây tạo mới xong form giữ nguyên, nhìn như chưa lưu.
+    cancelRecipeEdit();
     await loadData();
   };
 
@@ -2206,6 +2310,7 @@ export default function InventoryPage() {
         return;
       }
       setMessage(`Đã sửa phiếu ${editingTransaction.code} và cập nhật lại tồn kho.`);
+      notifySaved(`Đã lưu phiếu ${editingTransaction.code}.`);
       setEditingTransaction(null);
       await loadData();
     } finally {
@@ -2333,6 +2438,21 @@ export default function InventoryPage() {
 
       <ModuleTabs active={active} onChange={switchTab} tabs={visibleTabs} />
       </StickyFilterBar>
+      {busy > 0 && (
+        <div className="fixed inset-0 z-[75] flex items-center justify-center bg-white/50 backdrop-blur-[1px]" aria-busy="true" role="status">
+          <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4 text-sm font-bold text-slate-700 shadow-xl">
+            <span className="h-5 w-5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+            Đang xử lý, vui lòng chờ…
+          </div>
+        </div>
+      )}
+      {toast && (
+        <div key={toast.seq} role="status" className="fixed right-4 top-4 z-[70] flex max-w-sm items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800 shadow-lg">
+          <span className="material-symbols-outlined text-xl text-emerald-600">check_circle</span>
+          <span className="flex-1">{toast.text}</span>
+          <button type="button" onClick={() => setToast(null)} className="text-emerald-600 hover:text-emerald-900" title="Đóng"><span className="material-symbols-outlined text-base">close</span></button>
+        </div>
+      )}
       {message && <p ref={messageRef} className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
       {sectionLoading && <p className="mb-4 px-4 py-2 rounded-lg border border-slate-200 bg-slate-50 text-xs text-slate-500">Đang tải dữ liệu của tab này...</p>}
 
@@ -2411,7 +2531,7 @@ export default function InventoryPage() {
         <div className="grid grid-cols-1 *:min-w-0 gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
           {canCreate && (
             <div className="space-y-4">
-            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "CREATE_ITEM", ...itemForm }, "Đã tạo mặt hàng."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "CREATE_ITEM", ...itemForm }, `Đã tạo mặt hàng ${itemForm.code}.`).then((saved) => { if (saved) setItemForm((form) => ({ ...form, code: "", name: "", category: "", goodsGroup: "", taxItemCode: "" })); }); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Thêm mặt hàng</h2>
               
               <Input label="Mã">
@@ -2548,18 +2668,18 @@ export default function InventoryPage() {
             <datalist id="goods-group-options">
               {goodsGroupOptions.map((group) => <option key={group.key} value={group.name} />)}
             </datalist>
-            <div className="px-5 pb-4 grid sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_200px_200px_170px] gap-3">
+            <div className="px-5 pb-4 grid sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_200px_200px_170px_auto] gap-3">
               <Input label="Tìm kiếm">
-                <input className="control" placeholder="Gõ mã, tên hoặc mã hàng thuế..." value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} />
+                <input className="control" placeholder="Gõ mã, tên hoặc mã hàng thuế..." value={itemListFilter.draft.search} onChange={(e) => itemListFilter.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") itemListFilter.apply(); }} />
               </Input>
               <Input label="Loại">
-                <select className="control" value={itemTypeFilter} onChange={(e) => setItemTypeFilter(e.target.value)}>
+                <select className="control" value={itemListFilter.draft.type} onChange={(e) => itemListFilter.update({ type: e.target.value })}>
                   <option value="ALL">Tất cả loại</option>
                   {WAREHOUSE_ITEM_TYPES.map((type) => <option key={type} value={type}>{inventoryItemTypeLabel(type)}</option>)}
                 </select>
               </Input>
               <Input label="Nhóm hàng hóa">
-                <select className="control" value={goodsGroupFilter} onChange={(e) => setGoodsGroupFilter(e.target.value)}>
+                <select className="control" value={itemListFilter.draft.goodsGroup} onChange={(e) => itemListFilter.update({ goodsGroup: e.target.value })}>
                   <option value="ALL">Tất cả nhóm hàng hóa</option>
                   <option value="MISSING">Chưa có nhóm hàng hóa</option>
                   {goodsGroupOptions.map((group) => (
@@ -2568,7 +2688,7 @@ export default function InventoryPage() {
                 </select>
               </Input>
               <Input label="Nhóm doanh thu">
-                <select className="control" value={revenueGroupFilter} onChange={(e) => setRevenueGroupFilter(e.target.value)}>
+                <select className="control" value={itemListFilter.draft.revenueGroup} onChange={(e) => itemListFilter.update({ revenueGroup: e.target.value })}>
                   <option value="ALL">Tất cả nhóm doanh thu</option>
                   <option value="MISSING">Chưa gán nhóm doanh thu</option>
                   <option value="INVALID">Đang gán sai (không phải nhóm món / ngoài danh mục)</option>
@@ -2578,12 +2698,13 @@ export default function InventoryPage() {
                 </select>
               </Input>
               <Input label="Trạng thái">
-                <select className="control" value={itemStatusFilter} onChange={(e) => setItemStatusFilter(e.target.value)}>
+                <select className="control" value={itemListFilter.draft.status} onChange={(e) => itemListFilter.update({ status: e.target.value })}>
                   <option value="ALL">Tất cả trạng thái</option>
                   <option value="ACTIVE">Đang dùng</option>
                   <option value="INACTIVE">Đang ngưng</option>
                 </select>
               </Input>
+              <FilterApplyButton dirty={itemListFilter.dirty} onApply={itemListFilter.apply} />
             </div>
             <p className="px-5 pb-2 text-[11px] text-slate-500">
               {filteredItems.length}/{data.items.length} mặt hàng
@@ -2881,7 +3002,7 @@ export default function InventoryPage() {
             </button>
           )}
           {canCreate && stockFormOpen && (
-            <form onSubmit={(e) => { e.preventDefault(); if (grpoActive) { void receiveFromPO(); return; } if (active === "inbound") { void submitManualInbound(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, ...(active === "outbound" && stockForm.transactionType === "XUAT_TRA_NCC" ? { referenceType: "PURCHASE_RETURN" } : {}), transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: "0", vatRate: "", vatAmount: "", discountRate: "", discountAmount: "", note: stockForm.lineNote }] }, "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); if (grpoActive) { void receiveFromPO(); return; } if (active === "inbound") { void submitManualInbound(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, ...(active === "outbound" && stockForm.transactionType === "XUAT_TRA_NCC" ? { referenceType: "PURCHASE_RETURN" } : {}), transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: "0", vatRate: "", vatAmount: "", discountRate: "", discountAmount: "", note: stockForm.lineNote }] }, "Đã ghi nhận phiếu xuất kho.").then((saved) => { if (saved) afterStockSaved(saved.code); }); }} className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
               <div className="flex items-start justify-between gap-3">
                 <h2 className="font-bold text-lg text-slate-800">{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}</h2>
                 <button type="button" onClick={() => setStockFormOpen(false)} className="icon-button" title="Đóng"><span className="material-symbols-outlined">close</span></button>
@@ -3240,36 +3361,36 @@ export default function InventoryPage() {
             )}
             <div className="px-5 pb-4 grid sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-3">
               <Input label="Tìm mã / tên hàng">
-                <input className="control" placeholder="Mã, tên hàng hoặc số phiếu..." value={flowSearch} onChange={(e) => setFlowSearch(e.target.value)} />
+                <input className="control" placeholder="Mã, tên hàng hoặc số phiếu..." value={flowFilter.draft.search} onChange={(e) => flowFilter.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") flowFilter.apply(); }} />
               </Input>
               <Input label="Từ ngày chứng từ">
-                <DateInput className="control" value={flowRange.from} onChange={(value) => setFlowRange({ ...flowRange, from: value })} />
+                <DateInput className="control" value={flowFilter.draft.from} onChange={(value) => flowFilter.update({ from: value })} />
               </Input>
               <Input label="Đến ngày chứng từ">
-                <DateInput className="control" value={flowRange.to} onChange={(value) => setFlowRange({ ...flowRange, to: value })} />
+                <DateInput className="control" value={flowFilter.draft.to} onChange={(value) => flowFilter.update({ to: value })} />
               </Input>
               <Input label="Nhà hàng">
-                <select className="control" value={flowBranch} onChange={(e) => { setFlowBranch(e.target.value); setFlowWarehouse("ALL"); }}>
+                <select className="control" value={flowFilter.draft.branch} onChange={(e) => flowFilter.update({ branch: e.target.value, warehouse: "ALL" })}>
                   <option value="ALL">Tất cả nhà hàng</option>
                   {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                 </select>
               </Input>
               <Input label="Kho">
-                <select className="control" value={flowWarehouse} onChange={(e) => setFlowWarehouse(e.target.value)}>
+                <select className="control" value={flowFilter.draft.warehouse} onChange={(e) => flowFilter.update({ warehouse: e.target.value })}>
                   <option value="ALL">Tất cả kho</option>
-                  {flowWarehouseOptions.map((warehouse) => (
-                    <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}{flowBranch === "ALL" && warehouse.branch ? ` · ${storeLabel(warehouse.branch)}` : ""}</option>
+                  {warehouseOptions.filter((warehouse) => flowFilter.draft.branch === "ALL" || warehouse.branch === flowFilter.draft.branch || !warehouse.branch).map((warehouse) => (
+                    <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}{flowFilter.draft.branch === "ALL" && warehouse.branch ? ` · ${storeLabel(warehouse.branch)}` : ""}</option>
                   ))}
                 </select>
               </Input>
               <Input label={active === "inbound" ? "Loại nhập" : "Loại xuất"}>
                 {active === "inbound" ? (
-                  <select className="control" value={inboundType} onChange={(e) => setInboundType(e.target.value)}>
+                  <select className="control" value={flowFilter.draft.inType} onChange={(e) => flowFilter.update({ inType: e.target.value })}>
                     <option value="ALL">Tất cả loại nhập</option>
                     {inboundTypes.filter((type) => (inboundView === "purchase" ? type === "NHAP_MUA" : type !== "NHAP_MUA") && (canSeeExplosion || !PRODUCTION_TYPES.includes(type))).map((type) => <option key={type} value={type}>{movementTypeLabel(type)}</option>)}
                   </select>
                 ) : (
-                  <select className="control" value={outboundType} onChange={(e) => setOutboundType(e.target.value)}>
+                  <select className="control" value={flowFilter.draft.outType} onChange={(e) => flowFilter.update({ outType: e.target.value })}>
                     <option value="ALL">Tất cả loại xuất</option>
                     {outboundTypes.filter((type) => canSeeExplosion || !PRODUCTION_TYPES.includes(type)).map((type) => <option key={type} value={type}>{movementTypeLabel(type)}</option>)}
                   </select>
@@ -3278,8 +3399,8 @@ export default function InventoryPage() {
               <Input label={active === "inbound" ? "Nhà cung cấp" : "Đối tác"}>
                 {/* Gõ tên / mã để tìm NCC (khách 21/10/2026: danh sách NCC dài, cuộn tìm cực). */}
                 <SearchableSelect
-                  value={flowPartner}
-                  onChange={(value) => setFlowPartner(value || "ALL")}
+                  value={flowFilter.draft.partner}
+                  onChange={(value) => flowFilter.update({ partner: value || "ALL" })}
                   searchPlaceholder={active === "inbound" ? "Gõ tên hoặc mã nhà cung cấp..." : "Gõ tên hoặc mã đối tác..."}
                   options={[
                     { value: "ALL", label: active === "inbound" ? "Tất cả nhà cung cấp" : "Tất cả đối tác" },
@@ -3288,6 +3409,7 @@ export default function InventoryPage() {
                   ]}
                 />
               </Input>
+              <FilterApplyButton dirty={flowFilter.dirty} onApply={flowFilter.apply} />
             </div>
             {showSaleLines ? (
             <Table
@@ -3463,7 +3585,12 @@ export default function InventoryPage() {
                 // Trừ kho xuất theo NGÀY GIỜ lên phiếu (26/10/2026): để trống giờ mà lập cho hôm nay thì lấy giờ hiện tại.
                 transactionDate: vnDateTimeValue(transferForm.transactionDate, transferForm.transactionTime || (transferForm.transactionDate === today() ? new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(11, 16) : "")),
                 lines: transferRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, inputQuantity: row.quantity, inputUnitCode: row.unitCode || undefined })),
-              }, "Đã gửi phiếu điều chuyển — đã trừ kho xuất, chờ kho nhận duyệt mới cộng vào kho nhận.");
+              }, "Đã gửi phiếu điều chuyển — đã trừ kho xuất, chờ kho nhận duyệt mới cộng vào kho nhận.").then((saved) => {
+                if (!saved) return;
+                // Gửi xong khung trở về phiếu mới trống để lập tiếp.
+                setTransferRows([{ itemId: "", quantity: "1", unitCode: "" }]);
+                setTransferForm((form) => ({ ...form, transactionTime: "", referenceCode: "", note: "" }));
+              });
             }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Điều chuyển hàng hóa</h2>
 
@@ -3562,36 +3689,37 @@ export default function InventoryPage() {
             {/* Khung danh sách đứng cạnh form nên hẹp: 2 cột, màn rộng mới trải 4 cột. */}
             <div className="px-5 pb-4 grid grid-cols-2 2xl:grid-cols-3 gap-3">
               <Input label="Tìm mã / tên hàng">
-                <input className="control" placeholder="Mã, tên hàng hoặc số phiếu..." value={transferSearch} onChange={(e) => setTransferSearch(e.target.value)} />
+                <input className="control" placeholder="Mã, tên hàng hoặc số phiếu..." value={transferFilter.draft.search} onChange={(e) => transferFilter.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") transferFilter.apply(); }} />
               </Input>
               <Input label="Cửa hàng">
-                <select className="control" value={transferStore} onChange={(e) => setTransferStore(e.target.value)}>
+                <select className="control" value={transferFilter.draft.store} onChange={(e) => transferFilter.update({ store: e.target.value })}>
                   <option value="ALL">Tất cả cửa hàng</option>
                   {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                 </select>
               </Input>
               <Input label="Từ ngày chứng từ">
-                <DateInput className="control" value={flowRange.from} onChange={(value) => setFlowRange({ ...flowRange, from: value })} />
+                <DateInput className="control" value={transferFilter.draft.from} onChange={(value) => transferFilter.update({ from: value })} />
               </Input>
               <Input label="Đến ngày chứng từ">
-                <DateInput className="control" value={flowRange.to} onChange={(value) => setFlowRange({ ...flowRange, to: value })} />
+                <DateInput className="control" value={transferFilter.draft.to} onChange={(value) => transferFilter.update({ to: value })} />
               </Input>
               <Input label="Kho xuất">
-                <select className="control" value={transferFromWarehouse} onChange={(e) => setTransferFromWarehouse(e.target.value)}>
+                <select className="control" value={transferFilter.draft.fromWarehouse} onChange={(e) => transferFilter.update({ fromWarehouse: e.target.value })}>
                   <option value="ALL">Tất cả kho xuất</option>
-                  {transferWarehouseOptions((row) => row.warehouseCode, transferFromWarehouse).map((option) => (
+                  {transferWarehouseOptions((row) => row.warehouseCode, transferFilter.draft.fromWarehouse).map((option) => (
                     <option key={option.code} value={option.code}>{option.name}</option>
                   ))}
                 </select>
               </Input>
               <Input label="Kho nhận">
-                <select className="control" value={transferToWarehouse} onChange={(e) => setTransferToWarehouse(e.target.value)}>
+                <select className="control" value={transferFilter.draft.toWarehouse} onChange={(e) => transferFilter.update({ toWarehouse: e.target.value })}>
                   <option value="ALL">Tất cả kho nhận</option>
-                  {transferWarehouseOptions((row) => row.toWarehouseCode, transferToWarehouse).map((option) => (
+                  {transferWarehouseOptions((row) => row.toWarehouseCode, transferFilter.draft.toWarehouse).map((option) => (
                     <option key={option.code} value={option.code}>{option.name}</option>
                   ))}
                 </select>
               </Input>
+              <FilterApplyButton dirty={transferFilter.dirty} onApply={transferFilter.apply} />
             </div>
             <Table
               headers={[
@@ -4077,17 +4205,17 @@ export default function InventoryPage() {
               <div className="px-5 pb-4 flex flex-wrap items-end gap-3">
                 <div className="flex-1 min-w-[220px] max-w-sm">
                   <Input label="Tìm món">
-                    <input className="control" placeholder="Gõ mã hoặc tên món, mã nguyên liệu..." value={recipeSearch} onChange={(e) => setRecipeSearch(e.target.value)} />
+                    <input className="control" placeholder="Gõ mã hoặc tên món, mã nguyên liệu..." value={recipeListFilter.draft.search} onChange={(e) => recipeListFilter.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") recipeListFilter.apply(); }} />
                   </Input>
                 </div>
                 <div className="flex-1 min-w-[220px] max-w-sm">
                   <Input label="Lọc nguyên liệu (chỉ hiện dòng khớp)">
-                    <input className="control" placeholder="Mã / tên nguyên liệu, BTP..." value={recipeIngredientSearch} onChange={(e) => setRecipeIngredientSearch(e.target.value)} />
+                    <input className="control" placeholder="Mã / tên nguyên liệu, BTP..." value={recipeListFilter.draft.ingredient} onChange={(e) => recipeListFilter.update({ ingredient: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") recipeListFilter.apply(); }} />
                   </Input>
                 </div>
                 <div className="w-48">
                   <Input label="Cửa hàng">
-                    <select className="control" value={recipeStoreFilter} onChange={(e) => setRecipeStoreFilter(e.target.value)} title="Bản riêng của cửa hàng; món chưa có bản riêng thì hiện bản dùng chung (cửa hàng đang dùng bản đó)">
+                    <select className="control" value={recipeListFilter.draft.store} onChange={(e) => recipeListFilter.update({ store: e.target.value })} title="Bản riêng của cửa hàng; món chưa có bản riêng thì hiện bản dùng chung (cửa hàng đang dùng bản đó)">
                       <option value="ALL">Tất cả cửa hàng</option>
                       {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                     </select>
@@ -4095,7 +4223,7 @@ export default function InventoryPage() {
                 </div>
                 <div className="w-48">
                   <Input label="Bếp / Bar">
-                    <select className="control" value={recipeKitchenFilter} onChange={(e) => setRecipeKitchenFilter(e.target.value)} title="Món theo nhóm doanh thu gán ở tab Mặt hàng (chưa gán thì theo file doanh thu POS); BTP theo món đang dùng nó">
+                    <select className="control" value={recipeListFilter.draft.kitchen} onChange={(e) => recipeListFilter.update({ kitchen: e.target.value })} title="Món theo nhóm doanh thu gán ở tab Mặt hàng (chưa gán thì theo file doanh thu POS); BTP theo món đang dùng nó">
                       <option value="ALL">Tất cả bếp / bar</option>
                       <option value="FOOD">Bếp</option>
                       <option value="DRINK">Bar</option>
@@ -4105,9 +4233,10 @@ export default function InventoryPage() {
                 </div>
                 <div className="w-44">
                   <Input label="Áp dụng trong tháng">
-                    <MonthInput className="control" value={recipeMonth} onChange={setRecipeMonth} />
+                    <MonthInput className="control" value={recipeListFilter.draft.month} onChange={(month) => recipeListFilter.update({ month })} />
                   </Input>
                 </div>
+                <FilterApplyButton dirty={recipeListFilter.dirty} onApply={recipeListFilter.apply} />
                 <button type="button" className="secondary-button !min-h-10" onClick={() => void exportRecipeVersionsFlat()} title="Mỗi nguyên liệu một dòng, thông tin món lặp lại ở từng dòng — theo bộ lọc đang xem">
                   <span className="material-symbols-outlined text-lg">download</span>Xuất Excel
                 </button>
@@ -4235,7 +4364,7 @@ export default function InventoryPage() {
               <div className="px-5 pb-4 flex flex-wrap items-end gap-3">
                 <div className="w-48">
                   <Input label="Tháng">
-                    <MonthInput className="control" value={costMonth} onChange={setCostMonth} />
+                    <MonthInput className="control" value={costListFilter.draft.month} onChange={(month) => costListFilter.update({ month })} />
                   </Input>
                 </div>
                 {costMonth && (
@@ -4243,7 +4372,7 @@ export default function InventoryPage() {
                 )}
                 <div className="w-52">
                   <Input label="Nhóm hàng">
-                    <select className="control" value={costGroupFilter} onChange={(e) => setCostGroupFilter(e.target.value)}>
+                    <select className="control" value={costListFilter.draft.group} onChange={(e) => costListFilter.update({ group: e.target.value })}>
                       <option value="ALL">Tất cả nhóm</option>
                       <option value="FINISHED">Thành phẩm (FINISHED)</option>
                       <option value="SEMI_FINISHED">Bán thành phẩm (SEMI_FINISHED)</option>
@@ -4252,7 +4381,7 @@ export default function InventoryPage() {
                 </div>
                 <div className="w-52">
                   <Input label="Cửa hàng">
-                    <select className="control" value={costStoreFilter} onChange={(e) => setCostStoreFilter(e.target.value)}>
+                    <select className="control" value={costListFilter.draft.store} onChange={(e) => costListFilter.update({ store: e.target.value })}>
                       <option value="ALL">Tất cả cửa hàng</option>
                       {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                     </select>
@@ -4260,7 +4389,7 @@ export default function InventoryPage() {
                 </div>
                 <div className="w-52">
                   <Input label="Bếp / Bar">
-                    <select className="control" value={costKitchenFilter} onChange={(e) => setCostKitchenFilter(e.target.value)} title="Theo nhóm doanh thu gán ở tab Mặt hàng; mặt hàng chưa gán thì theo cột nguồn doanh thu (Đồ ăn / Đồ uống) trong file doanh thu POS">
+                    <select className="control" value={costListFilter.draft.kitchen} onChange={(e) => costListFilter.update({ kitchen: e.target.value })} title="Theo nhóm doanh thu gán ở tab Mặt hàng; mặt hàng chưa gán thì theo cột nguồn doanh thu (Đồ ăn / Đồ uống) trong file doanh thu POS">
                       <option value="ALL">Tất cả bếp / bar</option>
                       <option value="FOOD">Bếp (nhóm doanh thu đồ ăn)</option>
                       <option value="DRINK">Bar (nhóm doanh thu đồ uống)</option>
@@ -4270,9 +4399,10 @@ export default function InventoryPage() {
                 </div>
                 <div className="w-64">
                   <Input label="Tìm sản phẩm">
-                    <input className="control" placeholder="Mã / tên sản phẩm..." value={costSearch} onChange={(e) => setCostSearch(e.target.value)} />
+                    <input className="control" placeholder="Mã / tên sản phẩm..." value={costListFilter.draft.search} onChange={(e) => costListFilter.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") costListFilter.apply(); }} />
                   </Input>
                 </div>
+                <FilterApplyButton dirty={costListFilter.dirty} onApply={costListFilter.apply} />
                 <p className="w-full text-[11px] text-slate-500 leading-relaxed">
                   <b>Đổi giá bán / định lượng:</b> sang tab nhỏ <b>Định lượng</b>, bấm nút <b>Sao chép</b> ở phiên bản đang dùng → nhập giá bán mới và
                   <b> ngày áp dụng mới</b> rồi lưu. Phiên bản cũ vẫn giữ cho các ngày trước; trong tháng đổi mấy lần thì tạo mấy phiên bản. Chọn
@@ -4637,7 +4767,7 @@ export default function InventoryPage() {
       {active === "production" && (
         <div className="grid grid-cols-1 *:min-w-0 lg:grid-cols-[380px_minmax(0,1fr)] gap-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "PRODUCE_SEMI_FINISHED", ...productionForm, warehouseCode: productionWarehouseCode, toWarehouseCode: productionToWarehouseCode }, "Đã ghi nhận chế biến bán thành phẩm."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "PRODUCE_SEMI_FINISHED", ...productionForm, warehouseCode: productionWarehouseCode, toWarehouseCode: productionToWarehouseCode }, "Đã ghi nhận chế biến bán thành phẩm.").then((saved) => { if (saved) setProductionForm((form) => ({ ...form, referenceCode: "", note: "" })); }); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Chế biến bán thành phẩm (thủ công)</h2>
               <Input label="Mã bán thành phẩm">
                 <input data-input-kind="code" className="control" value={productionForm.productCode} onChange={(e) => setProductionForm({ ...productionForm, productCode: e.target.value })} />
@@ -4724,29 +4854,30 @@ export default function InventoryPage() {
             {/* Thêm cột Trị giá cùng lúc với dòng CỘNG: bảng không có cột tiền nào thì dòng
                 tổng chẳng có gì để cộng. Trị giá = giá trị hàng luân chuyển của phiếu. */}
             <div className="px-5 pb-3 flex flex-wrap items-end gap-3">
-              <DateRangeFilter label="Ngày chứng từ" value={flowRange} onChange={setFlowRange} />
+              <DateRangeFilter label="Ngày chứng từ" value={{ from: productionListFilter.draft.from, to: productionListFilter.draft.to }} onChange={(range) => productionListFilter.update(range)} />
               <label className="text-xs font-bold text-slate-600">
                 Nhà hàng
-                <select className="control mt-1 w-44" value={productionFilter.branchCode}
-                  onChange={(e) => setProductionFilter({ ...productionFilter, branchCode: e.target.value, warehouseCode: "" })}>
+                <select className="control mt-1 w-44" value={productionListFilter.draft.branchCode}
+                  onChange={(e) => productionListFilter.update({ branchCode: e.target.value, warehouseCode: "" })}>
                   {visibleStoreOptions(user).length > 1 && <option value="ALL">Tất cả nhà hàng</option>}
                   {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                 </select>
               </label>
               <label className="text-xs font-bold text-slate-600">
                 Kho
-                <select className="control mt-1 w-48" value={productionFilter.warehouseCode} onChange={(e) => setProductionFilter({ ...productionFilter, warehouseCode: e.target.value })}>
+                <select className="control mt-1 w-48" value={productionListFilter.draft.warehouseCode} onChange={(e) => productionListFilter.update({ warehouseCode: e.target.value })}>
                   <option value="">Tất cả kho</option>
                   {data.warehouses
-                    .filter((warehouse) => productionFilter.branchCode === "ALL" || !warehouse.branch || warehouse.branch.toUpperCase() === productionFilter.branchCode.toUpperCase())
+                    .filter((warehouse) => productionListFilter.draft.branchCode === "ALL" || !warehouse.branch || warehouse.branch.toUpperCase() === productionListFilter.draft.branchCode.toUpperCase())
                     .map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
                 </select>
               </label>
               <label className="text-xs font-bold text-slate-600">
                 Tìm mặt hàng / số phiếu
-                <input className="control mt-1 w-64" value={productionFilter.search} placeholder="Mã hoặc tên hàng, RA-2026-…"
-                  onChange={(e) => setProductionFilter({ ...productionFilter, search: e.target.value })} />
+                <input className="control mt-1 w-64" value={productionListFilter.draft.search} placeholder="Mã hoặc tên hàng, RA-2026-…"
+                  onChange={(e) => productionListFilter.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") productionListFilter.apply(); }} />
               </label>
+              <FilterApplyButton dirty={productionListFilter.dirty} onApply={productionListFilter.apply} />
               <p className="text-xs text-slate-500">{productionTransactions.length > 300 ? `Có ${productionTransactions.length} phiếu, bảng hiện 300 phiếu mới nhất — dòng CỘNG tính đủ.` : ""}</p>
             </div>
             <Table
@@ -5243,7 +5374,9 @@ export default function InventoryPage() {
             <form onSubmit={(e) => {
               e.preventDefault();
               if (wasteForm.mode === "RECIPE") {
-                void send({ action: "RECORD_WASTE", ...wasteForm }, "Đã xuất hủy nguyên liệu theo định lượng món.");
+                void send({ action: "RECORD_WASTE", ...wasteForm }, "Đã xuất hủy nguyên liệu theo định lượng món.").then((saved) => {
+                  if (saved) setWasteForm((form) => ({ ...form, productQuantity: "1", referenceCode: "", note: "" }));
+                });
                 return;
               }
               void send({
@@ -5251,7 +5384,11 @@ export default function InventoryPage() {
                 ...wasteForm,
                 recipeId: "",
                 lines: wasteRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, inputQuantity: row.quantity, inputUnitCode: row.unitCode || undefined, note: row.note })),
-              }, "Đã ghi nhận phiếu xuất hủy.");
+              }, "Đã ghi nhận phiếu xuất hủy.").then((saved) => {
+                if (!saved) return;
+                setWasteRows([{ itemId: "", quantity: "1", unitCode: "", note: "" }]);
+                setWasteForm((form) => ({ ...form, referenceCode: "", note: "" }));
+              });
             }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Ghi nhận hủy hàng</h2>
 
@@ -5369,9 +5506,9 @@ export default function InventoryPage() {
                 exportFileName={`hang_huy_nhieu_nhat${wasteReportFilter.from ? `_${wasteReportFilter.from}` : ""}`}
               />
               <div className="px-5 pb-4 grid grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-3">
-                <DateRangeFilter label="Ngày hủy" value={{ from: wasteReportFilter.from, to: wasteReportFilter.to }} onChange={(range) => setWasteReportFilter({ ...wasteReportFilter, ...range })} className="col-span-2 2xl:col-span-6" />
+                <DateRangeFilter label="Ngày hủy" value={{ from: wasteReportDraft.draft.from, to: wasteReportDraft.draft.to }} onChange={(range) => wasteReportDraft.update(range)} className="col-span-2 2xl:col-span-6" />
                 <Input label="Loại hủy">
-                  <select className="control" value={wasteReportFilter.subType} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, subType: e.target.value })}>
+                  <select className="control" value={wasteReportDraft.draft.subType} onChange={(e) => wasteReportDraft.update({ subType: e.target.value })}>
                     <option value="ALL">Tất cả loại hủy</option>
                     <option value="HET_HAN_SU_DUNG">Hết hạn sử dụng</option>
                     <option value="KHONG_DAM_BAO_CHAT_LUONG">Không đảm bảo chất lượng</option>
@@ -5379,27 +5516,28 @@ export default function InventoryPage() {
                   </select>
                 </Input>
                 <Input label="Nhà hàng">
-                  <select className="control" value={wasteReportFilter.branch} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, branch: e.target.value })}>
+                  <select className="control" value={wasteReportDraft.draft.branch} onChange={(e) => wasteReportDraft.update({ branch: e.target.value })}>
                     <option value="ALL">Tất cả nhà hàng</option>
                     {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                   </select>
                 </Input>
                 <Input label="Loại hàng">
-                  <select className="control" value={wasteReportFilter.itemType} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, itemType: e.target.value })}>
+                  <select className="control" value={wasteReportDraft.draft.itemType} onChange={(e) => wasteReportDraft.update({ itemType: e.target.value })}>
                     <option value="ALL">Tất cả loại</option>
                     {WAREHOUSE_ITEM_TYPES.map((type) => <option key={type} value={type}>{inventoryItemTypeLabel(type)}</option>)}
                   </select>
                 </Input>
                 <Input label="Nhóm hàng hóa">
-                  <select className="control" value={wasteReportFilter.goodsGroup} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, goodsGroup: e.target.value })}>
+                  <select className="control" value={wasteReportDraft.draft.goodsGroup} onChange={(e) => wasteReportDraft.update({ goodsGroup: e.target.value })}>
                     <option value="ALL">Tất cả nhóm</option>
                     <option value="MISSING">Chưa có nhóm</option>
                     {wasteGoodsGroups.map(([key, name]) => <option key={key} value={key}>{name}</option>)}
                   </select>
                 </Input>
                 <Input label="Tìm mã / tên">
-                  <input className="control" placeholder="Mã hoặc tên hàng..." value={wasteReportFilter.search} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, search: e.target.value })} />
+                  <input className="control" placeholder="Mã hoặc tên hàng..." value={wasteReportDraft.draft.search} onChange={(e) => wasteReportDraft.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") wasteReportDraft.apply(); }} />
                 </Input>
+                <FilterApplyButton dirty={wasteReportDraft.dirty} onApply={wasteReportDraft.apply} />
               </div>
               {wasteReportRows === null && <p className="px-5 pb-3 text-xs text-slate-500">Đang tải...</p>}
               <Table

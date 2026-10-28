@@ -14,6 +14,8 @@ import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSIO
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { money as formatVndMoney } from "@/lib/format-number";
 import { DocLink } from "@/components/DocLink";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 
 type ReallocationLine = {
   id: string;
@@ -48,9 +50,10 @@ export default function CostReallocationsPage() {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<Reallocation[]>([]);
   const [pnlItems, setPnlItems] = useState<PnlItemOption[]>([]);
-  const [branchScope, setBranchScope] = useState("ALL");
-  /** Lọc theo ngày chứng từ (khách yêu cầu 03/10/2026). */
-  const [dateRange, setDateRange] = useState<DateRange>({ from: "", to: "" });
+  /** Lọc theo cửa hàng + ngày chứng từ (khách yêu cầu 03/10/2026). Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026). */
+  const filters = useAppliedFilters<{ branchScope: string; dateRange: DateRange }>({ branchScope: "ALL", dateRange: { from: "", to: "" } });
+  const { applyNow: applyFiltersNow } = filters;
+  const { branchScope, dateRange } = filters.applied;
   const [message, setMessage] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -82,13 +85,13 @@ export default function CostReallocationsPage() {
     if (!menu || !canAccessMenu(session.role, menu)) return void router.push("/");
     window.setTimeout(() => {
       setUser(session);
-      setBranchScope(resolveInitialBranchScope(session));
+      applyFiltersNow({ branchScope: resolveInitialBranchScope(session) });
       setLoading(false);
     }, 0);
     void fetch("/api/master-data?type=PNL_ITEM&status=ACTIVE")
       .then((response) => response.ok ? response.json() : [])
       .then((data: PnlItemOption[]) => setPnlItems(data));
-  }, [router]);
+  }, [router, applyFiltersNow]);
 
   const loadRows = useCallback(async () => {
     const query = new URLSearchParams({ branchCode: branchScope });
@@ -216,7 +219,6 @@ export default function CostReallocationsPage() {
               + Lập phiếu chia sẻ chi phí
             </button>
           )}
-          <BranchScopeSelect session={user} value={branchScope} onChange={setBranchScope} />
         </div>
       </div>
     </header>
@@ -235,7 +237,9 @@ export default function CostReallocationsPage() {
           <ExportExcelButton fileName="phieu_chia_se_chi_phi_noi_bo" sheetName="Chia se chi phi" targetId="cost-reallocation-table" />
         </div>
         <div className="flex flex-wrap items-end gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
-          <DateRangeFilter label="Ngày chứng từ" value={dateRange} onChange={setDateRange} />
+          <BranchScopeSelect session={user} value={filters.draft.branchScope} onChange={(value) => filters.update({ branchScope: value })} />
+          <DateRangeFilter label="Ngày chứng từ" value={filters.draft.dateRange} onChange={(value) => filters.update({ dateRange: value })} />
+          <FilterApplyButton dirty={filters.dirty} onApply={filters.apply} />
           <p className="ml-auto text-xs text-slate-500">{rows.length} phiếu · tổng {money(rows.reduce((sum, row) => sum + row.totalAmount, 0))} đ</p>
         </div>
         <div id="cost-reallocation-table" className="overflow-x-auto">

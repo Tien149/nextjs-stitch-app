@@ -18,6 +18,8 @@ import { visibleStoreOptions } from "@/lib/branch-labels";
 import { money as formatVndMoney } from "@/lib/format-number";
 import { DocLink } from "@/components/DocLink";
 import { focusRowClass, readDocFocus, scrollToDoc } from "@/lib/doc-focus";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 
 /** Nguồn sổ chi tiết mà mã là chứng từ ở màn khác — bấm sang đúng phiếu. */
 const linkedLedgerSources = new Set(["VOUCHER", "DEPOSIT", "BANK_STATEMENT", "PURCHASE_ORDER"]);
@@ -228,15 +230,18 @@ export default function DebtsPage() {
   const [debtType, setDebtType] = useState<"ALL" | "RECEIVABLE" | "PAYABLE">("ALL");
   const [partnerGroup, setPartnerGroup] = useState<"ALL" | "EXTERNAL" | "INTERNAL">("ALL");
   const [agingFilter, setAgingFilter] = useState<"ALL" | "OVERDUE" | "DUE_7" | "OPEN">("ALL");
-  /** Tìm đối tác theo tên/mã (lọc tại chỗ) và khoảng thời gian (server tính lại Đầu kỳ / phát sinh). */
-  const [partnerQuery, setPartnerQuery] = useState("");
-  const [dateRange, setDateRange] = useState({ fromDate: "", toDate: "" });
-  /** Đối tác đang mở ledger, giữ trong ref để đổi khoảng ngày thì tải lại ledger mà không đóng. */
-  const openLedgerPartnerRef = useRef("");
+  /**
+   * Tìm đối tác theo tên/mã (lọc tại chỗ), khoảng thời gian (server tính lại Đầu kỳ / phát sinh), cửa hàng
+   * và đối tác đang mở sổ chi tiết (ledgerPartner — đổi khoảng ngày thì tải lại sổ mà không đóng).
+   * Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026).
+   */
+  const filters = useAppliedFilters({ branchScope: "ALL", partnerQuery: "", fromDate: "", toDate: "", ledgerPartner: "" });
+  const { applyNow: applyFiltersNow } = filters;
+  const { branchScope, partnerQuery, ledgerPartner } = filters.applied;
+  const dateRange = { fromDate: filters.applied.fromDate, toDate: filters.applied.toDate };
   /** Khoản được trỏ tới từ link chứng từ (?partner=&code=): mở sổ chi tiết đối tác, tô sáng dòng. */
   const [focusCode, setFocusCode] = useState("");
   const focusHandledRef = useRef(false);
-  const [branchScope, setBranchScope] = useState("ALL");
   const [message, setMessage] = useState("");
   /** Khoản công nợ đang sửa trong hộp thoại; null nghĩa là hộp thoại đang đóng. */
   const [editingDebt, setEditingDebt] = useState<LedgerRow | null>(null);
@@ -456,7 +461,7 @@ export default function DebtsPage() {
     }
     window.setTimeout(() => {
       setUser(session);
-      setBranchScope(resolveInitialBranchScope(session));
+      applyFiltersNow({ branchScope: resolveInitialBranchScope(session) });
       setLoading(false);
     }, 0);
     // Tên + địa chỉ nhà hàng cho đầu file đối chiếu công nợ.
@@ -466,7 +471,7 @@ export default function DebtsPage() {
     void fetch("/api/branding")
       .then((response) => (response.ok ? response.json() : {}))
       .then((data: { name?: string }) => setBrandName(data.name || ""));
-  }, [router]);
+  }, [router, applyFiltersNow]);
 
   const rangeQuery = `${dateRange.fromDate ? `&fromDate=${dateRange.fromDate}` : ""}${dateRange.toDate ? `&toDate=${dateRange.toDate}` : ""}`;
 
@@ -476,27 +481,27 @@ export default function DebtsPage() {
   }, [branchScope, rangeQuery]);
 
   const loadLedger = useCallback(async (partnerCode: string) => {
-    openLedgerPartnerRef.current = partnerCode;
     const response = await fetch(`/api/debts?partnerCode=${encodeURIComponent(partnerCode)}&branchCode=${encodeURIComponent(branchScope)}${rangeQuery}`);
     if (response.ok) setLedger((await response.json()) as LedgerDetail);
   }, [branchScope, rangeQuery]);
 
   const closeLedger = () => {
-    openLedgerPartnerRef.current = "";
-    setLedger(null);
+    applyFiltersNow({ ledgerPartner: "" });
   };
 
   useEffect(() => {
-    if (!loading) {
-      window.setTimeout(() => {
-        void loadRows();
-        // Đổi cửa hàng / khoảng ngày: ledger đang mở tải lại theo bộ lọc mới thay vì bị đóng,
-        // để người dùng đổi kỳ mà vẫn nhìn cùng một đối tác.
-        if (openLedgerPartnerRef.current) void loadLedger(openLedgerPartnerRef.current);
-        else setLedger(null);
-      }, 0);
-    }
-  }, [loading, loadRows, loadLedger]);
+    if (!loading) window.setTimeout(() => void loadRows(), 0);
+  }, [loading, loadRows]);
+
+  useEffect(() => {
+    if (loading) return;
+    // Đổi cửa hàng / khoảng ngày: ledger đang mở tải lại theo bộ lọc mới thay vì bị đóng,
+    // để người dùng đổi kỳ mà vẫn nhìn cùng một đối tác.
+    window.setTimeout(() => {
+      if (ledgerPartner) void loadLedger(ledgerPartner);
+      else setLedger(null);
+    }, 0);
+  }, [loading, loadLedger, ledgerPartner]);
 
   useEffect(() => {
     if (loading || focusHandledRef.current) return;
@@ -507,10 +512,10 @@ export default function DebtsPage() {
     window.setTimeout(() => {
       setFocusCode(focus.code);
       setView("detail");
-      void loadLedger(partner);
+      applyFiltersNow({ ledgerPartner: partner });
       scrollToDoc(focus.code);
     }, 0);
-  }, [loading, loadLedger]);
+  }, [loading, applyFiltersNow]);
 
   const money = (value: number) => formatVndMoney(value);
 
@@ -720,7 +725,7 @@ export default function DebtsPage() {
 
   const openPartnerDetail = (partnerCode: string) => {
     setView("detail");
-    void loadLedger(partnerCode);
+    applyFiltersNow({ ledgerPartner: partnerCode });
   };
 
   const searchTerm = normalizeSearch(partnerQuery.trim());
@@ -773,7 +778,7 @@ export default function DebtsPage() {
               Chuyển công nợ
             </button>
           )}
-          <BranchScopeSelect session={user} value={branchScope} onChange={setBranchScope} />
+          <BranchScopeSelect session={user} value={filters.draft.branchScope} onChange={(value) => filters.update({ branchScope: value })} />
           <p className="hidden text-xs font-bold text-slate-500 sm:block">{user?.role}</p>
         </div>
       </header>
@@ -852,14 +857,15 @@ export default function DebtsPage() {
                 <span className="material-symbols-outlined text-base text-slate-400">search</span>
                 <input
                   type="text"
-                  value={partnerQuery}
-                  onChange={(event) => setPartnerQuery(event.target.value)}
+                  value={filters.draft.partnerQuery}
+                  onChange={(event) => filters.update({ partnerQuery: event.target.value })}
+                  onKeyDown={(event) => { if (event.key === "Enter") filters.apply(); }}
                   placeholder="Tên hoặc mã đối tác, gõ không dấu cũng được"
                   aria-label="Tìm đối tác"
                   className="w-full bg-transparent text-sm font-normal outline-none"
                 />
-                {partnerQuery && (
-                  <button type="button" onClick={() => setPartnerQuery("")} aria-label="Xoá ô tìm" className="text-slate-400 hover:text-slate-700">
+                {filters.draft.partnerQuery && (
+                  <button type="button" onClick={() => applyFiltersNow({ partnerQuery: "" })} aria-label="Xoá ô tìm" className="text-slate-400 hover:text-slate-700">
                     <span className="material-symbols-outlined text-base">close</span>
                   </button>
                 )}
@@ -868,22 +874,20 @@ export default function DebtsPage() {
             <label className="text-[11px] font-bold text-slate-600">
               Từ ngày
               <div className="mt-1 w-[150px]">
-                <DateInput value={dateRange.fromDate} onChange={(value) => setDateRange((current) => ({ ...current, fromDate: value }))} ariaLabel="Công nợ từ ngày" className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal" />
+                <DateInput value={filters.draft.fromDate} onChange={(value) => filters.update({ fromDate: value })} ariaLabel="Công nợ từ ngày" className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal" />
               </div>
             </label>
             <label className="text-[11px] font-bold text-slate-600">
               Đến ngày
               <div className="mt-1 w-[150px]">
-                <DateInput value={dateRange.toDate} onChange={(value) => setDateRange((current) => ({ ...current, toDate: value }))} ariaLabel="Công nợ đến ngày" className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal" />
+                <DateInput value={filters.draft.toDate} onChange={(value) => filters.update({ toDate: value })} ariaLabel="Công nợ đến ngày" className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal" />
               </div>
             </label>
-            {(rangeActive || partnerQuery) && (
+            <FilterApplyButton dirty={filters.dirty} onApply={filters.apply} />
+            {(rangeActive || partnerQuery || filters.draft.partnerQuery || filters.draft.fromDate || filters.draft.toDate) && (
               <button
                 type="button"
-                onClick={() => {
-                  setPartnerQuery("");
-                  setDateRange({ fromDate: "", toDate: "" });
-                }}
+                onClick={() => applyFiltersNow({ partnerQuery: "", fromDate: "", toDate: "" })}
                 className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-xs font-bold text-slate-600 hover:bg-slate-50"
               >
                 Bỏ lọc
@@ -986,8 +990,8 @@ export default function DebtsPage() {
                 Đối tác
                 <SearchableSelect
                   className="mt-1"
-                  value={ledger?.partnerCode || ""}
-                  onChange={(code) => { if (code) void loadLedger(code); }}
+                  value={filters.draft.ledgerPartner}
+                  onChange={(code) => { if (code) filters.update({ ledgerPartner: code }); }}
                   placeholder="-- Chọn đối tác để xem chi tiết --"
                   options={rows.map((row) => ({ value: row.partnerCode, label: `${row.partnerName} (${row.partnerCode})` }))}
                 />
@@ -995,15 +999,16 @@ export default function DebtsPage() {
               <label className="text-[11px] font-bold text-slate-600">
                 Từ ngày
                 <div className="mt-1 w-[150px]">
-                  <DateInput value={dateRange.fromDate} onChange={(value) => setDateRange((current) => ({ ...current, fromDate: value }))} ariaLabel="Chi tiết công nợ từ ngày" className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal" />
+                  <DateInput value={filters.draft.fromDate} onChange={(value) => filters.update({ fromDate: value })} ariaLabel="Chi tiết công nợ từ ngày" className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal" />
                 </div>
               </label>
               <label className="text-[11px] font-bold text-slate-600">
                 Đến ngày
                 <div className="mt-1 w-[150px]">
-                  <DateInput value={dateRange.toDate} onChange={(value) => setDateRange((current) => ({ ...current, toDate: value }))} ariaLabel="Chi tiết công nợ đến ngày" className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal" />
+                  <DateInput value={filters.draft.toDate} onChange={(value) => filters.update({ toDate: value })} ariaLabel="Chi tiết công nợ đến ngày" className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal" />
                 </div>
               </label>
+              <FilterApplyButton dirty={filters.dirty} onApply={filters.apply} />
               <button
                 type="button"
                 disabled={!ledger}

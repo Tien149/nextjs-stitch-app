@@ -12,6 +12,8 @@ import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { docHref } from "@/components/DocLink";
 
@@ -32,10 +34,14 @@ export default function AccountingPage() {
   const { user, loading } = useModuleAuth(href);
   
   const [active, setActive] = useState("ledger");
-  const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
-  /** Khoảng ngày bút toán (khách yêu cầu 03/10/2026) — có khoảng thì thay cho Kỳ kế toán khi xem sổ. */
-  const [entryRange, setEntryRange] = useState<DateRange>({ from: "", to: "" });
-  const [branchCode, setBranchCode] = useState("ALL");
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026).
+  /** entryRange: khoảng ngày bút toán (khách yêu cầu 03/10/2026) — có khoảng thì thay cho Kỳ kế toán khi xem sổ. */
+  const filters = useAppliedFilters<{ period: string; entryRange: DateRange; branchCode: string }>(() => ({
+    period: new Date().toISOString().slice(0, 7),
+    entryRange: { from: "", to: "" },
+    branchCode: "ALL",
+  }));
+  const { period, entryRange, branchCode } = filters.applied;
   const [data, setData] = useState<Data>({ accounts: [], entries: [], totals: { debit: 0, credit: 0, difference: 0 } });
   const [categories, setCategories] = useState<MasterDataOption[]>([]);
   const [showAccountingDetails, setShowAccountingDetails] = useState(false);
@@ -429,18 +435,18 @@ export default function AccountingPage() {
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-bold text-slate-600">Kỳ kế toán</span>
-              <MonthInput className="w-44" value={period} onChange={setPeriod} ariaLabel="Kỳ kế toán" />
+              <MonthInput className="w-44" value={filters.draft.period} onChange={(value) => filters.update({ period: value })} ariaLabel="Kỳ kế toán" />
             </div>
 
             {/* Có khoảng ngày thì sổ nhật ký lấy theo khoảng (có thể vắt nhiều kỳ), bỏ qua Kỳ kế toán. */}
-            <DateRangeFilter label="Hoặc khoảng ngày bút toán" value={entryRange} onChange={setEntryRange} className="!text-xs" />
+            <DateRangeFilter label="Hoặc khoảng ngày bút toán" value={filters.draft.entryRange} onChange={(value) => filters.update({ entryRange: value })} className="!text-xs" />
             
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-bold text-slate-600">Phạm vi cửa hàng</span>
               <div className="relative">
                 <select
-                  value={branchCode}
-                  onChange={(e) => setBranchCode(e.target.value)}
+                  value={filters.draft.branchCode}
+                  onChange={(e) => filters.update({ branchCode: e.target.value })}
                   className="w-48 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
                 >
                   {visibleBranchScopeOptions(user).map((option) => (
@@ -454,6 +460,8 @@ export default function AccountingPage() {
                 </span>
               </div>
             </div>
+
+            <FilterApplyButton dirty={filters.dirty} onApply={filters.apply} className="self-end" />
           </div>
 
           {canSync && (

@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import type { DateRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 import { canPerformMenuAction, SESSION_KEY, type DemoSession } from "@/lib/auth-demo";
 
 type TrashRow = {
@@ -55,9 +57,10 @@ export function TrashPanel({
   const [rows, setRows] = useState<TrashRow[]>([]);
   const [summary, setSummary] = useState<TrashSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [keyword, setKeyword] = useState("");
   /** Lọc theo thời điểm xoá — lọc ở máy chủ vì mỗi loại chỉ trả 100 bản ghi mới nhất. */
-  const [deletedRange, setDeletedRange] = useState<DateRange>({ from: "", to: "" });
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026).
+  const filters = useAppliedFilters<{ keyword: string; deletedRange: DateRange }>({ keyword: "", deletedRange: { from: "", to: "" } });
+  const { keyword, deletedRange } = filters.applied;
   const [activeModel, setActiveModel] = useState<string>("ALL");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
@@ -132,7 +135,7 @@ export function TrashPanel({
 
   return (
     <div className="space-y-4">
-      <DateRangeFilter label="Thời điểm xoá" value={deletedRange} onChange={setDeletedRange} />
+      <DateRangeFilter label="Thời điểm xoá" value={filters.draft.deletedRange} onChange={(deletedRange) => filters.update({ deletedRange })} />
       <div className="flex flex-col sm:flex-row sm:items-center gap-3">
         <div className="relative flex-1">
           <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xl pointer-events-none">
@@ -140,12 +143,14 @@ export function TrashPanel({
           </span>
           <input
             type="text"
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
+            value={filters.draft.keyword}
+            onChange={(event) => filters.update({ keyword: event.target.value })}
+            onKeyDown={(event) => { if (event.key === "Enter") filters.apply(); }}
             placeholder="Tìm theo mã, tên hoặc người xoá..."
             className="w-full border border-slate-300 rounded-lg pl-10 pr-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
           />
         </div>
+        <FilterApplyButton dirty={filters.dirty} onApply={filters.apply} loading={loading} />
         <button
           type="button"
           onClick={load}

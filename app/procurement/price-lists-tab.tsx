@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { DocLink } from "@/components/DocLink";
 import { ConfirmDeleteDialog } from "@/components/RowActions";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { money, quantity as qty, unitPrice as formatUnitPrice } from "@/lib/format-number";
@@ -19,6 +20,7 @@ import {
   type PriceListLike,
 } from "@/lib/supplier-price-list";
 import type { DemoSession } from "@/lib/auth-demo";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 
 import { ActionIcon } from "@/components/ActionIcon";
 /**
@@ -72,7 +74,11 @@ const emptyForm = (): FormState => {
 export function PriceListsTab({ user, canCreate, canDelete, items, suppliers, notify }: Props) {
   const [view, setView] = useState<View>("lists");
   const [lists, setLists] = useState<PriceList[] | null>(null);
-  const [filters, setFilters] = useState({ month: thisMonth(), supplierCode: "", branchCode: "ALL", status: "ALL", search: "" });
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026): ô lọc gắn filterDraft, danh sách/so sánh/lệch giá dùng `filters` đã áp dụng.
+  const { draft: filterDraft, applied: filters, update: updateFilters, apply: applyFilters, dirty: filtersDirty } = useAppliedFilters({
+    month: thisMonth(), supplierCode: "", branchCode: "ALL", status: "ALL", search: "", compareDay: todayDay(),
+  });
+  const compareDay = filters.compareDay;
   const [detail, setDetail] = useState<PriceList | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
   const [formError, setFormError] = useState("");
@@ -80,7 +86,6 @@ export function PriceListsTab({ user, canCreate, canDelete, items, suppliers, no
   const [deleting, setDeleting] = useState<PriceList | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [importState, setImportState] = useState<{ fileName: string; rows: Array<Record<string, unknown>>; result: ImportResult | null; busy: boolean } | null>(null);
-  const [compareDay, setCompareDay] = useState(todayDay());
   const [deviations, setDeviations] = useState<{ rows: DeviationRow[]; checked: number; uncovered: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -328,27 +333,27 @@ export function PriceListsTab({ user, canCreate, canDelete, items, suppliers, no
             </div>
           )}
         </div>
-        <div className="mt-4 grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="mt-4 grid grid-cols-2 lg:grid-cols-6 gap-3">
           <label className="text-xs font-bold text-slate-500">{view === "compare" ? "Ngày so sánh" : "Tháng"}
             {view === "compare"
-              ? <DateInput className="control mt-1" value={compareDay} onChange={(value) => setCompareDay(value || todayDay())} ariaLabel="Ngày so sánh" />
-              : <MonthInput className="control mt-1" value={filters.month} onChange={(value) => setFilters({ ...filters, month: value })} ariaLabel="Tháng" />}
+              ? <DateInput className="control mt-1" value={filterDraft.compareDay} onChange={(value) => updateFilters({ compareDay: value || todayDay() })} ariaLabel="Ngày so sánh" />
+              : <MonthInput className="control mt-1" value={filterDraft.month} onChange={(value) => updateFilters({ month: value })} ariaLabel="Tháng" />}
           </label>
           <label className="text-xs font-bold text-slate-500">Nhà cung cấp
-            <select className="control mt-1" value={filters.supplierCode} onChange={(e) => setFilters({ ...filters, supplierCode: e.target.value })}>
+            <select className="control mt-1" value={filterDraft.supplierCode} onChange={(e) => updateFilters({ supplierCode: e.target.value })}>
               <option value="">Tất cả NCC</option>
               {supplierOptions.map((supplier) => <option key={supplier.code} value={supplier.code}>{supplier.name} ({supplier.code})</option>)}
             </select>
           </label>
           <label className="text-xs font-bold text-slate-500">Cửa hàng
-            <select className="control mt-1" value={filters.branchCode} onChange={(e) => setFilters({ ...filters, branchCode: e.target.value })}>
+            <select className="control mt-1" value={filterDraft.branchCode} onChange={(e) => updateFilters({ branchCode: e.target.value })}>
               <option value="ALL">Tất cả cửa hàng</option>
               {storeOptions.map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
             </select>
           </label>
           {view === "lists" && (
             <label className="text-xs font-bold text-slate-500">Trạng thái
-              <select className="control mt-1" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
+              <select className="control mt-1" value={filterDraft.status} onChange={(e) => updateFilters({ status: e.target.value })}>
                 <option value="ALL">Tất cả</option>
                 <option value="ACTIVE">Đang áp dụng</option>
                 <option value="UPCOMING">Sắp áp dụng</option>
@@ -357,8 +362,9 @@ export function PriceListsTab({ user, canCreate, canDelete, items, suppliers, no
             </label>
           )}
           <label className="text-xs font-bold text-slate-500">Tìm mặt hàng / mã bảng giá
-            <input className="control mt-1" value={filters.search} placeholder="Mã hoặc tên..." onChange={(e) => setFilters({ ...filters, search: e.target.value })} />
+            <input className="control mt-1" value={filterDraft.search} placeholder="Mã hoặc tên..." onChange={(e) => updateFilters({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") applyFilters(); }} />
           </label>
+          <FilterApplyButton dirty={filtersDirty} onApply={applyFilters} loading={view === "deviations" && deviations === null} />
         </div>
       </section>
 

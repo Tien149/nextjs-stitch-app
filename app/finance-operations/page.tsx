@@ -21,6 +21,8 @@ import type { ExpenseSummary } from "@/lib/expense-summary";
 import Link from "next/link";
 import { ActionIcon } from "@/components/ActionIcon";
 import { DocLink, docHref } from "@/components/DocLink";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useAppliedFilters } from "@/lib/use-applied-filters";
 
 /** Nguồn chi phí có mã chứng từ mở được bằng /open/<mã>. */
 const LINKABLE_EXPENSE_SOURCES = new Set(["VOUCHER_CASH", "VOUCHER_BANK", "MONEY_TRANSFER", "ACCRUAL", "DEPRECIATION", "DEBT_PAYABLE", "INVENTORY", "ASSET"]);
@@ -149,19 +151,28 @@ export default function FinanceOperationsPage() {
   const { user, loading } = useModuleAuth(href);
 
   const [active, setActive] = useState("cashbook");
-  const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
-  const [branchCode, setBranchCode] = useState("ALL");
-  /** Lọc chi tiết sổ quỹ: khoảng ngày nằm trong kỳ kế toán và một nguồn tiền cụ thể. */
-  const [cashbookRange, setCashbookRange] = useState({ startDate: "", endDate: "" });
-  const [cashbookSource, setCashbookSource] = useState("");
+  /**
+   * Thanh lọc chung: kỳ, cửa hàng, khoảng ngày nằm trong kỳ kế toán và một nguồn tiền cụ thể.
+   * Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026).
+   */
+  const filters = useAppliedFilters({
+    period: new Date().toISOString().slice(0, 7),
+    branchCode: "ALL",
+    startDate: "",
+    endDate: "",
+    cashbookSource: "",
+  });
+  const { period, branchCode, cashbookSource, startDate: cashbookStartDate, endDate: cashbookEndDate } = filters.applied;
   const [data, setData] = useState<Data>({ openingAmount: 0, openingBasis: { anchorPeriod: null, declaredThisPeriod: false }, closingBalance: 0, cashbook: [], accruals: [], moneyTransfers: [], accountingPeriod: { status: "OPEN" }, checklist: [], expenseSummary: emptyExpenseSummary });
   const [message, setMessage] = useState("");
-  const [expenseFilter, setExpenseFilter] = useState<ExpenseDetailFilter>(emptyExpenseDetailFilter);
+  // Thanh lọc riêng của bảng chi tiết chi phí, cũng chỉ chạy khi bấm Lọc.
+  const expenseFilters = useAppliedFilters<ExpenseDetailFilter>(emptyExpenseDetailFilter);
+  const expenseFilter = expenseFilters.applied;
   /**
    * Ô "Khoảng thời gian" trên thanh lọc áp cho MỌI bảng chi tiết của màn (khách yêu cầu
    * 03/10/2026): sổ quỹ, điều tiền chờ duyệt, nộp tiền đã duyệt, chi tiết chi phí.
    */
-  const selectedRange = { from: cashbookRange.startDate, to: cashbookRange.endDate };
+  const selectedRange = { from: cashbookStartDate, to: cashbookEndDate };
   const inSelectedRange = (date: string | null | undefined) => inDateRange(date, selectedRange);
   /** Khoản trích trước có ít nhất một kỳ phân bổ nằm trong khoảng; bảng lịch chỉ hiện các kỳ đó. */
   /** Khoản phân bổ được trỏ tới từ link chứng từ (?accrual=PB-…). */
@@ -172,7 +183,7 @@ export default function FinanceOperationsPage() {
     : data.accruals.filter((row) => row.schedules.some((schedule) => periodInRange(schedule.period, selectedRange)) || (!selectedRange.from && !selectedRange.to));
   const expenseDetailRows = useMemo(() => {
     const query = expenseFilter.query.trim().toLowerCase();
-    const range = { from: cashbookRange.startDate, to: cashbookRange.endDate };
+    const range = { from: cashbookStartDate, to: cashbookEndDate };
     return (data.expenseSummary.details || []).filter((row) =>
       inDateRange(row.date, range)
       && (!expenseFilter.source || row.sourceKey === expenseFilter.source)
@@ -180,15 +191,19 @@ export default function FinanceOperationsPage() {
       && (!expenseFilter.item || row.itemCode === expenseFilter.item)
       && (!query || [row.entryCode, row.sourceCode, row.description, row.partnerCode, row.accountCode, row.itemName]
         .some((value) => (value || "").toLowerCase().includes(query))));
-  }, [data.expenseSummary.details, expenseFilter, cashbookRange.startDate, cashbookRange.endDate]);
+  }, [data.expenseSummary.details, expenseFilter, cashbookStartDate, cashbookEndDate]);
   const expenseDetailTotal = useMemo(() => expenseDetailRows.reduce((sum, row) => sum + row.amount, 0), [expenseDetailRows]);
   const expenseFilterActive = Boolean(expenseFilter.source || expenseFilter.line || expenseFilter.item || expenseFilter.query.trim());
   /** Từ hai bảng gom bấm xuống bảng chi tiết với bộ lọc tương ứng. */
   const focusExpenseDetail = (patch: Partial<ExpenseDetailFilter>) => {
-    setExpenseFilter({ ...emptyExpenseDetailFilter, ...patch });
+    expenseFilters.applyNow({ ...emptyExpenseDetailFilter, ...patch });
     window.setTimeout(() => document.getElementById("expense-detail-section")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   };
-  const [transferQuery, setTransferQuery] = useState("");
+  // Ô tìm mã phiếu ở tab Dòng tiền: Enter hoặc Lọc mới tìm.
+  const transferFilters = useAppliedFilters({ transferQuery: "" });
+  const { transferQuery } = transferFilters.applied;
+  const { applyNow: applyMainFiltersNow } = filters;
+  const { applyNow: applyTransferFiltersNow } = transferFilters;
   const [submitting, setSubmitting] = useState(false);
   const [editingCashDeposit, setEditingCashDeposit] = useState<CashDepositEditForm | null>(null);
   const [editingInternalTransfer, setEditingInternalTransfer] = useState<InternalTransferEditForm | null>(null);
@@ -277,12 +292,10 @@ export default function FinanceOperationsPage() {
 
   // Khoảng ngày chỉ có nghĩa trong kỳ đang xem, còn nguồn tiền gắn với cửa hàng -> đổi thì bỏ lọc cũ.
   const changePeriod = (value: string) => {
-    setPeriod(value);
-    setCashbookRange({ startDate: "", endDate: "" });
+    filters.update({ period: value, startDate: "", endDate: "" });
   };
   const changeBranchScope = (value: string) => {
-    setBranchCode(value);
-    setCashbookSource("");
+    filters.update({ branchCode: value, cashbookSource: "" });
   };
 
   /**
@@ -290,11 +303,13 @@ export default function FinanceOperationsPage() {
    * API cũng lọc y hệt, chỗ này chỉ để ô lọc không chào những quỹ chọn vào cũng ra sổ trống.
    */
   const cashierScoped = isCashierSubject(user);
+  // Ô Nguồn tiền đi theo cửa hàng đang chọn trên thanh lọc (bản nháp, chưa bấm Lọc).
+  const draftBranchCode = filters.draft.branchCode;
   const cashbookSourceOptions = useMemo(
     () => (cashierScoped
-      ? filterCashierCashSources(moneySources, branchCode)
-      : filterMoneySources(moneySources, branchCode)),
-    [moneySources, branchCode, cashierScoped],
+      ? filterCashierCashSources(moneySources, draftBranchCode)
+      : filterMoneySources(moneySources, draftBranchCode)),
+    [moneySources, draftBranchCode, cashierScoped],
   );
   /** Nhóm "Nguồn tiền tổng": chọn một dòng là lọc được cả cụm nguồn chi tiết cùng tài khoản. */
   const cashbookSummaryGroups = useMemo(
@@ -351,9 +366,9 @@ export default function FinanceOperationsPage() {
     : (adjustmentCashSources[0]?.code || "");
 
   const cashbookRangeInvalid = Boolean(
-    cashbookRange.startDate && cashbookRange.endDate && cashbookRange.startDate > cashbookRange.endDate,
+    filters.draft.startDate && filters.draft.endDate && filters.draft.startDate > filters.draft.endDate,
   );
-  const hasCashbookRange = Boolean(cashbookRange.startDate || cashbookRange.endDate);
+  const hasCashbookRange = Boolean(cashbookStartDate || cashbookEndDate);
   /**
    * Số dư đầu kỳ chỉ khai tay một lần ở kỳ gốc, các kỳ sau kế thừa số dư cuối kỳ trước.
    * Ghi rõ số đang đứng đây đến từ đâu để không ai đi nhập lại số dư mỗi tháng nữa.
@@ -400,8 +415,8 @@ export default function FinanceOperationsPage() {
   }, [data.moneyTransfers, period, selectedTransfer, transferCodeQuery, transferQuery]);
   const pendingCashDeposits = useMemo(
     () => data.moneyTransfers.filter((row) => row.status === "PENDING_REVIEW" && row.transferPurpose === "CASH_DEPOSIT"
-      && inDateRange(row.transferDate, { from: cashbookRange.startDate, to: cashbookRange.endDate })),
-    [data.moneyTransfers, cashbookRange.startDate, cashbookRange.endDate],
+      && inDateRange(row.transferDate, { from: cashbookStartDate, to: cashbookEndDate })),
+    [data.moneyTransfers, cashbookStartDate, cashbookEndDate],
   );
   /** Phiếu nộp tiền đã duyệt trong kỳ — nơi duy nhất mở lại được khi duyệt xong mới thấy sai. */
   // Xếp TĂNG DẦN theo ngày nộp (ngày kế toán điền = ngày ghi sổ, khách 21/10/2026), cùng ngày theo
@@ -409,11 +424,11 @@ export default function FinanceOperationsPage() {
   const approvedCashDeposits = useMemo(
     () => data.moneyTransfers
       .filter((row) => row.status === "APPROVED" && row.transferPurpose === "CASH_DEPOSIT"
-        && inDateRange(row.actualTransferDate || row.transferDate, { from: cashbookRange.startDate, to: cashbookRange.endDate }))
+        && inDateRange(row.actualTransferDate || row.transferDate, { from: cashbookStartDate, to: cashbookEndDate }))
       .sort((a, b) => String(a.actualTransferDate || a.transferDate).localeCompare(String(b.actualTransferDate || b.transferDate))
         || String(a.transferDate).localeCompare(String(b.transferDate))
         || a.code.localeCompare(b.code)),
-    [data.moneyTransfers, cashbookRange.startDate, cashbookRange.endDate],
+    [data.moneyTransfers, cashbookStartDate, cashbookEndDate],
   );
   /** Tên nguồn tiền thay cho mã (khách 21/10/2026); mã hiện nhỏ bên dưới để còn đối chiếu. */
   const sourceCell = (code: string) => (
@@ -449,11 +464,11 @@ export default function FinanceOperationsPage() {
     window.setTimeout(() => {
       if (linkedAccrual) setAccrualFocus(linkedAccrual);
       if (linkedTab) setActive(linkedTab);
-      if (/^\d{4}-\d{2}$/.test(linkedPeriod)) setPeriod(linkedPeriod);
-      if (linkedBranch) setBranchCode(linkedBranch);
-      if (linkedTransfer) setTransferQuery(linkedTransfer);
+      if (/^\d{4}-\d{2}$/.test(linkedPeriod)) applyMainFiltersNow({ period: linkedPeriod });
+      if (linkedBranch) applyMainFiltersNow({ branchCode: linkedBranch });
+      if (linkedTransfer) applyTransferFiltersNow({ transferQuery: linkedTransfer });
     }, 0);
-  }, []);
+  }, [applyMainFiltersNow, applyTransferFiltersNow]);
 
   // Tab mặc định có thể nằm ngoài quyền -> chuyển về tab đầu tiên được phép.
   useEffect(() => {
@@ -484,11 +499,11 @@ export default function FinanceOperationsPage() {
   const loadSeq = useRef(0);
   const loadData = useCallback(async () => {
     // Từ ngày lớn hơn đến ngày thì không gọi API, tránh hiển thị sổ quỹ rỗng gây hiểu nhầm mất dữ liệu.
-    if (cashbookRange.startDate && cashbookRange.endDate && cashbookRange.startDate > cashbookRange.endDate) return;
+    if (cashbookStartDate && cashbookEndDate && cashbookStartDate > cashbookEndDate) return;
     const seq = ++loadSeq.current;
     const query = new URLSearchParams({ period, branchCode });
-    if (cashbookRange.startDate) query.set("startDate", cashbookRange.startDate);
-    if (cashbookRange.endDate) query.set("endDate", cashbookRange.endDate);
+    if (cashbookStartDate) query.set("startDate", cashbookStartDate);
+    if (cashbookEndDate) query.set("endDate", cashbookEndDate);
     if (cashbookSource) query.set("moneySourceCode", cashbookSource);
     const response = await fetch(`/api/finance-operations?${query.toString()}`);
     if (seq !== loadSeq.current) return;
@@ -497,7 +512,7 @@ export default function FinanceOperationsPage() {
       if (seq !== loadSeq.current) return;
       setData({ ...payload, expenseSummary: payload.expenseSummary?.bySource ? payload.expenseSummary : emptyExpenseSummary });
     }
-  }, [branchCode, period, cashbookRange.startDate, cashbookRange.endDate, cashbookSource]);
+  }, [branchCode, period, cashbookStartDate, cashbookEndDate, cashbookSource]);
 
   const loadMoneySources = useCallback(async () => {
     void fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE")
@@ -1011,14 +1026,14 @@ export default function FinanceOperationsPage() {
             <div className="flex flex-wrap items-center gap-4">
               <div className="flex flex-col gap-1.5">
                 <span className="text-xs font-bold text-slate-600">Kỳ kế toán</span>
-                <MonthInput className="w-44" value={period} onChange={changePeriod} ariaLabel="Kỳ sổ quỹ" />
+                <MonthInput className="w-44" value={filters.draft.period} onChange={changePeriod} ariaLabel="Kỳ sổ quỹ" />
               </div>
 
               <div className="flex flex-col gap-1.5">
                 <span className="text-xs font-bold text-slate-600">Phạm vi cửa hàng</span>
                 <div className="relative">
                   <select
-                    value={branchCode}
+                    value={filters.draft.branchCode}
                     onChange={(e) => changeBranchScope(e.target.value)}
                     className="w-48 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
                   >
@@ -1039,15 +1054,15 @@ export default function FinanceOperationsPage() {
                 <div className="flex items-center gap-2">
                   <DateInput
                     className="w-36"
-                    value={cashbookRange.startDate}
-                    onChange={(startDate) => setCashbookRange((current) => ({ ...current, startDate }))}
+                    value={filters.draft.startDate}
+                    onChange={(startDate) => filters.update({ startDate })}
                     ariaLabel="Sổ quỹ từ ngày"
                   />
                   <span className="text-xs font-bold text-slate-400">→</span>
                   <DateInput
                     className="w-36"
-                    value={cashbookRange.endDate}
-                    onChange={(endDate) => setCashbookRange((current) => ({ ...current, endDate }))}
+                    value={filters.draft.endDate}
+                    onChange={(endDate) => filters.update({ endDate })}
                     ariaLabel="Sổ quỹ đến ngày"
                   />
                 </div>
@@ -1060,8 +1075,8 @@ export default function FinanceOperationsPage() {
                 <span className="text-xs font-bold text-slate-600">Nguồn tiền</span>
                 <div className="relative">
                   <select
-                    value={cashbookSource}
-                    onChange={(event) => setCashbookSource(event.target.value)}
+                    value={filters.draft.cashbookSource}
+                    onChange={(event) => filters.update({ cashbookSource: event.target.value })}
                     className="w-56 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
                   >
                     <option value="">{cashierScoped ? "Tất cả quỹ thu ngân" : "Tất cả nguồn tiền"}</option>
@@ -1071,7 +1086,7 @@ export default function FinanceOperationsPage() {
                           {cashbookSummaryGroups.map((group) => (
                             <option key={group.value} value={group.value} title={group.codes.join(", ")}>
                               {group.name} · Tổng {group.codes.length} nguồn
-                              {branchCode === "ALL" && group.branch && group.branch !== "ALL" ? ` · ${storeLabel(group.branch)}` : ""}
+                              {draftBranchCode === "ALL" && group.branch && group.branch !== "ALL" ? ` · ${storeLabel(group.branch)}` : ""}
                             </option>
                           ))}
                         </optgroup>
@@ -1079,7 +1094,7 @@ export default function FinanceOperationsPage() {
                           {cashbookSourceOptions.map((source) => (
                             <option key={source.code} value={source.code} title={moneySourceDebugLabel(source)}>
                               {moneySourceDisplayName(source)}
-                              {branchCode === "ALL" && source.branch && source.branch !== "ALL" ? ` · ${storeLabel(source.branch)}` : ""}
+                              {draftBranchCode === "ALL" && source.branch && source.branch !== "ALL" ? ` · ${storeLabel(source.branch)}` : ""}
                             </option>
                           ))}
                         </optgroup>
@@ -1087,7 +1102,7 @@ export default function FinanceOperationsPage() {
                     ) : cashbookSourceOptions.map((source) => (
                       <option key={source.code} value={source.code} title={moneySourceDebugLabel(source)}>
                         {moneySourceDisplayName(source)}
-                        {branchCode === "ALL" && source.branch && source.branch !== "ALL" ? ` · ${storeLabel(source.branch)}` : ""}
+                        {draftBranchCode === "ALL" && source.branch && source.branch !== "ALL" ? ` · ${storeLabel(source.branch)}` : ""}
                       </option>
                     ))}
                   </select>
@@ -1096,6 +1111,7 @@ export default function FinanceOperationsPage() {
                   </span>
                 </div>
               </div>
+              <FilterApplyButton className="self-end" dirty={filters.dirty} onApply={filters.apply} />
             </div>
 
             <div className="flex items-center gap-3">
@@ -1762,12 +1778,15 @@ export default function FinanceOperationsPage() {
                       </button>
                     )}
                     <input
-                      value={transferQuery}
-                      onChange={(event) => setTransferQuery(event.target.value)}                      placeholder="Tìm mã phiếu QTVI..."
+                      value={transferFilters.draft.transferQuery}
+                      onChange={(event) => transferFilters.update({ transferQuery: event.target.value })}
+                      onKeyDown={(event) => { if (event.key === "Enter") transferFilters.apply(); }}
+                      placeholder="Tìm mã phiếu QTVI..."
                       className="h-10 min-w-0 flex-1 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500"
                     />
-                    {transferQuery && (
-                      <button type="button" onClick={() => setTransferQuery("")} className="h-10 rounded-lg border border-slate-300 px-3 text-sm font-bold text-slate-600 hover:bg-slate-50">Xóa</button>
+                    <FilterApplyButton className="shrink-0" dirty={transferFilters.dirty} onApply={transferFilters.apply} />
+                    {(transferQuery || transferFilters.draft.transferQuery) && (
+                      <button type="button" onClick={() => applyTransferFiltersNow({ transferQuery: "" })} className="h-10 rounded-lg border border-slate-300 px-3 text-sm font-bold text-slate-600 hover:bg-slate-50">Xóa</button>
                     )}
                     <ExportExcelButton fileName="dong_tien_trong_ky" sheetName="Dong tien" targetId="cashflow-movement-table" className="h-10 shrink-0 rounded-lg border border-slate-300 bg-white px-3 text-sm font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5" />
                   </div>
@@ -2414,8 +2433,8 @@ export default function FinanceOperationsPage() {
                   <label className="text-[11px] font-bold text-slate-600">
                     Loại phiếu / nguồn
                     <select
-                      value={expenseFilter.source}
-                      onChange={(event) => setExpenseFilter((current) => ({ ...current, source: event.target.value }))}
+                      value={expenseFilters.draft.source}
+                      onChange={(event) => expenseFilters.update({ source: event.target.value })}
                       className="mt-1 block h-9 min-w-[200px] rounded-lg border border-slate-300 bg-white px-2 text-sm font-normal"
                     >
                       <option value="">Tất cả nguồn</option>
@@ -2427,8 +2446,8 @@ export default function FinanceOperationsPage() {
                   <label className="text-[11px] font-bold text-slate-600">
                     Dòng KQKD
                     <select
-                      value={expenseFilter.line}
-                      onChange={(event) => setExpenseFilter((current) => ({ ...current, line: event.target.value, item: "" }))}
+                      value={expenseFilters.draft.line}
+                      onChange={(event) => expenseFilters.update({ line: event.target.value, item: "" })}
                       className="mt-1 block h-9 min-w-[180px] rounded-lg border border-slate-300 bg-white px-2 text-sm font-normal"
                     >
                       <option value="">Tất cả dòng</option>
@@ -2440,13 +2459,13 @@ export default function FinanceOperationsPage() {
                   <label className="text-[11px] font-bold text-slate-600">
                     Hạng mục P&L
                     <select
-                      value={expenseFilter.item}
-                      onChange={(event) => setExpenseFilter((current) => ({ ...current, item: event.target.value }))}
+                      value={expenseFilters.draft.item}
+                      onChange={(event) => expenseFilters.update({ item: event.target.value })}
                       className="mt-1 block h-9 min-w-[220px] max-w-[320px] rounded-lg border border-slate-300 bg-white px-2 text-sm font-normal"
                     >
                       <option value="">Tất cả hạng mục</option>
                       {data.expenseSummary.byLine
-                        .filter((line) => !expenseFilter.line || line.key === expenseFilter.line)
+                        .filter((line) => !expenseFilters.draft.line || line.key === expenseFilters.draft.line)
                         .flatMap((line) => line.items.map((item) => (
                           <option key={`${line.key}-${item.code}`} value={item.code}>{item.name}</option>
                         )))}
@@ -2456,16 +2475,18 @@ export default function FinanceOperationsPage() {
                     Tìm
                     <input
                       type="text"
-                      value={expenseFilter.query}
-                      onChange={(event) => setExpenseFilter((current) => ({ ...current, query: event.target.value }))}
+                      value={expenseFilters.draft.query}
+                      onChange={(event) => expenseFilters.update({ query: event.target.value })}
+                      onKeyDown={(event) => { if (event.key === "Enter") expenseFilters.apply(); }}
                       placeholder="Mã chứng từ, diễn giải, đối tác, TK"
                       className="mt-1 block h-9 w-[240px] rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal"
                     />
                   </label>
-                  {expenseFilterActive && (
+                  <FilterApplyButton dirty={expenseFilters.dirty} onApply={expenseFilters.apply} />
+                  {(expenseFilterActive || expenseFilters.dirty) && (
                     <button
                       type="button"
-                      onClick={() => setExpenseFilter(emptyExpenseDetailFilter)}
+                      onClick={() => expenseFilters.applyNow(emptyExpenseDetailFilter)}
                       className="h-9 rounded-lg border border-slate-300 bg-white px-3 text-xs font-bold text-slate-600 hover:bg-slate-50"
                     >
                       Bỏ lọc

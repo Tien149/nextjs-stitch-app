@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useFilterDraft } from "@/lib/use-applied-filters";
 import type { StocktakeFilter } from "@/components/inventory/stocktake-filter";
 import CopyableText from "@/components/CopyableText";
 import ExportExcelButton from "@/components/ExportExcelButton";
@@ -120,7 +122,9 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
     setLines((payload.lines || []).sort((a, b) => Math.abs(b.varianceValue) - Math.abs(a.varianceValue) || a.itemCode.localeCompare(b.itemCode)));
   };
 
-  const warehouseOptions = warehouses.filter((warehouse) => filters.branchCode === "ALL" || warehouse.branch === filters.branchCode || !warehouse.branch);
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026).
+  const bar = useFilterDraft(filters, setFilters);
+  const warehouseOptions = warehouses.filter((warehouse) => bar.draft.branchCode === "ALL" || warehouse.branch === bar.draft.branchCode || !warehouse.branch);
   const groupOptions = [...new Map((lines || []).filter((line) => line.goodsGroup).map((line) => [goodsGroupKey(line.goodsGroup), line.goodsGroup as string])).entries()]
     .sort((a, b) => a[1].localeCompare(b[1], "vi"));
   const keyword = lineFilter.search.trim().toLowerCase();
@@ -158,17 +162,18 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
         </div>
         <div className="px-5 pb-4 grid grid-cols-2 lg:grid-cols-5 gap-3">
           <label className="text-xs font-bold text-slate-500">Nhà hàng
-            <select className="control mt-1" value={filters.branchCode} onChange={(e) => setFilters({ ...filters, branchCode: e.target.value, warehouseCode: "" })}>
+            <select className="control mt-1" value={bar.draft.branchCode} onChange={(e) => bar.update({ branchCode: e.target.value, warehouseCode: "" })}>
               {branchOptions.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
             </select>
           </label>
           <label className="text-xs font-bold text-slate-500">Kho
-            <select className="control mt-1" value={filters.warehouseCode} onChange={(e) => setFilters({ ...filters, warehouseCode: e.target.value })}>
+            <select className="control mt-1" value={bar.draft.warehouseCode} onChange={(e) => bar.update({ warehouseCode: e.target.value })}>
               <option value="">Tất cả kho</option>
               {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
             </select>
           </label>
-          <DateRangeFilter label="Ngày chốt" value={{ from: filters.from, to: filters.to }} onChange={(range) => setFilters({ ...filters, ...range })} className="col-span-2 !text-xs !text-slate-500" />
+          <DateRangeFilter label="Ngày chốt" value={{ from: bar.draft.from, to: bar.draft.to }} onChange={(range) => bar.update(range)} className="col-span-2 !text-xs !text-slate-500" />
+            <FilterApplyButton dirty={bar.dirty} onApply={bar.apply} />
         </div>
         {error && <p className="mx-5 mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
         <div className="overflow-x-auto max-h-[360px] overflow-y-auto custom-scrollbar">

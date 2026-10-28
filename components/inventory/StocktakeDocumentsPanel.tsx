@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { useFilterDraft } from "@/lib/use-applied-filters";
 import CopyableText from "@/components/CopyableText";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import type { StocktakeFilter } from "@/components/inventory/stocktake-filter";
@@ -75,7 +77,12 @@ export default function StocktakeDocumentsPanel({ sessionKey, branchOptions, war
     return () => window.clearTimeout(timer);
   }, [load]);
 
-  const warehouseOptions = warehouses.filter((warehouse) => filters.branchCode === "ALL" || warehouse.branch === filters.branchCode || !warehouse.branch);
+  // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026).
+  const bar = useFilterDraft({ ...filters, status }, ({ status: nextStatus, ...next }) => {
+    setFilters(next);
+    setStatus(nextStatus);
+  });
+  const warehouseOptions = warehouses.filter((warehouse) => bar.draft.branchCode === "ALL" || warehouse.branch === bar.draft.branchCode || !warehouse.branch);
   const rows = documents || [];
   const counts = {
     pending: rows.filter((row) => row.status === STOCKTAKE_PENDING).length,
@@ -102,25 +109,26 @@ export default function StocktakeDocumentsPanel({ sessionKey, branchOptions, war
         <>
           <div className="px-5 pb-4 grid grid-cols-2 lg:grid-cols-5 gap-3">
             <label className="text-xs font-bold text-slate-500">Nhà hàng
-              <select className="control mt-1" value={filters.branchCode} onChange={(e) => setFilters({ ...filters, branchCode: e.target.value, warehouseCode: "" })}>
+              <select className="control mt-1" value={bar.draft.branchCode} onChange={(e) => bar.update({ branchCode: e.target.value, warehouseCode: "" })}>
                 {branchOptions.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
               </select>
             </label>
             <label className="text-xs font-bold text-slate-500">Kho
-              <select className="control mt-1" value={filters.warehouseCode} onChange={(e) => setFilters({ ...filters, warehouseCode: e.target.value })}>
+              <select className="control mt-1" value={bar.draft.warehouseCode} onChange={(e) => bar.update({ warehouseCode: e.target.value })}>
                 <option value="">Tất cả kho</option>
                 {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
               </select>
             </label>
             <label className="text-xs font-bold text-slate-500">Trạng thái
-              <select className="control mt-1" value={status} onChange={(e) => setStatus(e.target.value)}>
+              <select className="control mt-1" value={bar.draft.status} onChange={(e) => bar.update({ status: e.target.value })}>
                 <option value="ALL">Tất cả trạng thái</option>
                 <option value={STOCKTAKE_PENDING}>{stocktakeStatusLabel(STOCKTAKE_PENDING)}</option>
                 <option value={STOCKTAKE_RETURNED}>{stocktakeStatusLabel(STOCKTAKE_RETURNED)}</option>
                 <option value={STOCKTAKE_APPROVED}>{stocktakeStatusLabel(STOCKTAKE_APPROVED)}</option>
               </select>
             </label>
-            <DateRangeFilter label="Ngày kiểm" value={{ from: filters.from, to: filters.to }} onChange={(range) => setFilters({ ...filters, ...range })} className="col-span-2 !text-xs !text-slate-500" />
+            <DateRangeFilter label="Ngày kiểm" value={{ from: bar.draft.from, to: bar.draft.to }} onChange={(range) => bar.update(range)} className="col-span-2 !text-xs !text-slate-500" />
+            <FilterApplyButton dirty={bar.dirty} onApply={bar.apply} />
           </div>
           {error && <p className="mx-5 mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
           <div className="overflow-x-auto max-h-[420px] overflow-y-auto custom-scrollbar">
