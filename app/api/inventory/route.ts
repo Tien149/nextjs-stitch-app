@@ -3,7 +3,7 @@ import { prismaDateRange } from "@/lib/date-range";
 import { loadActivePrices } from "@/lib/supplier-price-list-db";
 import { Prisma } from "@prisma/custom-client";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
-import { prisma, type TxClient } from "@/lib/prisma";
+import { prisma, prismaRaw, type TxClient } from "@/lib/prisma";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess, repostInventoryCogs } from "@/lib/accounting";
 import { allowedWarehousesOf, assertWarehouseAccess, scopeWarehouses, transferDestinationsFor } from "@/lib/warehouse-scope";
@@ -3256,6 +3256,42 @@ export async function DELETE(request: Request) {
     const id = cleanText(searchParams.get("id"));
     const reason = cleanText(searchParams.get("reason")) || null;
     if (!id) businessError("Thiếu ID bản ghi cần xoá");
+
+    // Gỡ một ĐVT mua khai nhầm (khách hỏi 28/10/2026). Phiếu kho đã ghi tự giữ ĐVT + hệ số trên
+    // từng dòng nên không bị ảnh hưởng; chỉ chặn khi ĐVT đó còn nằm trên chứng từ mua chưa xong
+    // (PR/PO mở, bảng giá NCC / mẫu đặt hàng còn hiệu lực) — gỡ đi là chỗ đó nhận hàng mất hệ số.
+    if (["UNIT_CONVERSION", "ITEM_UNIT_CONVERSION"].includes(type)) {
+      const conversion = await prisma.itemUnitConversion.findUnique({ where: { id }, include: { item: { select: { id: true, code: true } } } });
+      if (!conversion) businessError("Không tìm thấy ĐVT quy đổi");
+      const itemId = conversion.itemId;
+      const unitCode = conversion.unitCode;
+      const unitWhere = { itemId, unitCode: { equals: unitCode, mode: "insensitive" as const } };
+      const today = new Date();
+      const [requests, orders, priceLists, templates] = await Promise.all([
+        prisma.purchaseRequest.findMany({ where: { status: { in: openRequestStatuses.filter((status) => status !== "ORDERED").concat("REJECTED") }, lines: { some: unitWhere } }, select: { code: true }, take: 5 }),
+        prisma.purchaseOrder.findMany({ where: { status: { in: openOrderStatuses }, lines: { some: unitWhere } }, select: { code: true }, take: 5 }),
+        prisma.supplierPriceList.findMany({ where: { OR: [{ effectiveTo: null }, { effectiveTo: { gte: today } }], lines: { some: unitWhere } }, select: { code: true }, take: 5 }),
+        prisma.purchaseRequestTemplate.findMany({ where: { status: "ACTIVE", OR: [{ effectiveTo: null }, { effectiveTo: { gte: today } }], lines: { some: unitWhere } }, select: { code: true }, take: 5 }),
+      ]);
+      const blockers = [
+        requests.length > 0 && `đề nghị mua hàng ${requests.map((row) => row.code).join(", ")}`,
+        orders.length > 0 && `đơn mua hàng chưa nhận xong ${orders.map((row) => row.code).join(", ")}`,
+        priceLists.length > 0 && `bảng giá NCC ${priceLists.map((row) => row.code).join(", ")}`,
+        templates.length > 0 && `mẫu đặt hàng ${templates.map((row) => row.code).join(", ")}`,
+      ].filter(Boolean);
+      if (blockers.length > 0) {
+        businessError(`ĐVT ${unitCode} của ${conversion.item.code} đang dùng trên ${blockers.join("; ")}. Sửa ĐVT ở các chứng từ đó (hoặc huỷ / đóng / hết hiệu lực) rồi mới xoá được.`);
+      }
+      // Xoá HẲN dòng quy đổi: mọi chỗ đọc ĐVT đều include unitConversions mà include không lọc bản
+      // ghi xoá mềm, xoá mềm thì ĐVT nhầm vẫn hiện khắp nơi. Tỷ lệ cũ nằm lại ở nhật ký thao tác.
+      await prismaRaw.itemUnitConversion.delete({ where: { id } });
+      await writeAuditLog({
+        session: auth.session, module: menuHref, action: "DELETE",
+        entityType: "ItemUnitConversion", entityId: id, entityCode: `${conversion.item.code}/${unitCode}`,
+        metadata: { itemCode: conversion.item.code, unitCode, conversionRate: conversion.conversionRate, reason },
+      });
+      return NextResponse.json({ ok: true, itemCode: conversion.item.code, unitCode });
+    }
 
     if (["ITEM", "INVENTORY_ITEM", "INVENTORYITEM"].includes(type)) {
       const item = await prisma.inventoryItem.findUnique({ where: { id } });

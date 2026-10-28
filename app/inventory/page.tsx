@@ -592,6 +592,7 @@ export default function InventoryPage() {
   const canOpenImports = user ? canOpenPath(user, "/imports") : false;
   /** Gán Nhóm doanh thu ngay trên bảng danh mục là hành vi SỬA mặt hàng, không phải tạo mới. */
   const canEditItem = user ? canPerformMenuAction(user, href, "edit") : false;
+  const canDelete = user ? canPerformMenuAction(user, href, "delete") : false;
   /** Kế toán: duyệt / trả lại / mở lại phiếu kiểm kê (nhà hàng chỉ Gửi duyệt và sửa). */
   const canApprove = user ? canPerformMenuAction(user, href, "approve") : false;
   // Vận hành (không có tab Chế biến, không quyền duyệt) chỉ thấy màn Nhập kiểm kê.
@@ -2369,6 +2370,23 @@ export default function InventoryPage() {
     }
   };
 
+  /** Gỡ một ĐVT mua khai nhầm (khách hỏi 28/10/2026); máy chủ chặn khi ĐVT còn trên PR/PO mở, bảng giá, mẫu đặt hàng. */
+  const deleteUnitConversion = async (item: Item, conversion: UnitConversion) => {
+    if (!window.confirm(`Xoá ĐVT mua "1 ${conversion.unitName || conversion.unitCode} = ${conversion.conversionRate} ${item.unit}" của ${item.code}?\nPhiếu kho đã ghi không bị ảnh hưởng.`)) return;
+    setMessage("");
+    await runBusy(async () => {
+      const query = new URLSearchParams({ id: conversion.id, type: "UNIT_CONVERSION" });
+      const response = await fetch(`/api/inventory?${query.toString()}`, { method: "DELETE", headers: getSessionHeaders() }).catch(() => null);
+      const payload = response ? await response.json().catch(() => ({})) : {};
+      if (!response?.ok) {
+        setMessage((payload as { error?: string }).error || "Không xoá được ĐVT quy đổi");
+        return;
+      }
+      notifySaved(`Đã xoá ĐVT mua ${conversion.unitCode} của ${item.code}.`);
+      await loadData();
+    });
+  };
+
   const confirmDeleteItem = async (reason: string) => {
     if (!deletingItem) return;
     setItemDeleting(true);
@@ -2644,6 +2662,26 @@ export default function InventoryPage() {
                       ? <b className="text-slate-800">{purchaseConversionLabel(conversionItem)}</b>
                       : <span className="text-amber-700 font-bold">chưa khai</span>}
                   </div>
+                  {/* Từng ĐVT một dòng kèm nút Xoá để gỡ ĐVT khai nhầm (khách hỏi 28/10/2026). */}
+                  {(conversionItem.unitConversions || []).length > 0 && (
+                    <ul className="mt-1.5 space-y-1 border-t border-slate-200 pt-1.5">
+                      {(conversionItem.unitConversions || []).map((conversion) => (
+                        <li key={conversion.id} className="flex items-center justify-between gap-2">
+                          <span>1 {conversion.unitName || conversion.unitCode} = {qty(conversion.conversionRate)} {conversionItem.unit}</span>
+                          {canDelete && (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 font-bold text-rose-700 hover:bg-rose-50"
+                              onClick={() => void deleteUnitConversion(conversionItem, conversion)}
+                              title="Xoá ĐVT mua này"
+                            >
+                              <span className="material-symbols-outlined text-sm">delete</span>Xoá
+                            </button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               )}
               <div className="grid grid-cols-2 gap-3">
