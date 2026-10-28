@@ -266,6 +266,8 @@ export default function InventoryPage() {
   const [wasteReportFilter, setWasteReportFilter] = useState({ from: "", to: "", subType: "ALL", branch: "ALL", itemType: "ALL", goodsGroup: "ALL", search: "" });
   const [wasteReportRows, setWasteReportRows] = useState<WasteReportLine[] | null>(null);
   const [inboundType, setInboundType] = useState("ALL");
+  /** Tab nhỏ của Nhập kho (khách 28/10/2026): Nhập mua / các loại nhập còn lại. */
+  const [inboundView, setInboundView] = useState<"purchase" | "other">("purchase");
   const [outboundType, setOutboundType] = useState("ALL");
   /** Khoảng NGÀY CHỨNG TỪ của danh sách phiếu nhập/xuất — mặc định 90 ngày gần nhất, gửi lên server. */
   const [flowRange, setFlowRange] = useState({ from: daysAgo(90), to: today() });
@@ -282,7 +284,7 @@ export default function InventoryPage() {
   /** Sửa / xoá phiếu kho ngay trên bảng phiếu của ba tab Nhập / Xuất / Điều chuyển. */
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [transactionEditForm, setTransactionEditForm] = useState({ transactionDate: "", warehouseCode: "", toWarehouseCode: "", partnerCode: "", subType: "", referenceCode: "", note: "", purchaseCost: "" });
-  const [transactionEditLines, setTransactionEditLines] = useState<Array<{ key: string; itemId: string; quantity: string; unitCode: string; unitCost: string; baseUnitCost: number; vatRate: string; vatAmount: string; discountRate: string; discountAmount: string; note: string }>>([]);
+  const [transactionEditLines, setTransactionEditLines] = useState<Array<{ key: string; sourceLineId?: string; itemId: string; quantity: string; unitCode: string; unitCost: string; baseUnitCost: number; vatRate: string; vatAmount: string; discountRate: string; discountAmount: string; note: string }>>([]);
   const [transactionEditError, setTransactionEditError] = useState<string | null>(null);
   const [transactionEditSaving, setTransactionEditSaving] = useState(false);
   const [deletingTransaction, setDeletingTransaction] = useState<Transaction | null>(null);
@@ -449,7 +451,7 @@ export default function InventoryPage() {
   const switchTab = (tab: string) => {
     setActive(tab);
     if (tab === "inbound") {
-      setStockForm((form) => form.transactionType.startsWith("NHAP_") ? form : { ...form, transactionType: "NHAP_MUA" });
+      setStockForm((form) => form.transactionType.startsWith("NHAP_") ? form : { ...form, transactionType: inboundView === "purchase" ? "NHAP_MUA" : "NHAP_KHAC" });
     }
     if (tab === "outbound") {
       setStockForm((form) => MANUAL_OUTBOUND_TYPES.includes(form.transactionType) ? form : { ...form, transactionType: "XUAT_KHAC" });
@@ -473,6 +475,8 @@ export default function InventoryPage() {
         setFlowWarehouse("ALL");
         setFlowPartner("ALL");
         setInboundType("ALL");
+        // Phiếu nhập mua mang mã NM-…; mọi loại nhập khác nằm ở tab nhỏ còn lại.
+        if (focus.tab === "inbound") setInboundView(focus.code.toUpperCase().startsWith("NM-") ? "purchase" : "other");
         setOutboundType("ALL");
         setFlowSearch(focus.code);
       }
@@ -483,11 +487,11 @@ export default function InventoryPage() {
   // nếu không form Xuất kho vẫn mang "Nhập mua" và hiện ô chọn PO (khách 24/10/2026).
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      if (active === "inbound") setStockForm((form) => form.transactionType.startsWith("NHAP_") ? form : { ...form, transactionType: "NHAP_MUA" });
+      if (active === "inbound") setStockForm((form) => form.transactionType.startsWith("NHAP_") ? form : { ...form, transactionType: inboundView === "purchase" ? "NHAP_MUA" : "NHAP_KHAC" });
       if (active === "outbound") setStockForm((form) => MANUAL_OUTBOUND_TYPES.includes(form.transactionType) ? form : { ...form, transactionType: "XUAT_KHAC" });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [active]);
+  }, [active, inboundView]);
 
   const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
   /**
@@ -803,7 +807,8 @@ export default function InventoryPage() {
   const matchesFlowWarehouse = (row: { warehouseCode: string }) =>
     flowWarehouse === "ALL" || (row.warehouseCode || "").toUpperCase() === flowWarehouse.toUpperCase();
   const inboundRows = flowRows("IN").filter((row) =>
-    (flowBranch === "ALL" || row.branchCode === flowBranch) && matchesFlowWarehouse(row) && (inboundType === "ALL" || row.displayType === inboundType) && matchesFlowPartner(row)
+    (inboundView === "purchase" ? row.displayType === "NHAP_MUA" : row.displayType !== "NHAP_MUA")
+    && (flowBranch === "ALL" || row.branchCode === flowBranch) && matchesFlowWarehouse(row) && (inboundType === "ALL" || row.displayType === inboundType) && matchesFlowPartner(row)
     && transactionMatchesSearch(row.transaction, flowKeyword));
   const outboundRows = flowRows("OUT").filter((row) =>
     (flowBranch === "ALL" || row.branchCode === flowBranch) && matchesFlowWarehouse(row) && (outboundType === "ALL" || row.displayType === outboundType) && matchesFlowPartner(row)
@@ -2084,7 +2089,11 @@ export default function InventoryPage() {
    * Điều chuyển liên nhà hàng sửa được: máy chủ tính lại giá và đồng bộ cặp công nợ nội bộ
    * theo số mới (chỉ chặn khi công nợ đã gạch nợ — báo lỗi ngay trong hộp thoại sửa).
    */
-  const transactionEditLockReason = (transaction: Transaction) => transactionLockReason(transaction);
+  const transactionEditLockReason = (transaction: Transaction) => (
+    // Phiếu nhận hàng PO sửa thẳng ở đây (khách 28/10/2026): dòng PO và công nợ NCC tự đi theo.
+    isPoReceiptDoc(transaction) ? null : transactionLockReason(transaction)
+  );
+  const isPoReceiptDoc = (transaction: Transaction) => transaction.referenceType === "PURCHASE_ORDER" && transaction.transactionType === "NHAP_MUA";
 
   const openTransactionEdit = (transaction: Transaction) => {
     setTransactionEditError(null);
@@ -2112,6 +2121,7 @@ export default function InventoryPage() {
       const unitCode = matchedUnit ? matchedUnit.unitCode : rawUnit.toUpperCase() === (line.item.unit || "").toUpperCase() ? line.item.unit.toUpperCase() : rawUnit;
       return {
       key: `${line.id}-${index}`,
+      sourceLineId: line.id,
       itemId: line.item.id,
       // Hiện lại đúng con số người dùng đã gõ (ĐVT mua), không phải số đã quy đổi về ĐVT tồn.
       quantity: String(line.inputQuantity ?? line.quantity),
@@ -2176,6 +2186,7 @@ export default function InventoryPage() {
           note: transactionEditForm.note,
           ...(editingTransaction.transactionType === "NHAP_MUA" ? { purchaseCost: transactionEditForm.purchaseCost || "0" } : {}),
           lines: transactionEditLines.map((line) => ({
+            sourceLineId: line.sourceLineId || "",
             itemId: line.itemId,
             inputQuantity: line.quantity,
             inputUnitCode: line.unitCode,
@@ -2841,13 +2852,32 @@ export default function InventoryPage() {
         // Khung ghi nhận mở bằng nút, rộng hết khung, hai cột như phiếu mua tài sản (khách 27/10/2026):
         // trái = thông tin chung của phiếu, phải = các dòng mặt hàng (tự cuộn khi dài). Danh sách phiếu bên dưới.
         <div className="space-y-5">
+          {active === "inbound" && (
+            <div className="flex flex-wrap gap-2 border-b border-slate-200">
+              {([["purchase", "shopping_cart", "Nhập mua"], ["other", "move_to_inbox", "Các loại nhập khác"]] as const).map(([view, icon, label]) => (
+                <button
+                  key={view}
+                  type="button"
+                  onClick={() => {
+                    setInboundView(view);
+                    setInboundType("ALL");
+                    setStockForm((form) => ({ ...form, transactionType: view === "purchase" ? "NHAP_MUA" : "NHAP_KHAC" }));
+                  }}
+                  className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-sm font-bold transition-colors ${inboundView === view ? "border-blue-600 text-blue-700" : "border-transparent text-slate-500 hover:text-slate-800"}`}
+                >
+                  <span className="material-symbols-outlined text-lg">{icon}</span>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           {canCreate && !stockFormOpen && (
             <button
               type="button"
               onClick={() => setStockFormOpen(true)}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-blue-700"
             >
-              <span className="material-symbols-outlined text-lg">add</span>{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}
+              <span className="material-symbols-outlined text-lg">add</span>{active === "inbound" ? (inboundView === "purchase" ? "Ghi nhận nhập mua" : "Ghi nhận nhập khác") : "Ghi nhận xuất kho"}
             </button>
           )}
           {canCreate && stockFormOpen && (
@@ -2861,10 +2891,9 @@ export default function InventoryPage() {
                   <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Thông tin chung của phiếu</h3>
               <Input label="Loại">
                 <select className="control" value={stockForm.transactionType} onChange={(e) => setStockForm({ ...stockForm, transactionType: e.target.value })}>
-                  {active === "inbound" ? (<>
-                    <option value="NHAP_MUA">Nhập mua hàng NCC</option>
-                    <option value="NHAP_KHAC">Nhập khác</option>
-                  </>) : (<>
+                  {active === "inbound" ? (
+                    inboundView === "purchase" ? <option value="NHAP_MUA">Nhập mua hàng NCC</option> : <option value="NHAP_KHAC">Nhập khác</option>
+                  ) : (<>
                     <option value="XUAT_KHAC">Xuất khác</option>
                     <option value="XUAT_TEST_MON">Xuất test món</option>
                     <option value="XUAT_TRA_NCC">Xuất trả hàng NCC</option>
@@ -3189,7 +3218,7 @@ export default function InventoryPage() {
           )}
 
           <section className="table-panel shadow-sm">
-            <Panel title={active === "inbound" ? "Phiếu nhập kho gần nhất" : "Phiếu xuất kho gần nhất"} reload={loadData} exportFileName={active === "inbound" ? "phieu_nhap_kho" : "phieu_xuat_kho"} />
+            <Panel title={active === "inbound" ? (inboundView === "purchase" ? "Phiếu nhập mua gần nhất" : "Phiếu nhập khác gần nhất") : "Phiếu xuất kho gần nhất"} reload={loadData} exportFileName={active === "inbound" ? (inboundView === "purchase" ? "phieu_nhap_mua" : "phieu_nhap_khac") : "phieu_xuat_kho"} />
             {active === "outbound" && data.pendingSales.total > 0 && (
               <div className="mx-5 mb-4 flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
                 <span className="material-symbols-outlined text-lg">info</span>
@@ -3237,7 +3266,7 @@ export default function InventoryPage() {
                 {active === "inbound" ? (
                   <select className="control" value={inboundType} onChange={(e) => setInboundType(e.target.value)}>
                     <option value="ALL">Tất cả loại nhập</option>
-                    {inboundTypes.filter((type) => canSeeExplosion || !PRODUCTION_TYPES.includes(type)).map((type) => <option key={type} value={type}>{movementTypeLabel(type)}</option>)}
+                    {inboundTypes.filter((type) => (inboundView === "purchase" ? type === "NHAP_MUA" : type !== "NHAP_MUA") && (canSeeExplosion || !PRODUCTION_TYPES.includes(type))).map((type) => <option key={type} value={type}>{movementTypeLabel(type)}</option>)}
                   </select>
                 ) : (
                   <select className="control" value={outboundType} onChange={(e) => setOutboundType(e.target.value)}>
@@ -3638,6 +3667,13 @@ export default function InventoryPage() {
                 {movementTypeLabel(editingTransaction.transactionType)} · {storeLabel(editingTransaction.branchCode)}.
                 Lưu xong hệ thống hoàn lại tồn của bản cũ rồi ghi bản mới, nên tồn kho và giá vốn bình quân được tính lại đúng.
               </p>
+              {isPoReceiptDoc(editingTransaction) && (
+                <p className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                  Phiếu nhận hàng từ <b>{editingTransaction.referenceCode}</b>: sửa số lượng / đơn giá / thuế / chiết khấu / chi phí mua hàng thì
+                  số đã nhận trên PO và <b>công nợ NCC</b> tự cập nhật theo. Xoá dòng = không nhận dòng đó. Kho và NCC đi theo PO nên không đổi ở đây
+                  {(editingTransaction.referenceCode || "").includes(",") ? "; phiếu gộp nhiều PO thì không thêm / đổi mặt hàng được" : ""}.
+                </p>
+              )}
             </div>
 
             <div className="p-5 space-y-4">
@@ -3646,7 +3682,7 @@ export default function InventoryPage() {
                   <DateInput className="control" value={transactionEditForm.transactionDate} onChange={(value) => setTransactionEditForm({ ...transactionEditForm, transactionDate: value })} required />
                 </Input>
                 <Input label={editingTransaction.transactionType === "DIEU_CHUYEN" ? "Kho xuất" : "Kho"}>
-                  <select className="control" value={transactionEditForm.warehouseCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, warehouseCode: e.target.value })}>
+                  <select className="control" disabled={isPoReceiptDoc(editingTransaction)} value={transactionEditForm.warehouseCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, warehouseCode: e.target.value })}>
                     {warehouseOptions.filter((warehouse) => !warehouse.branch || warehouse.branch === editingTransaction.branchCode).map((warehouse) => (
                       <option key={warehouse.code} value={warehouse.code}>{warehouse.name}</option>
                     ))}
@@ -3667,14 +3703,14 @@ export default function InventoryPage() {
                   </Input>
                 ) : (
                   <Input label={isInboundType(editingTransaction.transactionType) ? "Nhà cung cấp" : "Đối tác"}>
-                    <select className="control" value={transactionEditForm.partnerCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, partnerCode: e.target.value })}>
+                    <select className="control" disabled={isPoReceiptDoc(editingTransaction)} value={transactionEditForm.partnerCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, partnerCode: e.target.value })}>
                       <option value="">Không khai đối tác</option>
                       {activePartners.map((partner) => <option key={partner.code} value={partner.code}>{partner.name}</option>)}
                     </select>
                   </Input>
                 )}
                 <Input label="Tham chiếu / Số chứng từ">
-                  <input data-input-kind="code" className="control" value={transactionEditForm.referenceCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, referenceCode: e.target.value })} />
+                  <input data-input-kind="code" className="control" disabled={isPoReceiptDoc(editingTransaction)} value={transactionEditForm.referenceCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, referenceCode: e.target.value })} />
                 </Input>
                 {editingTransaction.transactionType === "NHAP_MUA" && (
                   <Input label="Chi phí mua hàng">

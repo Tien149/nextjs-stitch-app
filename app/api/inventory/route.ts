@@ -44,6 +44,7 @@ import { loadItemRevenueOptions, loadNonInventoryRevenueGroups, revenueKindFromT
 import { normalizeGoodsGroup } from "@/lib/goods-group";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { explosionPostingDate } from "@/lib/revenue-date";
+import { assertPurchaseReceiptEditable, syncPurchaseReceiptEdit } from "@/lib/purchase-receipt-edit";
 
 const menuHref = "/inventory";
 
@@ -61,7 +62,7 @@ const derivedReferenceTypes: Record<string, string> = {
   [TRANSFER_DISPATCH_REFERENCE]: "phiếu điều chuyển chờ duyệt",
 };
 
-type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; vatRate?: unknown; vatAmount?: unknown; discountRate?: unknown; discountAmount?: unknown; note?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
+type InputLine = { sourceLineId?: unknown; itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; vatRate?: unknown; vatAmount?: unknown; discountRate?: unknown; discountAmount?: unknown; note?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
 const validItemTypes: readonly string[] = INVENTORY_ITEM_TYPES;
 
 /**
@@ -87,6 +88,8 @@ function linesFrom(value: unknown) {
   return (value as InputLine[]).map((line) => ({
     itemId: cleanText(line.itemId),
     itemCode: cleanText(line.itemCode),
+    /** Id dòng cũ mà dòng này sửa từ đó — sửa phiếu nhận PO khớp dòng PO theo đây. */
+    sourceLineId: cleanText(line.sourceLineId) || null,
     quantity: toNumber(line.inputQuantity ?? line.quantity),
     inputQuantity: toNumber(line.inputQuantity ?? line.quantity),
     unitCode: cleanText(line.inputUnitCode ?? line.unitCode),
@@ -2633,6 +2636,7 @@ export async function POST(request: Request) {
       inputLines = (recipe?.lines || []).map((line) => {
         const quantity = line.quantity * (line.conversionRate || 1) * (1 + line.wasteRate / 100) * batches;
         return {
+          sourceLineId: null,
           itemId: line.itemId,
           itemCode: "",
           // Hủy hàng không có thuế đầu vào: khai rõ để cùng kiểu với dòng người dùng gửi lên.
@@ -2849,7 +2853,9 @@ export async function PATCH(request: Request) {
       assertBranchAccess(auth.session, transaction.branchCode);
       assertWarehouseAccess(auth.session, transaction.warehouseCode);
 
-      const derivedFrom = transaction.referenceType ? derivedReferenceTypes[transaction.referenceType] : undefined;
+      // Phiếu nhận hàng PO sửa thẳng ở đây (khách 28/10/2026) — dòng PO, lần nhận, công nợ NCC đi theo.
+      const isPoReceipt = transaction.referenceType === "PURCHASE_ORDER" && transaction.transactionType === "NHAP_MUA";
+      const derivedFrom = transaction.referenceType && !isPoReceipt ? derivedReferenceTypes[transaction.referenceType] : undefined;
       if (derivedFrom) {
         businessError(`Phiếu ${transaction.code} được sinh tự động từ ${derivedFrom} ${transaction.referenceCode || ""}`.trim() + " nên phải sửa ở chứng từ gốc.");
       }
@@ -2861,7 +2867,8 @@ export async function PATCH(request: Request) {
       }
 
       const editedLines = body.lines !== undefined ? linesFrom(body.lines) : [];
-      const warehouseCode = body.warehouseCode !== undefined ? cleanText(body.warehouseCode) : transaction.warehouseCode;
+      // Kho và NCC của phiếu nhận PO đi theo PO.
+      const warehouseCode = body.warehouseCode !== undefined && !isPoReceipt ? cleanText(body.warehouseCode) : transaction.warehouseCode;
       const toWarehouseCode = body.toWarehouseCode !== undefined ? cleanText(body.toWarehouseCode) : transaction.toWarehouseCode;
       if (warehouseCode !== transaction.warehouseCode) assertWarehouseAccess(auth.session, warehouseCode);
       const isTransfer = transaction.transactionType === "DIEU_CHUYEN";
@@ -2931,7 +2938,7 @@ export async function PATCH(request: Request) {
         }
       }
 
-      const partnerCode = body.partnerCode !== undefined ? cleanText(body.partnerCode) || null : transaction.partnerCode;
+      const partnerCode = body.partnerCode !== undefined && !isPoReceipt ? cleanText(body.partnerCode) || null : transaction.partnerCode;
       if (partnerCode && partnerCode !== transaction.partnerCode) {
         const partner = await prisma.masterDataItem.findFirst({ where: { type: "PARTNER", code: partnerCode } });
         if (!partner) businessError(`Đối tác ${partnerCode} không có trong danh mục`);
@@ -2942,9 +2949,13 @@ export async function PATCH(request: Request) {
         ? await checkedIssuePnlItem(body.pnlItemCode, true)
         : undefined;
 
+      if (isPoReceipt) await assertPurchaseReceiptEditable(prisma, transaction);
+      // Phiếu nhận PO luôn ghi lại dòng để khớp dòng PO (đổi ngày cũng phải dời ngày lần nhận).
+      const rewritesPoReceipt = isPoReceipt && editedLines.length > 0;
+
       const result = await prisma.$transaction(async (tx) => {
         if (nextIssuePnlItem !== undefined) await tx.inventoryTransaction.update({ where: { id: transactionId }, data: { pnlItemCode: nextIssuePnlItem } });
-        const updated = rewritesLines
+        const updated = rewritesLines || rewritesPoReceipt
           ? await repostInventoryTransaction(tx, transaction, {
             transactionDate,
             branchCode: transaction.branchCode,
@@ -2953,7 +2964,7 @@ export async function PATCH(request: Request) {
             toBranchCode,
             subType,
             partnerCode,
-            referenceCode: body.referenceCode !== undefined ? cleanText(body.referenceCode) || null : transaction.referenceCode,
+            referenceCode: body.referenceCode !== undefined && !isPoReceipt ? cleanText(body.referenceCode) || null : transaction.referenceCode,
             note: body.note !== undefined ? cleanText(body.note) || null : transaction.note,
             purchaseCost,
             // Giu nguyen thue suat VA tien thue da khai cua dong cu khi chi sua phan dau phieu:
@@ -2980,7 +2991,7 @@ export async function PATCH(request: Request) {
               transactionDate,
               partnerCode,
               subType,
-              ...(body.referenceCode !== undefined ? { referenceCode: cleanText(body.referenceCode) || null } : {}),
+              ...(body.referenceCode !== undefined && !isPoReceipt ? { referenceCode: cleanText(body.referenceCode) || null } : {}),
               ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
             },
             include: { lines: { include: { item: true } } },
@@ -2991,6 +3002,15 @@ export async function PATCH(request: Request) {
         if (isTransfer) {
           await refreshTransferExplosionStatus(tx, updated.id);
           return (await syncTransferInternalDebt(tx, updated.id)).transaction;
+        }
+        if (isPoReceipt) {
+          if (!("inputOrderLines" in updated)) {
+            // Chỉ sửa ghi chú: ngày lần nhận vẫn đi theo phiếu.
+            await tx.purchaseOrderReceipt.updateMany({ where: { stockTransactionId: updated.id, status: "ACTIVE" }, data: { receivedDate: updated.transactionDate } });
+            return updated;
+          }
+          await syncPurchaseReceiptEdit(tx, { ...transaction, transactionDate: updated.transactionDate }, transaction.lines, updated.inputOrderLines as Parameters<typeof syncPurchaseReceiptEdit>[3], editedLines.map((line) => line.sourceLineId));
+          return updated;
         }
         // Huỷ / xuất khác: dòng đổi thì hàng chờ rã tính lại như điều chuyển.
         if (isExplosionIssueType(updated.transactionType)) await refreshTransferExplosionStatus(tx, updated.id);

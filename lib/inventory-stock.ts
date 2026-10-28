@@ -757,7 +757,7 @@ export async function repostInventoryTransaction(
   }
 
   await tx.inventoryTransactionLine.deleteMany({ where: { transactionId: current.id } });
-  return tx.inventoryTransaction.update({
+  const updated = await tx.inventoryTransaction.update({
     where: { id: current.id },
     data: {
       transactionDate: input.transactionDate,
@@ -791,4 +791,6 @@ export async function repostInventoryTransaction(
     },
     include: { lines: { include: { item: true } } },
   });
+  // Dòng theo ĐÚNG thứ tự gửi lên (dòng đọc lại từ DB không giữ thứ tự) — sửa phiếu nhận PO cần khớp từng dòng.
+  return Object.assign(updated, { inputOrderLines: valuedLines });
 }
