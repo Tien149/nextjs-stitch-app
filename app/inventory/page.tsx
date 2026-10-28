@@ -291,6 +291,8 @@ export default function InventoryPage() {
   const [inboundType, setInboundType] = useState("ALL");
   /** Tab nhỏ của Nhập kho (khách 28/10/2026): Nhập mua / các loại nhập còn lại. */
   const [inboundView, setInboundView] = useState<"purchase" | "other">("purchase");
+  /** Phiếu nhập mua tick để in gộp — chỉ các phiếu cùng một NCC (khách 28/10/2026). */
+  const [purchasePrintPicks, setPurchasePrintPicks] = useState<Array<{ id: string; partner: string }>>([]);
   const [outboundType, setOutboundType] = useState("ALL");
   /** Khoảng NGÀY CHỨNG TỪ của danh sách phiếu nhập/xuất — mặc định 90 ngày gần nhất, gửi lên server. */
   const [flowRange, setFlowRange] = useState({ from: daysAgo(90), to: today() });
@@ -3411,6 +3413,23 @@ export default function InventoryPage() {
               </Input>
               <FilterApplyButton dirty={flowFilter.dirty} onApply={flowFilter.apply} />
             </div>
+            {active === "inbound" && inboundView === "purchase" && (
+              <div className="mx-5 mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                {purchasePrintPicks.length > 0 ? (<>
+                  <button
+                    type="button"
+                    onClick={() => window.open(`/inventory/print?ids=${encodeURIComponent(purchasePrintPicks.map((pick) => pick.id).join(","))}`, "_blank")}
+                    className="rounded-lg bg-blue-600 px-3 py-1.5 font-bold text-white hover:bg-blue-700"
+                  >
+                    In gộp {purchasePrintPicks.length} phiếu
+                  </button>
+                  <span>NCC: <b>{purchasePrintPicks[0].partner ? partnerName(purchasePrintPicks[0].partner) : "(chưa khai NCC)"}</b></span>
+                  <button type="button" onClick={() => setPurchasePrintPicks([])} className="font-bold text-slate-500 hover:underline">Bỏ chọn</button>
+                </>) : (
+                  <span>Tick các phiếu <b>cùng một nhà cung cấp</b> để in gộp chung một phiếu.</span>
+                )}
+              </div>
+            )}
             {showSaleLines ? (
             <Table
               headers={[
@@ -3495,6 +3514,24 @@ export default function InventoryPage() {
                 <tr key={`${row.transaction.id}-${row.displayType}`} data-doc-code={row.transaction.code} className={`border-t border-slate-100 ${row.transaction.code === focusCode ? focusRowClass : ""}`}>
                   {/* Bỏ cột Mặt hàng / SL (khách 26/10/2026) — chỉ ghi số mặt hàng, chi tiết xem bằng nút In. */}
                   <Cell>
+                    {active === "inbound" && inboundView === "purchase" && (() => {
+                      const partner = row.transaction.partnerCode || "";
+                      const picked = purchasePrintPicks.some((pick) => pick.id === row.transaction.id);
+                      const otherPartner = purchasePrintPicks.length > 0 && purchasePrintPicks[0].partner !== partner;
+                      return (
+                        <input
+                          type="checkbox"
+                          className="mr-2 align-middle"
+                          aria-label={`Chọn ${row.transaction.code} để in gộp`}
+                          checked={picked}
+                          disabled={otherPartner && !picked}
+                          title={otherPartner && !picked ? "Khác nhà cung cấp với các phiếu đã chọn — chỉ in gộp phiếu cùng NCC" : "Chọn để in gộp"}
+                          onChange={(e) => setPurchasePrintPicks((current) => (e.target.checked
+                            ? [...current, { id: row.transaction.id, partner }]
+                            : current.filter((pick) => pick.id !== row.transaction.id)))}
+                        />
+                      );
+                    })()}
                     <CopyableText value={row.transaction.code}><b>{row.transaction.code}</b></CopyableText>
                     <small>
                       {new Date(row.transaction.transactionDate).toLocaleDateString("vi-VN")}

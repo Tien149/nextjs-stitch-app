@@ -935,6 +935,41 @@ export async function GET(request: Request) {
       });
     }
 
+    /**
+     * In gộp nhiều phiếu NHẬP MUA của CÙNG một NCC trên một phiếu (khách 28/10/2026, như in gộp tài
+     * sản / CCDC) — trang /inventory/print?ids=…
+     */
+    if (searchParams.get("view") === "documents") {
+      const ids = [...new Set(cleanText(searchParams.get("ids")).split(",").map((id) => id.trim()).filter(Boolean))].slice(0, 100);
+      if (ids.length === 0) businessError("Chưa chọn phiếu nào để in");
+      const documents = await prisma.inventoryTransaction.findMany({
+        where: { id: { in: ids }, deletedAt: null },
+        include: { lines: { include: { item: { select: { code: true, name: true, unit: true } } } } },
+        orderBy: [{ transactionDate: "asc" }, { code: "asc" }],
+      });
+      if (documents.length !== ids.length) businessError("Có phiếu đã bị xoá hoặc không còn — tải lại danh sách rồi chọn lại.");
+      const allowedBranches = auth.session.allowedBranches || [];
+      for (const document of documents) {
+        if (document.transactionType !== "NHAP_MUA") businessError(`Phiếu ${document.code} không phải phiếu nhập mua — chỉ in gộp phiếu nhập mua.`);
+        if (!(allowedBranches.includes("ALL") || allowedBranches.includes(document.branchCode.toUpperCase())) || !inScope(document.warehouseCode)) {
+          return NextResponse.json({ error: `Không có quyền xem phiếu ${document.code}` }, { status: 403 });
+        }
+      }
+      const partnerCodes = new Set(documents.map((document) => document.partnerCode || ""));
+      if (partnerCodes.size > 1) businessError("Chỉ in gộp được các phiếu cùng một nhà cung cấp.");
+      const partnerCode = documents[0].partnerCode;
+      const warehouseCodes = [...new Set(documents.map((document) => document.warehouseCode))];
+      const [warehouses, partner] = await Promise.all([
+        prisma.masterDataItem.findMany({ where: { type: "WAREHOUSE", code: { in: warehouseCodes } }, select: { code: true, name: true } }),
+        partnerCode ? prisma.masterDataItem.findFirst({ where: { type: "PARTNER", code: partnerCode }, select: { name: true } }) : null,
+      ]);
+      return NextResponse.json({
+        documents,
+        partnerName: partner?.name || partnerCode || null,
+        warehouseNames: Object.fromEntries(warehouses.map((warehouse) => [warehouse.code, warehouse.name])),
+      });
+    }
+
     // Một phiếu kho đủ dòng hàng + tên NCC / tên kho — cho trang in Phiếu nhập kho (/inventory/[id]/print).
     if (searchParams.get("view") === "document") {
       const id = cleanText(searchParams.get("id"));

@@ -6,7 +6,7 @@ import { storeLabel } from "@/lib/branch-labels";
 import { money, quantity as qty } from "@/lib/format-number";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
 import { vatRateLabel } from "@/lib/inventory-vat";
-import { roundVnd } from "@/lib/round-vnd";
+import { purchasePrintRow, purchasePrintTotal, stockPrintRow, type PurchasePrintTotalKey, type StockPrintLine } from "@/lib/stock-print-rows";
 
 /**
  * Bản in PHIẾU NHẬP KHO / PHIẾU XUẤT KHO (khách yêu cầu 03/10/2026) — mở từ nút "In" trên danh
@@ -15,26 +15,7 @@ import { roundVnd } from "@/lib/round-vnd";
  * trang in phiếu thu/chi (app/vouchers/[id]/print): tên nhà hàng, tiêu đề lớn, bảng hàng, ô ký
  * tay để trống.
  */
-type Line = {
-  id: string;
-  quantity: number;
-  unitCost: number;
-  totalCost: number;
-  inputQuantity: number | null;
-  inputUnitCode: string | null;
-  inputUnitCost: number | null;
-  conversionRate: number;
-  vatRate: number | null;
-  vatAmount: number;
-  /** Chi phí mua hàng phân bổ vào dòng (đã nằm trong totalCost). */
-  purchaseCostShare?: number;
-  /** Chiết khấu của dòng (trừ trước thuế) — % đã khai (null = khai số tiền) và số tiền. */
-  discountRate?: number | null;
-  discountAmount?: number;
-  /** Ghi chú riêng của dòng (27/10/2026). */
-  note?: string | null;
-  item: { code: string; name: string; unit: string };
-};
+type Line = StockPrintLine;
 type StockDocument = {
   id: string;
   code: string;
@@ -97,31 +78,10 @@ export default function StockDocumentPrintPage() {
   const wasteReason = doc.transactionType === "XUAT_HUY" ? wasteReasonLabel(doc.subType) : null;
 
   // In theo đúng ĐVT người dùng đã nhập trên phiếu (CHAI, THÙNG...), không quy về ĐVT tồn.
-  const rows = doc.lines.map((line) => {
-    const hasInput = line.inputQuantity !== null && line.inputQuantity !== undefined && Boolean(line.inputUnitCode);
-    const quantity = hasInput ? Number(line.inputQuantity) : line.quantity;
-    const unit = hasInput ? String(line.inputUnitCode) : line.item.unit;
-    const unitPrice = hasInput
-      ? line.inputUnitCost ?? line.unitCost * (line.conversionRate || 1)
-      : line.unitCost;
-    // Thành tiền in theo hoá đơn NCC (SL × đơn giá); chi phí mua hàng in riêng một dòng ở cuối.
-    return { ...line, printQuantity: quantity, printUnit: unit, printUnitPrice: unitPrice, printAmount: line.totalCost - (line.purchaseCostShare || 0) - (doc.transactionType.startsWith("NHAP_") ? line.vatAmount || 0 : 0) };
-  });
-  /**
-   * Phiếu NHẬP MUA in đủ cột như màn nhận hàng (khách 26/10/2026): thành tiền trước thuế = SL × đơn
-   * giá NCC, chiết khấu, thuế suất, tiền thuế, sau thuế, chi phí mua hàng phân bổ, trị giá mua hàng.
-   */
+  const rows = doc.lines.map((line) => stockPrintRow(line, doc.transactionType));
   const isPurchase = doc.transactionType === "NHAP_MUA";
-  const purchaseRows = rows.map((row) => {
-    const discount = row.discountAmount || 0;
-    const gross = row.inputQuantity !== null && row.inputQuantity !== undefined
-      ? roundVnd(Number(row.inputQuantity) * (row.inputUnitCost || 0))
-      : row.printAmount + discount;
-    const afterTax = gross - discount + (row.vatAmount || 0);
-    const share = row.purchaseCostShare || 0;
-    return { ...row, gross, discount, afterTax, share, purchaseValue: afterTax + share };
-  });
-  const purchaseTotal = (key: "gross" | "discount" | "vatAmount" | "afterTax" | "share" | "purchaseValue") => purchaseRows.reduce((sum, row) => sum + (Number(row[key]) || 0), 0);
+  const purchaseRows = doc.lines.map(purchasePrintRow);
+  const purchaseTotal = (key: PurchasePrintTotalKey) => purchasePrintTotal(purchaseRows, key);
   const totalBeforeTax = rows.reduce((sum, row) => sum + row.printAmount, 0);
   const totalVat = rows.reduce((sum, row) => sum + (row.vatAmount || 0), 0);
   const purchaseCost = doc.purchaseCost || 0;
