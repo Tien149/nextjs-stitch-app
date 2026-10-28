@@ -4,6 +4,7 @@ import { loadActivePrices } from "@/lib/supplier-price-list-db";
 import { Prisma } from "@prisma/custom-client";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, prismaRaw, type TxClient } from "@/lib/prisma";
+import { vnDay as vnDayOf } from "@/lib/recipe-validity";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess, repostInventoryCogs } from "@/lib/accounting";
 import { allowedWarehousesOf, assertWarehouseAccess, scopeWarehouses, transferDestinationsFor } from "@/lib/warehouse-scope";
@@ -2018,7 +2019,7 @@ export async function POST(request: Request) {
          * Chốt giải trình (lib/stocktake-resync postStocktakeAdjustments). Ở đây chỉ còn đánh dấu kiểm DƯ
          * bán thành phẩm có định lượng vào hàng chờ rã BOM (khách chốt 28/09/2026).
          */
-        const isExplodable = await semiFinishedWithRecipeChecker(tx, branchCode);
+        const isExplodable = await semiFinishedWithRecipeChecker(tx, branchCode, stocktakeDate);
         const deferredSurplus = stocktake.lines.some((line) => line.actualQuantity - line.systemQuantity > quantityEpsilon && isExplodable(line.item));
         await tx.stocktakeSession.update({
           where: { id: stocktake.id },
@@ -3143,6 +3144,20 @@ export async function PATCH(request: Request) {
         changes.outputConversionRate = outputConversionRate;
       }
       if (body.effectiveFrom !== undefined) changes.effectiveFrom = toDate(body.effectiveFrom);
+      // Ngưng áp dụng từ ngày (khách 28/10/2026); trống = bỏ ngưng. Ngưng lùi vào ngày đã rã thì
+      // findRunsAffectedByRecipes bên dưới bắt được (định lượng tại ngày đó thành "không có") → 409 rã lại.
+      if (body.stoppedFrom !== undefined) {
+        const stoppedFrom = cleanText(body.stoppedFrom) ? toDate(body.stoppedFrom) : null;
+        if (stoppedFrom) {
+          for (const recipe of targets) {
+            const from = vnDayOf(changes.effectiveFrom instanceof Date ? changes.effectiveFrom : recipe.effectiveFrom);
+            if (vnDayOf(stoppedFrom) <= from) {
+              businessError(`Ngày ngưng phải sau ngày áp dụng ${from.split("-").reverse().join("/")} của ${recipe.code}. Muốn bỏ hẳn phiên bản này thì xoá phiên bản.`);
+            }
+          }
+        }
+        changes.stoppedFrom = stoppedFrom;
+      }
       if (body.note !== undefined) changes.note = cleanText(body.note) || null;
       const nextStatus = body.status !== undefined ? cleanText(body.status).toUpperCase() || "ACTIVE" : null;
       if (nextStatus) changes.status = nextStatus;

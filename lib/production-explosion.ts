@@ -13,6 +13,7 @@
  */
 
 import { safeConversionRate } from "@/lib/unit-conversion";
+import { vnDay } from "@/lib/recipe-validity";
 
 export type ExplosionItem = {
   id: string;
@@ -44,6 +45,8 @@ export type ExplosionRecipe = {
   outputConversionRate: number;
   version: number;
   effectiveFrom: Date | string;
+  /** Ngưng áp dụng từ ngày này; null = áp tới khi có phiên bản mới. */
+  stoppedFrom?: Date | string | null;
   status: string;
   sellingPrice?: number;
   lines: ExplosionRecipeLine[];
@@ -128,7 +131,7 @@ function scopeRecipesToBranch(recipes: ExplosionRecipe[], branchCode?: string | 
  * version lớn hơn). Món bán trước khi mọi phiên bản có hiệu lực thì đành dùng phiên bản sớm
  * nhất — còn hơn là không rã được.
  */
-export function pickRecipeForDate(recipes: ExplosionRecipe[], date: Date, branchCode?: string | null): ExplosionRecipe | null {
+function pickRecipeVersionForDate(recipes: ExplosionRecipe[], date: Date, branchCode?: string | null): ExplosionRecipe | null {
   const scoped = scopeRecipesToBranch(recipes, branchCode);
   if (scoped.length === 0) return null;
   const time = date.getTime();
@@ -138,6 +141,27 @@ export function pickRecipeForDate(recipes: ExplosionRecipe[], date: Date, branch
   });
   const effective = sorted.filter((recipe) => new Date(recipe.effectiveFrom).getTime() <= time);
   return effective.length > 0 ? effective[effective.length - 1] : sorted[0];
+}
+
+/** Phiên bản đã NGƯNG áp dụng tại ngày này (so theo ngày Việt Nam). */
+export function recipeStoppedOn(recipe: { stoppedFrom?: Date | string | null }, date: Date) {
+  return Boolean(recipe.stoppedFrom) && vnDay(date) >= vnDay(recipe.stoppedFrom!);
+}
+
+/**
+ * Như trên, nhưng phiên bản rơi vào đã NGƯNG (khách 28/10/2026) thì coi như món không có định
+ * lượng ở ngày đó: món bán xuất thẳng từ tồn, BTP không chế biến. Ngưng chặn cả phạm vi cửa hàng
+ * đó, không lùi về bản dùng chung — muốn dùng lại thì khai phiên bản mới có ngày áp dụng sau.
+ */
+export function pickRecipeForDate(recipes: ExplosionRecipe[], date: Date, branchCode?: string | null): ExplosionRecipe | null {
+  const picked = pickRecipeVersionForDate(recipes, date, branchCode);
+  return picked && !recipeStoppedOn(picked, date) ? picked : null;
+}
+
+/** Món có định lượng nhưng phiên bản áp tại ngày này đã ngưng — thiếu định lượng có chủ đích. */
+export function isRecipeStoppedForDate(recipes: ExplosionRecipe[], date: Date, branchCode?: string | null) {
+  const picked = pickRecipeVersionForDate(recipes, date, branchCode);
+  return Boolean(picked && recipeStoppedOn(picked, date));
 }
 
 /**

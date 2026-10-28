@@ -448,3 +448,17 @@ test("lấy tồn theo TỪNG kho: tồn sốt ở kho bếp không bù cho món
   assert.equal(stepOf(plan, "BTP_SOTCACHUA", "BAR").quantityBase, 200);
   assert.deepEqual(plan.stockUsed, [{ productCode: "BTP_SOTCACHUA", quantityBase: 1500, department: "KIT" }]);
 });
+
+test("ngưng định lượng (28/10/2026): từ ngày ngưng coi như không có định lượng — món bán xuất thẳng", async () => {
+  const { isRecipeStoppedForDate } = await import("../lib/production-explosion.ts");
+  const stopped = recipes.map((recipe) => recipe.productCode === "SP_CAHONG" ? { ...recipe, stoppedFrom: "2026-08-10T00:00:00Z" } : recipe);
+  const cahong = stopped.filter((recipe) => recipe.productCode === "SP_CAHONG");
+  // Ngày VN 09/08 23:59 (UTC 16:59) vẫn áp; 10/08 thì ngưng.
+  assert.ok(pickRecipeForDate(cahong, new Date("2026-08-09T16:59:00Z")));
+  assert.equal(pickRecipeForDate(cahong, new Date("2026-08-09T17:00:00Z")), null);
+  assert.equal(isRecipeStoppedForDate(cahong, new Date("2026-08-10T05:00:00Z")), true);
+  assert.equal(isRecipeStoppedForDate(cahong, new Date("2026-08-09T05:00:00Z")), false);
+  const plan = explodeSalesDemand({ demands: [{ productCode: "SP_CAHONG", quantity: 2 }], recipes: stopped, date: new Date("2026-08-12T05:00:00Z") });
+  assert.deepEqual(plan.directSales.map((sale) => [sale.productCode, sale.quantityBase]), [["SP_CAHONG", 2]]);
+  assert.equal(plan.productions.length, 0);
+});

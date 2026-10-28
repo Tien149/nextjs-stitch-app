@@ -7,7 +7,8 @@ import { MonthInput } from "@/components/DateInput";
 import CopyableText from "@/components/CopyableText";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { money, quantity as qty } from "@/lib/format-number";
-import type { MissingRecipeReport } from "@/lib/missing-recipes";
+import { DocLink } from "@/components/DocLink";
+import type { MissingRecipeDocumentKind, MissingRecipeReport } from "@/lib/missing-recipes";
 
 /**
  * Bảng "Mã thiếu định lượng" ở tab Định lượng — xem lib/missing-recipes.ts. Tải riêng theo tháng
@@ -31,6 +32,13 @@ function currentMonth() {
 }
 
 const TYPE_LABEL: Record<string, string> = { FINISHED: "Thành phẩm", SEMI_FINISHED: "Bán thành phẩm" };
+const DOC_KIND_LABEL: Record<MissingRecipeDocumentKind, string> = {
+  KIEM_KE: "Kiểm dư",
+  DIEU_CHUYEN: "Điều chuyển",
+  XUAT_HUY: "Huỷ",
+  XUAT_TEST_MON: "Xuất test món",
+  XUAT_KHAC: "Xuất khác",
+};
 
 export default function MissingRecipesPanel({ sessionKey, branchOptions, defaultBranch }: Props) {
   const [month, setMonth] = useState(currentMonth);
@@ -71,6 +79,7 @@ export default function MissingRecipesPanel({ sessionKey, branchOptions, default
   });
   const sold = report?.sold || [];
   const components = report?.components || [];
+  const documents = report?.documents || [];
 
   return (
     <section className="table-panel shadow-sm">
@@ -80,7 +89,8 @@ export default function MissingRecipesPanel({ sessionKey, branchOptions, default
           <p className="text-xs text-slate-500 mt-1 max-w-2xl leading-relaxed">
             Thành phẩm / bán thành phẩm chưa có định lượng áp dụng cho cửa hàng. Lúc rã, món bán thiếu định lượng bị
             <b> xuất bán thẳng từ tồn kho</b> (tồn âm, giá vốn 0); thành phần thiếu định lượng bị trừ tồn mà không bao
-            giờ được chế biến. Khai định lượng xong thì rã lại tháng đó.
+            giờ được chế biến; BTP kiểm dư / điều chuyển / huỷ thiếu định lượng không được rã ra nguyên liệu.
+            Khai định lượng xong thì rã lại tháng đó.
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
@@ -178,6 +188,62 @@ export default function MissingRecipesPanel({ sessionKey, branchOptions, default
                     {row.purchasedQuantity > 0
                       ? <span className="text-amber-700">Có nhập mua — nếu là hàng mua sẵn thì đổi nhóm sang Nguyên liệu</span>
                       : <span className="text-slate-600">Bếp tự làm thì khai định lượng</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Mục 3 (khách hỏi 28/10/2026 — từng sót BTP trên phiếu kiểm kê). */}
+      <div data-export-root className="border-t border-slate-100">
+        <div className="px-5 py-3 flex justify-between items-center gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-slate-700">
+              3. BTP trên kiểm kê / điều chuyển / huỷ chưa có định lượng <span className={documents.length ? "text-rose-600" : "text-emerald-700"}>({documents.length})</span>
+            </h3>
+            <p className="text-[11px] text-slate-500 mt-0.5 max-w-3xl">
+              Kiểm dư BTP thiếu định lượng thành nhập kiểm kê thường; điều chuyển / huỷ trừ thẳng tồn BTP — đều không trừ nguyên liệu.
+              Khai định lượng xong: phiếu kiểm kê đã duyệt thì <b>Mở lại → Duyệt lại</b>, phiếu điều chuyển / huỷ thì mở phiếu bấm Lưu lại, rồi Rã.
+            </p>
+          </div>
+          <ExportExcelButton fileName={`btp_chung_tu_thieu_dinh_luong_${month}`} sheetName="BTP chung tu thieu DL" />
+        </div>
+        <div className="overflow-x-auto max-h-[420px] overflow-y-auto custom-scrollbar">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200 sticky top-0 z-10">
+              <tr>
+                <th className="px-4 py-3 text-left font-bold">Cửa hàng</th>
+                <th className="px-4 py-3 text-left font-bold">Mã</th>
+                <th className="px-4 py-3 text-left font-bold">Tên</th>
+                <th className="px-4 py-3 text-right font-bold">SL kiểm dư</th>
+                <th className="px-4 py-3 text-right font-bold">SL điều chuyển / huỷ</th>
+                <th className="px-4 py-3 text-left font-bold">Chứng từ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {documents.length === 0 && (
+                <tr><td colSpan={6} className="cell text-center text-emerald-700">{loading ? "Đang tải..." : "Không có BTP thiếu định lượng trên kiểm kê / điều chuyển / huỷ trong tháng."}</td></tr>
+              )}
+              {documents.map((row) => (
+                <tr key={`${row.branchCode}|${row.itemCode}`} className="border-t border-slate-100 align-top">
+                  <td className="cell whitespace-nowrap">{branchLabel(row.branchCode)}</td>
+                  <td className="cell"><CopyableText value={row.itemCode}><b>{row.itemCode}</b></CopyableText></td>
+                  <td className="cell min-w-[200px]">{row.itemName}</td>
+                  <td className="cell text-right tabular-nums">{row.stocktakeQuantity > 0 ? qty(row.stocktakeQuantity) : "-"}</td>
+                  <td className="cell text-right tabular-nums">{row.issueQuantity > 0 ? qty(row.issueQuantity) : "-"}</td>
+                  <td className="cell text-xs min-w-[260px]">
+                    <div className="flex flex-wrap gap-x-3 gap-y-1">
+                      {row.documents.map((doc) => (
+                        <span key={doc.code} className="whitespace-nowrap">
+                          <span className="text-slate-500">{DOC_KIND_LABEL[doc.kind] || doc.kind}</span>{" "}
+                          {/* Mã kiểm kê chưa có đích ở /open/<mã> — hiện chữ để chép. */}
+                          {doc.kind === "KIEM_KE" ? <CopyableText value={doc.code}><b>{doc.code}</b></CopyableText> : <DocLink code={doc.code} className="font-bold" />}
+                          {doc.kind === "KIEM_KE" && doc.approved && <span className="ml-1 text-amber-700">(đã duyệt)</span>}
+                        </span>
+                      ))}
+                    </div>
                   </td>
                 </tr>
               ))}

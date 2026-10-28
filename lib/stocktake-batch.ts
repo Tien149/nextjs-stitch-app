@@ -183,7 +183,7 @@ export async function buildBatchPreview(
     select: { id: true, code: true, name: true, unit: true, itemType: true },
   });
   const itemById = new Map(items.map((item) => [item.id, item]));
-  const isExplodable = await semiFinishedWithRecipeChecker(tx, branchCode);
+  const isExplodable = await semiFinishedWithRecipeChecker(tx, branchCode, input.cutoffAt);
 
   const rows: BatchPreviewRow[] = [];
   for (const row of consolidated) {

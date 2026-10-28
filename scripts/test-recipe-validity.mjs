@@ -49,3 +49,19 @@ test("trùng ngày áp dụng: version lớn thắng, bản nhỏ không áp d�
   assert.deepEqual(validity.get("b"), { from: "2026-09-05", to: null });
   assert.deepEqual(validity.get("c"), { from: "2026-09-01", to: null });
 });
+
+test("ngưng áp dụng (28/10/2026): hiệu lực dừng ở ngày trước ngày ngưng, ngưng trước ngày áp dụng = không áp ngày nào", () => {
+  const validity = recipeValidity([
+    { ...recipe("v1", 1, "2026-08-01T00:00:00Z", 50000), stoppedFrom: "2026-09-15T00:00:00Z" },
+    { ...recipe("b1", 1, "2026-08-01T00:00:00Z", 50000, "ASA"), stoppedFrom: "2026-08-01T00:00:00Z" },
+  ]);
+  assert.deepEqual(validity.get("v1"), { from: "2026-08-01", to: "2026-09-14" });
+  assert.equal(validityInMonth(validity.get("v1"), "2026-10"), null);
+  assert.equal(validity.get("b1"), null);
+  // Có phiên bản mới trước ngày ngưng thì vẫn dừng theo phiên bản mới.
+  const chained = recipeValidity([
+    { ...recipe("v1", 1, "2026-08-01T00:00:00Z", 50000), stoppedFrom: "2026-09-20T00:00:00Z" },
+    recipe("v2", 2, "2026-09-10T00:00:00Z", 55000),
+  ]);
+  assert.deepEqual(chained.get("v1"), { from: "2026-08-01", to: "2026-09-09" });
+});

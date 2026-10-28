@@ -1729,7 +1729,7 @@ export async function commitImport(input: CommitInput) {
         const outboundLines = [];
         // Kiểm DƯ bán thành phẩm có định lượng chờ rã BOM thay vì nhập kiểm kê — cùng luật với
         // duyệt kiểm kê trên màn hình (khách chốt 28/09/2026).
-        const isExplodable = await semiFinishedWithRecipeChecker(tx as unknown as TxClient, asText(first.values.branch_code));
+        const isExplodable = await semiFinishedWithRecipeChecker(tx as unknown as TxClient, asText(first.values.branch_code), stocktakeDate);
         let deferredSurplus = false;
         for (const row of rows) {
           const item = await tx.inventoryItem.findUnique({

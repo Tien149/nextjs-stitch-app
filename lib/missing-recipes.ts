@@ -11,9 +11,16 @@
  *   2. THÀNH PHẦN: thành phẩm / bán thành phẩm nằm trong định lượng cửa hàng đang dùng nhưng
  *      chính nó chưa có định lượng — bị trừ tồn như nguyên liệu mà không bao giờ được chế biến.
  *      Có nhập mua trong tháng thì nhiều khả năng là hàng mua sẵn, nên đổi nhóm sang Nguyên liệu.
+ *   3. CHỨNG TỪ KHO (khách hỏi 28/10/2026 — từng sót BTP trên phiếu kiểm kê): bán thành phẩm trên
+ *      phiếu KIỂM DƯ (phiếu cả kho + đợt duyệt gộp theo vị trí), ĐIỀU CHUYỂN, HUỶ / XUẤT TEST MÓN /
+ *      XUẤT KHÁC trong tháng mà chưa có định lượng. Các phiếu này chỉ vào hàng chờ Rã khi BTP CÓ
+ *      định lượng lúc lưu / duyệt (lib/explosion-sources.ts); thiếu thì kiểm dư thành nhập kiểm kê
+ *      thường, điều chuyển / huỷ trừ thẳng tồn BTP — không trừ nguyên liệu.
  */
 import type { TxClient } from "@/lib/prisma";
-import { pickRecipeForDate, type ExplosionRecipe } from "@/lib/production-explosion";
+import { isRecipeStoppedForDate, pickRecipeForDate, type ExplosionRecipe } from "@/lib/production-explosion";
+import { EXPLOSION_ISSUE_TYPES } from "@/lib/explosion-sources";
+import { STOCKTAKE_APPROVED } from "@/lib/stocktake-status";
 import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 
 export type MissingRecipeSoldRow = {
@@ -38,11 +45,37 @@ export type MissingRecipeComponentRow = {
   purchasedQuantity: number;
 };
 
+/** Loại chứng từ ở mục 3: KIEM_KE = kiểm dư; còn lại là transactionType của phiếu xuất. */
+export type MissingRecipeDocumentKind = "KIEM_KE" | "DIEU_CHUYEN" | "XUAT_HUY" | "XUAT_TEST_MON" | "XUAT_KHAC";
+
+export type MissingRecipeDocumentLine = {
+  branchCode: string;
+  itemCode: string;
+  itemName: string;
+  itemType: string;
+  /** Kiểm kê: phần DƯ; phiếu xuất: số lượng xuất (ĐVT tồn). */
+  quantity: number;
+  documentCode: string;
+  kind: MissingRecipeDocumentKind;
+  /** Kiểm kê đã duyệt: khai định lượng xong phải Mở lại → Duyệt lại mới vào hàng chờ Rã. */
+  approved: boolean;
+};
+
+export type MissingRecipeDocumentRow = {
+  branchCode: string;
+  itemCode: string;
+  itemName: string;
+  stocktakeQuantity: number;
+  issueQuantity: number;
+  documents: Array<{ code: string; kind: MissingRecipeDocumentKind; approved: boolean }>;
+};
+
 export type MissingRecipeReport = {
   month: string;
   branches: string[];
   sold: MissingRecipeSoldRow[];
   components: MissingRecipeComponentRow[];
+  documents: MissingRecipeDocumentRow[];
 };
 
 const PRODUCED_TYPES = new Set(["FINISHED", "SEMI_FINISHED"]);
@@ -62,6 +95,7 @@ export function buildMissingRecipeReport(input: {
   soldRows: Array<{ branchCode: string; productCode: string | null; productQuantity: number | null; netAmount: number; revenueSource: string | null }>;
   nonInventoryGroups: Set<string>;
   purchases: Array<{ branchCode: string; itemCode: string; quantity: number }>;
+  documentLines?: MissingRecipeDocumentLine[];
 }): MissingRecipeReport {
   const itemByCode = new Map(input.items.map((item) => [up(item.code), item]));
   const versionsByProduct = new Map<string, ExplosionRecipe[]>();
@@ -75,6 +109,8 @@ export function buildMissingRecipeReport(input: {
     if (!recipeCache.has(key)) recipeCache.set(key, pickRecipeForDate(versionsByProduct.get(code) || [], input.date, branchCode));
     return recipeCache.get(key)!;
   };
+  // Định lượng đã NGƯNG (khách 28/10/2026) là thiếu có chủ đích — không báo ở cả ba mục.
+  const stoppedFor = (code: string, branchCode: string) => isRecipeStoppedForDate(versionsByProduct.get(code) || [], input.date, branchCode);
 
   const sold = new Map<string, MissingRecipeSoldRow>();
   for (const row of input.soldRows) {
@@ -85,7 +121,7 @@ export function buildMissingRecipeReport(input: {
     const item = itemByCode.get(code);
     // Nguyên liệu / hàng mua bán bán thẳng từ tồn là đúng luật, không cần định lượng.
     if (item && !PRODUCED_TYPES.has(item.itemType)) continue;
-    if (recipeFor(code, branchCode)) continue;
+    if (recipeFor(code, branchCode) || stoppedFor(code, branchCode)) continue;
     const key = `${branchCode}|${code}`;
     const current = sold.get(key) || { branchCode, productCode: code, productName: item?.name || "", itemType: item?.itemType || null, quantity: 0, revenue: 0, rows: 0 };
     current.quantity += row.productQuantity || 0;
@@ -106,7 +142,7 @@ export function buildMissingRecipeReport(input: {
       if (!recipe) continue;
       for (const line of recipe.lines) {
         const code = up(line.item.code);
-        if (!PRODUCED_TYPES.has(up(line.item.itemType)) || recipeFor(code, branchCode)) continue;
+        if (!PRODUCED_TYPES.has(up(line.item.itemType)) || recipeFor(code, branchCode) || stoppedFor(code, branchCode)) continue;
         const key = `${branchCode}|${code}`;
         const current = components.get(key) || {
           branchCode,
@@ -122,9 +158,26 @@ export function buildMissingRecipeReport(input: {
     }
   }
 
+  // Chỉ BTP mới được rã khi kiểm dư / điều chuyển / huỷ (semiFinishedWithRecipeChecker).
+  const documents = new Map<string, MissingRecipeDocumentRow>();
+  for (const line of input.documentLines || []) {
+    const branchCode = up(line.branchCode);
+    const code = up(line.itemCode);
+    if (!input.branches.includes(branchCode) || up(line.itemType) !== "SEMI_FINISHED" || recipeFor(code, branchCode) || stoppedFor(code, branchCode)) continue;
+    const key = `${branchCode}|${code}`;
+    const current = documents.get(key) || { branchCode, itemCode: code, itemName: line.itemName, stocktakeQuantity: 0, issueQuantity: 0, documents: [] };
+    if (line.kind === "KIEM_KE") current.stocktakeQuantity += line.quantity;
+    else current.issueQuantity += line.quantity;
+    if (!current.documents.some((doc) => doc.code === line.documentCode)) {
+      current.documents.push({ code: line.documentCode, kind: line.kind, approved: line.approved });
+    }
+    documents.set(key, current);
+  }
+
   return {
     month: input.month,
     branches: input.branches,
+    documents: [...documents.values()].sort((a, b) => a.branchCode.localeCompare(b.branchCode) || b.documents.length - a.documents.length || a.itemCode.localeCompare(b.itemCode)),
     sold: [...sold.values()].sort((a, b) => a.branchCode.localeCompare(b.branchCode) || b.revenue - a.revenue || a.productCode.localeCompare(b.productCode)),
     components: [...components.values()].sort((a, b) => a.branchCode.localeCompare(b.branchCode) || b.usedIn.length - a.usedIn.length || a.itemCode.localeCompare(b.itemCode)),
   };
@@ -144,7 +197,8 @@ function monthBounds(month: string) {
 export async function loadMissingRecipeReport(db: TxClient, input: { month: string; branchCode: string }): Promise<MissingRecipeReport> {
   const { saleStart, saleEnd, docStart, docEnd } = monthBounds(input.month);
   const branchFilter = input.branchCode === "ALL" ? {} : { branchCode: input.branchCode };
-  const [soldRows, recipes, items, purchaseLines, nonInventoryGroups] = await Promise.all([
+  const semiFinished = { itemType: "SEMI_FINISHED" };
+  const [soldRows, recipes, items, purchaseLines, nonInventoryGroups, issueLines, stocktakeLines, batchLines] = await Promise.all([
     db.revenueImportRow.findMany({
       where: { ...branchFilter, deletedAt: null, saleDate: { gte: saleStart, lt: saleEnd }, productCode: { not: null } },
       select: { branchCode: true, productCode: true, productQuantity: true, netAmount: true, revenueSource: true },
@@ -156,9 +210,37 @@ export async function loadMissingRecipeReport(db: TxClient, input: { month: stri
       select: { quantity: true, item: { select: { code: true } }, transaction: { select: { branchCode: true } } },
     }),
     loadNonInventoryRevenueGroups(db as unknown as CategoryLookupClient),
+    db.inventoryTransactionLine.findMany({
+      where: { item: semiFinished, transaction: { ...branchFilter, deletedAt: null, transactionType: { in: [...EXPLOSION_ISSUE_TYPES] }, transactionDate: { gte: docStart, lt: docEnd } } },
+      select: { quantity: true, item: { select: { code: true, name: true, itemType: true } }, transaction: { select: { code: true, branchCode: true, transactionType: true } } },
+    }),
+    // Phiếu kiểm cả kho (không theo vị trí, không thuộc đợt gộp): phần dư của chính phiếu.
+    db.stocktakeLine.findMany({
+      where: { varianceQuantity: { gt: 0 }, item: semiFinished, stocktake: { ...branchFilter, deletedAt: null, batchId: null, locationCode: null, stocktakeDate: { gte: docStart, lt: docEnd } } },
+      select: { varianceQuantity: true, item: { select: { code: true, name: true, itemType: true } }, stocktake: { select: { code: true, branchCode: true, status: true } } },
+    }),
+    // Kiểm theo vị trí: phần dư chỉ biết khi đã duyệt gộp — lấy theo dòng của đợt.
+    db.stocktakeBatchLine.findMany({
+      where: { varianceQuantity: { gt: 0 }, item: semiFinished, batch: { ...branchFilter, cutoffAt: { gte: docStart, lt: docEnd } } },
+      select: { varianceQuantity: true, item: { select: { code: true, name: true, itemType: true } }, batch: { select: { code: true, branchCode: true, status: true } } },
+    }),
   ]);
+  const documentLines: MissingRecipeDocumentLine[] = [
+    ...issueLines.map((line) => ({
+      branchCode: line.transaction.branchCode, itemCode: line.item.code, itemName: line.item.name, itemType: line.item.itemType,
+      quantity: line.quantity, documentCode: line.transaction.code, kind: line.transaction.transactionType as MissingRecipeDocumentKind, approved: false,
+    })),
+    ...stocktakeLines.map((line) => ({
+      branchCode: line.stocktake.branchCode, itemCode: line.item.code, itemName: line.item.name, itemType: line.item.itemType,
+      quantity: line.varianceQuantity, documentCode: line.stocktake.code, kind: "KIEM_KE" as const, approved: line.stocktake.status === STOCKTAKE_APPROVED,
+    })),
+    ...batchLines.map((line) => ({
+      branchCode: line.batch.branchCode, itemCode: line.item.code, itemName: line.item.name, itemType: line.item.itemType,
+      quantity: line.varianceQuantity, documentCode: line.batch.code, kind: "KIEM_KE" as const, approved: line.batch.status === STOCKTAKE_APPROVED,
+    })),
+  ];
   const branches = input.branchCode === "ALL"
-    ? [...new Set(soldRows.map((row) => up(row.branchCode)))].sort()
+    ? [...new Set([...soldRows.map((row) => up(row.branchCode)), ...documentLines.map((line) => up(line.branchCode))])].sort()
     : [up(input.branchCode)];
   return buildMissingRecipeReport({
     month: input.month,
@@ -170,5 +252,6 @@ export async function loadMissingRecipeReport(db: TxClient, input: { month: stri
     soldRows,
     nonInventoryGroups,
     purchases: purchaseLines.map((line) => ({ branchCode: line.transaction.branchCode, itemCode: line.item.code, quantity: line.quantity })),
+    documentLines,
   });
 }

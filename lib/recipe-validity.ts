@@ -17,6 +17,8 @@ export type RecipeValidityInput = {
   branchCode?: string | null;
   version: number;
   effectiveFrom: Date | string;
+  /** Ngưng áp dụng từ ngày này (khách 28/10/2026) — khoảng hiệu lực dừng ở ngày hôm trước. */
+  stoppedFrom?: Date | string | null;
 };
 
 /** from: ngày bắt đầu áp dụng; to: ngày cuối còn áp dụng (null = tới nay). Ngày dạng YYYY-MM-DD. */
@@ -59,7 +61,16 @@ export function recipeValidity(recipes: RecipeValidityInput[]): Map<string, Reci
         result.set(recipe.id, null);
         return;
       }
-      result.set(recipe.id, { from, to: next ? previousDay(vnDay(next.effectiveFrom)) : null });
+      let to = next ? previousDay(vnDay(next.effectiveFrom)) : null;
+      if (recipe.stoppedFrom) {
+        const lastDay = previousDay(vnDay(recipe.stoppedFrom));
+        if (lastDay < from) {
+          result.set(recipe.id, null);
+          return;
+        }
+        if (!to || lastDay < to) to = lastDay;
+      }
+      result.set(recipe.id, { from, to });
     });
   }
   return result;

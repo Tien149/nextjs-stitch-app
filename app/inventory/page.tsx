@@ -11,7 +11,7 @@ import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
 import { goodsGroupKey, normalizeGoodsGroup } from "@/lib/goods-group";
-import { recipeValidity, validityInMonth, type RecipeValidity } from "@/lib/recipe-validity";
+import { recipeValidity, validityInMonth, vnDay, type RecipeValidity } from "@/lib/recipe-validity";
 import { canPerformMenuAction, canOpenPath, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
@@ -63,7 +63,7 @@ type Transaction = { id: string; code: string; transactionType: string; subType:
   /** Phiếu chế biến của rã BOM trên danh sách Nhập/Xuất kho chỉ mang 3 dòng đầu — số tổng nằm ở đây (xem compactFlowDocument). */
   lineSummary?: { count: number; totalCost: number; vatAmount: number; quantity: number; units: string[]; searchText: string };
   lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; vatRate: number | null; vatAmount: number; purchaseCostShare?: number; discountRate?: number | null; discountAmount?: number; note?: string | null; item: Item }> };
-type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item; quantityBase?: number; componentUnitCost?: number; lineCost?: number }> };
+type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; stoppedFrom?: string | null; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item; quantityBase?: number; componentUnitCost?: number; lineCost?: number }> };
 type CostSummaryRow = { productCode: string; branchCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number; appliedFrom?: string; appliedTo?: string };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
 /** Một dòng gom của GET view=waste-report: mặt hàng × loại hủy × nhà hàng trong khoảng thời gian. */
@@ -442,7 +442,7 @@ export default function InventoryPage() {
   const [stockFormOpen, setStockFormOpen] = useState(false);
   const [manualLines, setManualLines] = useState<Array<{ key: string; itemId: string; unitCode: string; note: string }>>([]);
   const [manualValues, setManualValues] = useState<Record<string, ReceiveLineValue>>({});
-  const [recipeForm, setRecipeForm] = useState({ productCode: "SP_COMBO01", productName: "Combo ban POS", sellingPrice: "45000", unit: "", outputConversionRate: "1", effectiveFrom: today(), itemId: "", quantity: "0.02", wasteRate: "3" });
+  const [recipeForm, setRecipeForm] = useState({ productCode: "SP_COMBO01", productName: "Combo ban POS", sellingPrice: "45000", unit: "", outputConversionRate: "1", effectiveFrom: today(), stoppedFrom: "", itemId: "", quantity: "0.02", wasteRate: "3" });
   /** Cửa hàng áp dụng công thức: rỗng = dùng chung, nhiều mã = các nơi pha giống hệt nhau. */
   const [recipeBranchCodes, setRecipeBranchCodes] = useState<string[]>([]);
   /**
@@ -1023,6 +1023,7 @@ export default function InventoryPage() {
   const recipeSignature = (recipe: Recipe) => JSON.stringify({
     product: recipe.productCode.toUpperCase(),
     effectiveFrom: String(recipe.effectiveFrom).slice(0, 10),
+    stoppedFrom: recipe.stoppedFrom ? vnDay(recipe.stoppedFrom) : "",
     unit: recipe.unit,
     outputConversionRate: recipe.outputConversionRate,
     sellingPrice: recipe.sellingPrice,
@@ -1978,6 +1979,8 @@ export default function InventoryPage() {
       unit: recipe.unit,
       outputConversionRate: String(recipe.outputConversionRate || 1),
       effectiveFrom: mode === "edit" ? String(recipe.effectiveFrom).slice(0, 10) : today(),
+      // Sao chép ra phiên bản mới thì không mang ngày ngưng của bản cũ theo.
+      stoppedFrom: mode === "edit" && recipe.stoppedFrom ? vnDay(recipe.stoppedFrom) : "",
     }));
     setRecipeBranchCodes(branchCodes);
     setRecipeRows(recipe.lines.length === 0
@@ -2007,7 +2010,7 @@ export default function InventoryPage() {
     setRecipeEditing(null);
     setRecipeBranchCodes([]);
     setRecipeRows([{ itemId: "", quantity: "1", unitCode: "", conversionRate: "", wasteRate: "0" }]);
-    setRecipeForm((form) => ({ ...form, productCode: "", productName: "", sellingPrice: "", unit: "", outputConversionRate: "1", effectiveFrom: today() }));
+    setRecipeForm((form) => ({ ...form, productCode: "", productName: "", sellingPrice: "", unit: "", outputConversionRate: "1", effectiveFrom: today(), stoppedFrom: "" }));
   };
 
   /**
@@ -2034,6 +2037,7 @@ export default function InventoryPage() {
         unit: recipeForm.unit,
         outputConversionRate: recipeForm.outputConversionRate,
         effectiveFrom: recipeForm.effectiveFrom,
+        stoppedFrom: recipeForm.stoppedFrom,
         lines,
         confirmRerun,
       }
@@ -4165,6 +4169,25 @@ export default function InventoryPage() {
                   <DateInput className="control" value={recipeForm.effectiveFrom} onChange={(value) => setRecipeForm({ ...recipeForm, effectiveFrom: value })} />
                 </Input>
               </div>
+              {/* Ngưng định lượng (khách 28/10/2026): chỉ khi sửa một phiên bản đã có. */}
+              {recipeEditing && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5 space-y-1.5">
+                  <div className="flex items-end gap-2">
+                    <Input label="Ngưng áp dụng từ ngày">
+                      <DateInput className="control" value={recipeForm.stoppedFrom} onChange={(value) => setRecipeForm({ ...recipeForm, stoppedFrom: value })} />
+                    </Input>
+                    {recipeForm.stoppedFrom && (
+                      <button type="button" className="secondary-button h-10 whitespace-nowrap" onClick={() => setRecipeForm({ ...recipeForm, stoppedFrom: "" })}>
+                        Bỏ ngưng
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Để trống = còn áp dụng. Từ ngày ngưng, lúc rã món này coi như <b>không có định lượng</b>: món bán xuất thẳng từ tồn, BTP không
+                    chế biến (trừ thẳng tồn BTP). Các ngày trước vẫn rã theo phiên bản này. Muốn dùng lại thì sao chép thành phiên bản mới có ngày áp dụng sau.
+                  </p>
+                </div>
+              )}
               <p className="text-[11px] text-slate-500 leading-relaxed !mt-1">
                 Định lượng khai cho <b>một mẻ</b> ĐVT chuẩn bị. Ví dụ BTP nấu mẻ 1kg (tồn kho gr) thì quy đổi = 1000. Món bán theo phần để trống (=1).
               </p>
@@ -4370,9 +4393,10 @@ export default function InventoryPage() {
                             {[...versions].sort((a, b) => a - b).map((version) => `V${version}`).join(" / ")}
                             <small>
                               Áp dụng {new Date(recipe.effectiveFrom).toLocaleDateString("vi-VN")}
-                              {validity?.to ? ` → ${dayLabel(validity.to)}` : validity ? " → nay" : " · bị phiên bản cùng ngày thay"}
+                              {validity?.to ? ` → ${dayLabel(validity.to)}` : validity ? " → nay" : recipe.stoppedFrom ? "" : " · bị phiên bản cùng ngày thay"}
                               {recipe.status === "ACTIVE" ? "" : " · cũ"}
                             </small>
+                            {recipe.stoppedFrom && <small className="font-bold text-rose-700">Ngưng từ {dayLabel(vnDay(recipe.stoppedFrom))}</small>}
                             {ingredientKeyword && visibleLines.length < recipe.lines.length && (
                               <small className="text-blue-600">{visibleLines.length}/{recipe.lines.length} nguyên liệu khớp</small>
                             )}

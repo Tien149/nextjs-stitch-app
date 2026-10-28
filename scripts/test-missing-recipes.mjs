@@ -49,3 +49,49 @@ test("thành phần BTP thiếu định lượng theo từng cửa hàng, kèm m
   const components = report.components.map((r) => `${r.branchCode}|${r.itemCode}|${r.usedIn.join("+")}|${r.purchasedQuantity}`);
   assert.deepEqual(components.sort(), ["ASA|BTP_BACON|SP_BACON|2000", "ASA|BTP_NEM|SP_COM|0", "NME|BTP_NEM|SP_COM|0"]);
 });
+
+test("BTP trên kiểm dư / điều chuyển / huỷ thiếu định lượng: gộp theo cửa hàng + mã, bỏ BTP có định lượng và mã không phải BTP", () => {
+  const line = (branchCode, it, quantity, documentCode, kind, approved = false) => ({
+    branchCode, itemCode: it.code, itemName: it.name, itemType: it.itemType, quantity, documentCode, kind, approved,
+  });
+  const docs = buildMissingRecipeReport({
+    month: "2026-09",
+    date: new Date("2026-09-30T23:59:59Z"),
+    branches: ["ASA", "NME"],
+    recipes,
+    items,
+    soldRows: [],
+    nonInventoryGroups: new Set(),
+    purchases: [],
+    documentLines: [
+      line("ASA", btpThieu, 3, "KK-0001", "KIEM_KE", true),
+      line("ASA", btpThieu, 2, "DC-0001", "DIEU_CHUYEN"),
+      line("ASA", btpThieu, 1, "XH-0001", "XUAT_HUY"),
+      line("ASA", btpCo, 5, "KK-0001", "KIEM_KE", true),
+      line("ASA", nvl, 9, "XH-0001", "XUAT_HUY"),
+      line("NME", btpThieu, 4, "KK-0002", "KIEM_KE"),
+      line("HCM", btpThieu, 4, "KK-0003", "KIEM_KE"),
+    ],
+  }).documents;
+  assert.deepEqual(docs.map((r) => `${r.branchCode}|${r.itemCode}|${r.stocktakeQuantity}|${r.issueQuantity}|${r.documents.map((d) => `${d.code}${d.approved ? "*" : ""}`).join(",")}`), [
+    "ASA|BTP_NEM|3|3|KK-0001*,DC-0001,XH-0001",
+    "NME|BTP_NEM|4|0|KK-0002",
+  ]);
+});
+
+test("định lượng đã ngưng là thiếu có chủ đích — không báo ở mục món bán", () => {
+  const stoppedRecipes = recipes.map((recipe) => recipe.productCode === "SP_COM" ? { ...recipe, stoppedFrom: "2026-09-15" } : recipe);
+  const result = buildMissingRecipeReport({
+    month: "2026-09",
+    date: new Date("2026-09-30T23:59:59Z"),
+    branches: ["ASA"],
+    recipes: stoppedRecipes,
+    items,
+    soldRows: [row("ASA", "SP_COM", 5)],
+    nonInventoryGroups: new Set(),
+    purchases: [],
+  });
+  assert.deepEqual(result.sold, []);
+  // SP_COM ngưng nên thành phần của nó cũng không còn bị quét.
+  assert.equal(result.components.some((r) => r.itemCode === "BTP_NEM"), false);
+});

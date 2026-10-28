@@ -12,6 +12,7 @@
  * biến mới sinh phiếu cùng lần rã doanh thu — hoàn tác / rã lại đi theo cả cụm RA-... như doanh thu.
  */
 import type { TxClient } from "@/lib/prisma";
+import { pickRecipeForDate, type ExplosionRecipe } from "@/lib/production-explosion";
 
 export const EXPLOSION_PENDING = "PENDING";
 const POSTED_PREFIX = "POSTED:";
@@ -43,16 +44,22 @@ type RecipeScopeClient = Pick<TxClient, "recipe">;
  * phiên bản định lượng dùng chung hoặc của chính cửa hàng (cùng phạm vi với pickRecipeForDate —
  * bản riêng của cửa hàng khác không tính). BTP không có định lượng thì không rã được, đi đường
  * nhập/xuất kho thường như cũ.
+ *
+ * Phiên bản rơi vào ngày của phiếu đã NGƯNG áp dụng (khách 28/10/2026) thì cũng như không có định
+ * lượng. `date` = ngày phiếu (mặc định lúc gọi); hàm trả về nhận thêm ngày riêng từng phiếu.
  */
-export async function semiFinishedWithRecipeChecker(tx: RecipeScopeClient, branchCode: string) {
-  const branch = (branchCode || "").trim().toUpperCase();
-  const recipes = await tx.recipe.findMany({ where: { deletedAt: null }, select: { productCode: true, branchCode: true } });
-  const codes = new Set<string>();
+export async function semiFinishedWithRecipeChecker(tx: RecipeScopeClient, branchCode: string, date: Date = new Date()) {
+  const recipes = await tx.recipe.findMany({
+    where: { deletedAt: null },
+    select: { id: true, productCode: true, productName: true, branchCode: true, unit: true, outputConversionRate: true, version: true, effectiveFrom: true, stoppedFrom: true, status: true },
+  });
+  const versionsByCode = new Map<string, ExplosionRecipe[]>();
   for (const recipe of recipes) {
-    const recipeBranch = (recipe.branchCode || "").trim().toUpperCase();
-    if (!recipeBranch || recipeBranch === "ALL" || recipeBranch === branch) codes.add(recipe.productCode.toUpperCase());
+    const code = recipe.productCode.toUpperCase();
+    versionsByCode.set(code, [...(versionsByCode.get(code) || []), { ...recipe, lines: [] }]);
   }
-  return (item: { code: string; itemType: string }) => item.itemType === "SEMI_FINISHED" && codes.has(item.code.toUpperCase());
+  return (item: { code: string; itemType: string }, at: Date = date) => item.itemType === "SEMI_FINISHED"
+    && Boolean(pickRecipeForDate(versionsByCode.get(item.code.toUpperCase()) || [], at, branchCode));
 }
 
 /**
@@ -63,11 +70,11 @@ export async function semiFinishedWithRecipeChecker(tx: RecipeScopeClient, branc
 export async function refreshTransferExplosionStatus(tx: TxClient, transactionId: string) {
   const transaction = await tx.inventoryTransaction.findUnique({
     where: { id: transactionId },
-    select: { transactionType: true, branchCode: true, explosionStatus: true, lines: { select: { item: { select: { code: true, itemType: true } } } } },
+    select: { transactionType: true, transactionDate: true, branchCode: true, explosionStatus: true, lines: { select: { item: { select: { code: true, itemType: true } } } } },
   });
   if (!transaction || !isExplosionIssueType(transaction.transactionType)) return null;
   if (explodedRunOf(transaction.explosionStatus)) return transaction.explosionStatus;
-  const isExplodable = await semiFinishedWithRecipeChecker(tx, transaction.branchCode);
+  const isExplodable = await semiFinishedWithRecipeChecker(tx, transaction.branchCode, transaction.transactionDate);
   const next = transaction.lines.some((line) => isExplodable(line.item)) ? EXPLOSION_PENDING : null;
   if (next !== transaction.explosionStatus) {
     await tx.inventoryTransaction.update({ where: { id: transactionId }, data: { explosionStatus: next } });
@@ -165,7 +172,7 @@ export async function loadPendingExplosionSources(
       date: transfer.transactionDate,
       warehouseCode: transfer.warehouseCode,
       demands: transfer.lines
-        .filter((line) => isExplodable(line.item))
+        .filter((line) => isExplodable(line.item, transfer.transactionDate))
         .map((line) => ({ productCode: line.item.code, quantity: line.quantity })),
     });
   }

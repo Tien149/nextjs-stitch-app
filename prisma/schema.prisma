@@ -1485,6 +1485,9 @@ model Recipe {
   sellingPrice         Float    @default(0)
   version              Int      @default(1)
   effectiveFrom        DateTime @default(now())
+  /// Ngưng áp dụng TỪ ngày này (khách 28/10/2026): từ ngày đó phiên bản không còn dùng để rã —
+  /// món bán xuất thẳng từ tồn, BTP không chế biến. NULL = áp tới khi có phiên bản mới.
+  stoppedFrom          DateTime?
   status               String   @default("ACTIVE")
   note                 String?
   createdAt            DateTime @default(now())
