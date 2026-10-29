@@ -23,6 +23,7 @@ import { ActionIcon } from "@/components/ActionIcon";
 import { DocLink, docHref } from "@/components/DocLink";
 import { FilterApplyButton } from "@/components/FilterApplyButton";
 import { useAppliedFilters } from "@/lib/use-applied-filters";
+import { ShowMoreRows, useRowLimit } from "@/components/ShowMoreRows";
 
 /** Nguồn chi phí có mã chứng từ mở được bằng /open/<mã>. */
 const LINKABLE_EXPENSE_SOURCES = new Set(["VOUCHER_CASH", "VOUCHER_BANK", "MONEY_TRANSFER", "ACCRUAL", "DEPRECIATION", "DEBT_PAYABLE", "INVENTORY", "ASSET"]);
@@ -391,6 +392,8 @@ export default function FinanceOperationsPage() {
       .some((value) => value.toLowerCase().includes(normalizedTransferQuery))
       || (transferCodeQuery.length > 0 && row.code.toLowerCase().includes(transferCodeQuery)));
   }, [data.cashbook, normalizedTransferQuery, transferCodeQuery, moneySourceSummaryLabel]);
+  // Sổ quỹ cả tháng (chọn Tất cả cửa hàng) có thể hàng nghìn dòng: vẽ 200 dòng một lượt (29/10/2026).
+  const cashbookRows = useRowLimit(200, `${period}|${normalizedTransferQuery}|${data.cashbook.length}`);
   /**
    * Mã dán từ Excel/Zalo hay dính khoảng trắng hoặc ký tự vô hình ở giữa, và người dùng hay chỉ
    * gõ đuôi số (00057). Trước đây phải gõ khớp tuyệt đối cả mã mới hiện khung chi tiết, nên khách
@@ -1863,7 +1866,7 @@ export default function FinanceOperationsPage() {
                           </td>
                         </tr>
                       ) : (
-                        filteredCashbook.map((row) => (
+                        filteredCashbook.slice(0, cashbookRows.limit).map((row) => (
                           <tr key={`${row.type}-${row.id}`} className={`${normalizedTransferQuery && row.code.toLowerCase().includes(normalizedTransferQuery) ? "bg-indigo-50/70" : ""} hover:bg-slate-50/40 transition-colors`}>
                             <td className="px-5 py-4 whitespace-nowrap text-slate-500 text-xs font-medium">
                               {new Date(row.date).toLocaleDateString("vi-VN")}
@@ -1905,6 +1908,7 @@ export default function FinanceOperationsPage() {
                     </tbody>
                   </table>
                 </div>
+                <ShowMoreRows shown={Math.min(cashbookRows.limit, filteredCashbook.length)} total={filteredCashbook.length} step={200} onMore={cashbookRows.more} onAll={cashbookRows.all} unit="dòng sổ quỹ" />
               </section>
             </div>
           </div>

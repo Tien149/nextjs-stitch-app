@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { priceDeviation } from "@/lib/supplier-price-list";
 import { DocLink } from "@/components/DocLink";
 import { focusRowClass, readDocFocus, scrollToDoc } from "@/lib/doc-focus";
@@ -47,6 +47,7 @@ import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeE
 import { vnDateTimeValue } from "@/lib/date-range";
 
 import { ActionIcon } from "@/components/ActionIcon";
+import { ShowMoreRows, useRowLimit } from "@/components/ShowMoreRows";
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; goodsGroup?: string | null; taxItemCode?: string | null; expensePnlItemCode?: string | null; minStock: number; requiresImage: boolean; status?: string | null; note?: string | null; unitConversions?: UnitConversion[] };
 type ItemGroup = { id: string; code: string; name: string; group: string | null; subGroup: string | null };
@@ -113,8 +114,8 @@ const loadTracker = { seq: 0, movementSeq: 0, movementRange: "", sectionSeq: 0, 
  */
 const TAB_SECTIONS: Record<string, string[]> = {
   stock: ["stock"],
-  // Đếm định lượng đang dùng mặt hàng để khoá nút xoá.
-  items: ["recipes"],
+  // Số định lượng đang dùng mặt hàng (khoá nút xoá) — máy chủ đếm sẵn, không tải cả định lượng.
+  items: ["recipeUsage"],
   inbound: ["flow"],
   outbound: ["flow"],
   transfer: ["transfer"],
@@ -146,7 +147,7 @@ const RECIPE_VIEWS: Array<{ id: RecipeView; label: string; icon: string }> = [
   { id: "recipes", label: "Định lượng", icon: "menu_book" },
   { id: "monthly", label: "Thông tin định lượng trong tháng", icon: "fact_check" },
 ];
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; /** Mã món → FOOD (Bếp) / DRINK (Bar): nhóm doanh thu của mặt hàng, chưa gán thì theo file POS. */ productKitchenKinds?: Record<string, string>; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[]; /** Hạng mục P&L chọn cho phiếu Xuất khác. */ issuePnlItems?: Array<{ code: string; name: string; groupName: string }> };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; /** Mã món → FOOD (Bếp) / DRINK (Bar): nhóm doanh thu của mặt hàng, chưa gán thì theo file POS. */ productKitchenKinds?: Record<string, string>; /** Mặt hàng → số định lượng đang dùng (tab Mặt hàng). */ recipeUsage?: Record<string, number>; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[]; /** Hạng mục P&L chọn cho phiếu Xuất khác. */ issuePnlItems?: Array<{ code: string; name: string; groupName: string }> };
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
 type ReturnSourceReceipt = { id: string; code: string; transactionDate: string; branchCode: string; warehouseCode: string; referenceCode: string | null; lines: Array<{ itemId: string; itemCode: string; itemName: string; unit: string; quantity: number; returned: number; refundUnit: number }> };
@@ -1015,6 +1016,7 @@ export default function InventoryPage() {
   const missingRevenueGroupCount = data.items.filter((item) => (item.itemType === "FINISHED" || item.itemType === "GOODS") && !item.revenueGroup).length;
   // Dữ liệu cũ gán nhầm LOẠI THU (thu tiền thừa, thu đặt cọc...) vào ô nhóm doanh thu: giữ
   // nguyên để không mất dữ liệu, nhưng phải đập vào mắt để người dùng gán lại cho đúng.
+  const itemRows = useRowLimit(100, JSON.stringify([itemSearch, itemTypeFilter, goodsGroupFilter, revenueGroupFilter, itemStatusFilter]));
   const misassignedRevenueGroupCount = data.items.filter((item) => isMisassignedRevenueGroup(item.revenueGroup)).length;
 
   // Định lượng khai theo cửa hàng: mỗi nơi lưu một bản, nhưng các nơi pha GIỐNG HỆT nhau thì
@@ -1033,7 +1035,9 @@ export default function InventoryPage() {
       .sort(),
   });
   type RecipeGroup = { key: string; recipe: Recipe; branchCodes: string[]; versions: number[]; ids: string[] };
-  const groupedRecipes: RecipeGroup[] = (() => {
+  // Các số suy ra từ ~1.700 định lượng chỉ tính lại khi dữ liệu / bộ lọc đổi — trước đây tính lại mỗi
+  // lần gõ phím ở BẤT KỲ ô nào của màn Kho (khách 29/10/2026: màn kho & định lượng nặng, chậm).
+  const groupedRecipes: RecipeGroup[] = useMemo(() => {
     const groups = new Map<string, RecipeGroup>();
     for (const recipe of data.recipes) {
       const branchCode = (recipe.branchCode || "").toUpperCase();
@@ -1048,27 +1052,27 @@ export default function InventoryPage() {
       }
     }
     return [...groups.values()];
-  })();
+  }, [data.recipes]);
 
   // Ô tìm của bảng "Chi tiết các phiên bản định lượng": theo mã / tên món, và cả mã / tên
   // nguyên liệu (tra xem món nào đang dùng một nguyên liệu). Không phân biệt dấu, hoa thường.
   const recipeKeyword = foldSearchText(recipeSearch.trim());
   const ingredientKeyword = foldSearchText(recipeIngredientSearch.trim());
   /** Khoảng hiệu lực từng phiên bản — cùng luật chọn phiên bản lúc rã (lib/recipe-validity.ts). */
-  const recipeValidityById = recipeValidity(data.recipes);
+  const recipeValidityById = useMemo(() => recipeValidity(data.recipes), [data.recipes]);
   const groupValidity = (ids: string[]): RecipeValidity | null => {
     const ranges = ids.map((id) => recipeValidityById.get(id)).filter((range): range is RecipeValidity => Boolean(range));
     if (ranges.length === 0) return null;
     // Các cửa hàng gom chung một dòng có thể có bản kế tiếp khác ngày: lấy ngày kết thúc muộn nhất.
     return ranges.reduce((acc, range) => ({ from: acc.from < range.from ? acc.from : range.from, to: !acc.to || !range.to ? null : acc.to > range.to ? acc.to : range.to }));
   };
-  const lineMatchesIngredient = (line: Recipe["lines"][number]) =>
-    !ingredientKeyword || foldSearchText(line.item.code).includes(ingredientKeyword) || foldSearchText(line.item.name).includes(ingredientKeyword);
+  const lineMatchesIngredient = useCallback((line: Recipe["lines"][number]) =>
+    !ingredientKeyword || foldSearchText(line.item.code).includes(ingredientKeyword) || foldSearchText(line.item.name).includes(ingredientKeyword), [ingredientKeyword]);
   /**
    * Bếp / Bar của từng món định lượng: thành phẩm theo nhóm doanh thu (như sheet giá thành); BTP
    * không có nhóm doanh thu nên đi theo món dùng nó — BTP vừa bếp vừa bar dùng thì hiện ở cả hai.
    */
-  const recipeKitchenKinds = (() => {
+  const recipeKitchenKinds = useMemo(() => {
     const usedBy = new Map<string, Set<string>>();
     for (const recipe of data.recipes) {
       for (const line of recipe.lines) {
@@ -1097,12 +1101,13 @@ export default function InventoryPage() {
       return result;
     };
     return (code: string) => kindsOf(code.toUpperCase(), new Set());
-  })();
+  }, [data.recipes, data.productKitchenKinds]);
   const recipeStoreKey = recipeStoreFilter.toUpperCase();
-  const recipeProductsWithStoreVersion = new Set(groupedRecipes
-    .filter((group) => group.branchCodes.includes(recipeStoreKey))
-    .map((group) => group.recipe.productCode.toUpperCase()));
-  const filteredRecipeGroups = groupedRecipes.filter(({ recipe, ids, branchCodes }) => {
+  const filteredRecipeGroups = useMemo(() => {
+    const recipeProductsWithStoreVersion = new Set(groupedRecipes
+      .filter((group) => group.branchCodes.includes(recipeStoreKey))
+      .map((group) => group.recipe.productCode.toUpperCase()));
+    return groupedRecipes.filter(({ recipe, ids, branchCodes }) => {
     if (recipeMonth && !ids.some((id) => validityInMonth(recipeValidityById.get(id), recipeMonth))) return false;
     // Cửa hàng: đúng luật chọn định lượng lúc rã — bản riêng của cửa hàng, món chưa có bản riêng thì bản dùng chung.
     if (recipeStoreFilter !== "ALL" && !branchCodes.includes(recipeStoreKey)
@@ -1118,7 +1123,9 @@ export default function InventoryPage() {
       recipe.productName,
       ...recipe.lines.flatMap((line) => [line.item.code, line.item.name]),
     ].some((value) => foldSearchText(value || "").includes(recipeKeyword));
-  });
+    });
+  }, [groupedRecipes, recipeStoreKey, recipeStoreFilter, recipeMonth, recipeValidityById, recipeKitchenFilter, recipeKitchenKinds, ingredientKeyword, lineMatchesIngredient, recipeKeyword]);
+  const recipeListRows = useRowLimit(50, JSON.stringify([recipeKeyword, ingredientKeyword, recipeMonth, recipeStoreFilter, recipeKitchenFilter]));
   const recipeFilterActive = Boolean(recipeKeyword || ingredientKeyword || recipeMonth || recipeStoreFilter !== "ALL" || recipeKitchenFilter !== "ALL");
   const dayLabel = (day: string | null | undefined) => (day ? `${day.slice(8, 10)}/${day.slice(5, 7)}/${day.slice(0, 4)}` : "");
   /**
@@ -2140,12 +2147,17 @@ export default function InventoryPage() {
 
   // Mặt hàng đang nằm trong định lượng nào thì API chặn xoá — đếm sẵn để khoá nút ngay trên
   // bảng, người dùng biết lý do trước khi bấm thay vì bấm xong mới ăn lỗi.
-  const recipeUsageByItem = new Map<string, number>();
-  for (const recipe of data.recipes) {
-    for (const itemId of new Set(recipe.lines.map((line) => line.item.id))) {
-      recipeUsageByItem.set(itemId, (recipeUsageByItem.get(itemId) || 0) + 1);
+  const recipeUsageByItem = useMemo(() => {
+    // Máy chủ đếm sẵn (phần recipeUsage); đã tải định lượng (tab khác) mà chưa có số đếm thì tự đếm.
+    if (data.recipeUsage) return new Map(Object.entries(data.recipeUsage));
+    const usage = new Map<string, number>();
+    for (const recipe of data.recipes) {
+      for (const itemId of new Set(recipe.lines.map((line) => line.item.id))) {
+        usage.set(itemId, (usage.get(itemId) || 0) + 1);
+      }
     }
-  }
+    return usage;
+  }, [data.recipes, data.recipeUsage]);
   /**
    * Lý do không xoá được mà màn hình tự biết (tồn kho, định lượng). Các điều kiện còn lại —
    * đã phát sinh phiếu nhập/xuất, đang nằm trong đề nghị/đơn mua hàng — chỉ server biết đủ,
@@ -2798,7 +2810,7 @@ export default function InventoryPage() {
                 { label: "Thao tác", align: "right" },
               ]}
             >
-              {filteredItems.map((item) => (
+              {filteredItems.slice(0, itemRows.limit).map((item) => (
                 <tr key={item.id} className="border-t border-slate-100">
                   <Cell>
                     <CopyableText value={item.code}><b>{item.code}</b></CopyableText>
@@ -2863,6 +2875,7 @@ export default function InventoryPage() {
                 </tr>
               ))}
             </Table>
+            <ShowMoreRows shown={Math.min(itemRows.limit, filteredItems.length)} total={filteredItems.length} step={100} onMore={itemRows.more} onAll={itemRows.all} unit="mặt hàng" />
           </section>
 
           {editingItem && (
@@ -4372,7 +4385,7 @@ export default function InventoryPage() {
                     <td colSpan={13} className="px-4 py-10 text-center text-sm text-slate-400">Không có định lượng nào khớp bộ lọc.</td>
                   </tr>
                 )}
-                {filteredRecipeGroups.map(({ key, recipe, branchCodes, versions, ids }) => {
+                {filteredRecipeGroups.slice(0, recipeListRows.limit).map(({ key, recipe, branchCodes, versions, ids }) => {
                   const visibleLines = recipe.lines.filter(lineMatchesIngredient);
                   const lines = visibleLines.length > 0 ? visibleLines : [null];
                   const validity = groupValidity(ids);
@@ -4446,6 +4459,7 @@ export default function InventoryPage() {
                   ));
                 })}
               </Table>
+              <ShowMoreRows shown={Math.min(recipeListRows.limit, filteredRecipeGroups.length)} total={filteredRecipeGroups.length} step={50} onMore={recipeListRows.more} onAll={recipeListRows.all} unit="định lượng" />
             </section>
           </div>
         </div>

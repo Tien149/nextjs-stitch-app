@@ -16,6 +16,7 @@ import { FilterApplyButton } from "@/components/FilterApplyButton";
 import { useAppliedFilters } from "@/lib/use-applied-filters";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { docHref } from "@/components/DocLink";
+import { ShowMoreRows, useRowLimit } from "@/components/ShowMoreRows";
 
 /** Loại bút toán có sourceCode là mã chứng từ mở được bằng /open/<mã> (xem app/api/doc-link). */
 const DOC_LINK_SOURCE_TYPES = new Set(["VOUCHER", "VOUCHER_COUNTERPART", "MONEY_TRANSFER", "MONEY_TRANSFER_COUNTERPART", "MONEY_TRANSFER_FEE", "ASSET_ACQUISITION", "DEPRECIATION", "SUPPLIER_PAYABLE", "INVENTORY_ISSUE", "ACCRUAL", "DEBT_PAYABLE", "DEBT_RECEIVABLE", "BANK_STATEMENT"]);
@@ -45,6 +46,8 @@ export default function AccountingPage() {
   const [data, setData] = useState<Data>({ accounts: [], entries: [], totals: { debit: 0, credit: 0, difference: 0 } });
   const [categories, setCategories] = useState<MasterDataOption[]>([]);
   const [showAccountingDetails, setShowAccountingDetails] = useState(false);
+  // Sổ nhật ký có tới 1.000 bút toán (vài nghìn dòng Nợ/Có): vẽ 200 bút toán một lượt (29/10/2026).
+  const entryRows = useRowLimit(200, `${data.entries.length}|${data.entries[0]?.id || ""}`);
   const [message, setMessage] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -630,7 +633,7 @@ export default function AccountingPage() {
                           </td>
                         </tr>
                       ) : (
-                        data.entries.flatMap((entry) =>
+                        data.entries.slice(0, entryRows.limit).flatMap((entry) =>
                           entry.lines.map((line, index) => (
                             <tr key={line.id} className="hover:bg-slate-50/40 transition-colors">
                               <td className="px-5 py-4 whitespace-nowrap text-slate-500 text-xs font-medium align-top">
@@ -707,7 +710,7 @@ export default function AccountingPage() {
                           </td>
                         </tr>
                       ) : (
-                        data.entries.map((entry) => {
+                        data.entries.slice(0, entryRows.limit).map((entry) => {
                           const badge = getSourceLabel(entry.sourceType);
                           return (
                             <tr key={entry.id} className="hover:bg-slate-50/40 transition-colors">
@@ -790,6 +793,7 @@ export default function AccountingPage() {
                     </tbody>
                   </table>
                 )}
+                <ShowMoreRows shown={Math.min(entryRows.limit, data.entries.length)} total={data.entries.length} step={200} onMore={entryRows.more} onAll={entryRows.all} unit="bút toán" />
               </div>
             </section>
           </div>

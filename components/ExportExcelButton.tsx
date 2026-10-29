@@ -39,6 +39,8 @@ export default function ExportExcelButton({
     }
     setIsExporting(true);
     try {
+      // Bảng chỉ vẽ một phần (components/ShowMoreRows): vẽ đủ mọi dòng đang lọc rồi mới đọc.
+      root?.querySelectorAll<HTMLButtonElement>("[data-export-show-all]").forEach((button) => button.click());
       const rowCount = await exportTableToExcel(table, { fileName, sheetName });
       if (rowCount === 0) window.alert("Bảng đang trống, chưa có dữ liệu để xuất.");
     } catch (error) {

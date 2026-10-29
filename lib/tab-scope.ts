@@ -26,7 +26,7 @@ const tabDataKeys: Record<string, Record<string, string[]>> = {
     inbound: ["transactions", "flowTransactions", "stockMovements"],
     outbound: ["transactions", "flowTransactions", "stockMovements"],
     transfer: ["transactions", "transferTransactions", "transferRequests", "transferDestinations"],
-    items: ["items"],
+    items: ["items", "recipeUsage"],
     recipes: ["recipes", "costSummary"],
     production: ["recipes", "transactions", "flowTransactions", "pendingSales"],
     // Form kiểm kê dựng danh sách từ balances/items — chỉ cấp "stocktakes" thì người dùng

@@ -596,6 +596,7 @@ const INVENTORY_SECTION_KEYS: Record<string, string[]> = {
   transfer: ["transferTransactions"],
   waste: ["wasteTransactions", "wasteReport"],
   recipes: ["recipes", "costSummary", "productKitchenKinds"],
+  recipeUsage: ["recipeUsage"],
   stocktake: ["stocktakes"],
 };
 
@@ -1350,6 +1351,17 @@ export async function GET(request: Request) {
       }
     }
 
+    // Tab Mặt hàng chỉ cần biết mã nằm trong bao nhiêu định lượng (khoá nút xoá) — đếm ở máy chủ
+    // thay vì tải cả ~1.700 định lượng kèm nguyên liệu về máy (khách 29/10/2026: màn kho chậm).
+    const recipeUsage = sections?.has("recipeUsage")
+      ? Object.fromEntries((await prisma.$queryRaw<Array<{ itemId: string; count: number }>>(Prisma.sql`
+          SELECT l."itemId", COUNT(DISTINCT l."recipeId")::int AS count
+          FROM "RecipeLine" l JOIN "Recipe" r ON r."id" = l."recipeId"
+          WHERE r."deletedAt" IS NULL
+          GROUP BY 1
+        `)).map((row) => [row.itemId, row.count]))
+      : undefined;
+
     // Hạng mục P&L cho phiếu Xuất khác (khách 20/10/2026) — danh sách nhẹ, dùng chung các tab.
     const [pnlItemRows, pnlGroupRows] = await Promise.all([
       prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM", status: "ACTIVE" }, select: { code: true, name: true, subGroup: true }, orderBy: { name: "asc" } }),
@@ -1358,7 +1370,7 @@ export async function GET(request: Request) {
     const pnlGroupName = new Map(pnlGroupRows.map((group) => [group.code, group.name]));
     const issuePnlItems = pnlItemRows.map((item) => ({ code: item.code, name: item.name, groupName: item.subGroup ? pnlGroupName.get(item.subGroup) || item.subGroup : "" }));
 
-    const payload: Record<string, unknown> = { issuePnlItems, items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, ...movementPayload(stockMovements, searchParams), itemGroups, revenueGroups, itemRevenueGroups, receiptCategories, costSummary, productKitchenKinds, wasteReport, pendingSales };
+    const payload: Record<string, unknown> = { issuePnlItems, items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, ...movementPayload(stockMovements, searchParams), itemGroups, revenueGroups, itemRevenueGroups, receiptCategories, costSummary, productKitchenKinds, recipeUsage, wasteReport, pendingSales };
     // Phần không xin thì bỏ hẳn khỏi phản hồi (không trả mảng rỗng) để màn hình giữ số đã tải trước đó.
     if (sections) {
       for (const [section, keys] of Object.entries(INVENTORY_SECTION_KEYS)) {

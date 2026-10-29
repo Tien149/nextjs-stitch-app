@@ -104,7 +104,7 @@ export async function GET(request: Request) {
       // nhất; tổng Nợ / Có cộng trên TOÀN BỘ khoảng ở truy vấn riêng bên dưới.
       prisma.journalEntry.findMany({
         where: entryWhere,
-        include: { lines: { include: { account: true }, orderBy: { debit: "desc" } } },
+        include: { lines: { include: { account: { select: { id: true, code: true, name: true, accountType: true, reportGroup: true } } }, orderBy: { debit: "desc" } } },
         orderBy: [{ entryDate: "desc" }, { code: "desc" }],
         take: 1000,
       }),

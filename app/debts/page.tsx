@@ -384,8 +384,7 @@ export default function DebtsPage() {
       setTransferOpen(false);
       setTransferForm((current) => ({ ...current, fromPartnerCode: "", toPartnerCode: "", amount: "", dueDate: "", description: "" }));
       setMessage(`Đã lập phiếu chuyển công nợ ${payload.code}${payload.settled?.length ? ` · gạch ${payload.settled.join(", ")}` : ""}. Bút toán Nợ 331 / Có 331, không qua quỹ, không vào P&L.`);
-      await loadRows();
-      if (ledger) await loadLedger(ledger.partnerCode);
+      await reloadRowsAndLedger();
     } finally {
       setTransferSaving(false);
     }
@@ -438,8 +437,7 @@ export default function DebtsPage() {
       setMessage(createIsAdvance
         ? `Đã lập phiếu hoàn ứng ${payload.code} (${money(payload.totalAmount)} đ) — đã trừ vào tạm ứng của nhân viên; chi phí lên P&L sau khi Đồng bộ ghi sổ.`
         : (payload.lineCount > 1 ? `Đã tạo phiếu công nợ ${payload.code} gồm ${payload.lineCount} dòng hạng mục.` : `Đã tạo công nợ ${payload.code}.`) + allocationNote);
-      await loadRows();
-      if (ledger) await loadLedger(ledger.partnerCode);
+      await reloadRowsAndLedger();
     } catch {
       setCreateError("Không kết nối được máy chủ. Vui lòng thử lại.");
     } finally {
@@ -484,6 +482,9 @@ export default function DebtsPage() {
     const response = await fetch(`/api/debts?partnerCode=${encodeURIComponent(partnerCode)}&branchCode=${encodeURIComponent(branchScope)}${rangeQuery}`);
     if (response.ok) setLedger((await response.json()) as LedgerDetail);
   }, [branchScope, rangeQuery]);
+
+  /** Sau khi lưu: bảng tổng và sổ chi tiết đang mở tải SONG SONG (mỗi lượt dựng lại công nợ — trước đây chờ lần lượt). */
+  const reloadRowsAndLedger = () => Promise.all([loadRows(), ledger ? loadLedger(ledger.partnerCode) : null]);
 
   const closeLedger = () => {
     applyFiltersNow({ ledgerPartner: "" });
@@ -580,8 +581,7 @@ export default function DebtsPage() {
       }
       const savedCode = editingDebt.code;
       setEditingDebt(null);
-      await loadRows();
-      if (ledger) await loadLedger(ledger.partnerCode);
+      await reloadRowsAndLedger();
       setMessage(`Đã lưu thay đổi khoản công nợ ${savedCode}.`);
     } finally {
       setSaving(false);
@@ -604,8 +604,7 @@ export default function DebtsPage() {
       const deletedCode = deletingDebt.code;
       if (editingDebt?.id === deletingDebt.id) setEditingDebt(null);
       setDeletingDebt(null);
-      await loadRows();
-      if (ledger) await loadLedger(ledger.partnerCode);
+      await reloadRowsAndLedger();
       setMessage(`Đã chuyển khoản công nợ ${deletedCode} vào Thùng rác.`);
     } finally {
       setDeleting(false);
@@ -629,8 +628,7 @@ export default function DebtsPage() {
       const deletedGroup = deletingGroup.groupCode;
       if (editingDebt?.groupCode === deletedGroup) setEditingDebt(null);
       setDeletingGroup(null);
-      await loadRows();
-      if (ledger) await loadLedger(ledger.partnerCode);
+      await reloadRowsAndLedger();
       setMessage(`Đã chuyển cả phiếu công nợ ${deletedGroup} (${payload.deleted?.length || 0} dòng) vào Thùng rác.`);
     } finally {
       setDeleting(false);
