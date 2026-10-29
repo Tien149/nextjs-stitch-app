@@ -6,6 +6,7 @@ import CopyableText from "@/components/CopyableText";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { goodsGroupKey, normalizeGoodsGroup } from "@/lib/goods-group";
+import { matchesSearch } from "@/lib/search-text";
 import { isLocationStocktakeItemType, resolveUnitInputs } from "@/lib/stocktake-consolidate";
 import { inStocktakeRange, type StocktakeFilter } from "@/components/inventory/stocktake-filter";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
@@ -193,15 +194,27 @@ export default function StocktakeByLocation(props: {
     setCountForm((form) => ({ ...form, locationCode: code }));
     if (!editingSheet) loadTemplate(locationsOf(activeWarehouse).find((location) => location.code === code) || null);
   };
-  const addCountItem = () => {
-    const code = addItemCode.trim().toUpperCase();
-    const item = scopedItems.find((candidate) => candidate.code.toUpperCase() === code);
+  // Gợi ý tự vẽ thay <datalist>: Safari iPhone không hiện gợi ý datalist (khách 29/10/2026).
+  const addSuggestions = useMemo(() => {
+    const keyword = addItemCode.trim();
+    if (!keyword) return [];
+    return scopedItems.filter((item) => matchesSearch(keyword, [item.code, item.name])).slice(0, 8);
+  }, [addItemCode, scopedItems]);
+  const addCountItem = (picked?: Item) => {
+    const keyword = addItemCode.trim();
+    const item = picked
+      || scopedItems.find((candidate) => candidate.code.toUpperCase() === keyword.toUpperCase())
+      || (addSuggestions.length === 1 ? addSuggestions[0] : undefined);
     if (!item) {
-      setMessage(`Không tìm thấy mã ${code} trong nhóm nguyên liệu / bao bì.`);
+      setMessage(addSuggestions.length > 1
+        ? `Có ${addSuggestions.length} mã khớp "${keyword}" — chạm chọn đúng mã trong danh sách gợi ý.`
+        : `Không tìm thấy "${keyword}" trong nhóm nguyên liệu / bao bì.`);
       return;
     }
-    if (!countRows.some((row) => row.itemId === item.id)) setCountRows((rows) => [...rows, { itemId: item.id, inputs: {}, unitCost: "", reason: "" }]);
+    // Mã thêm ngoài form lên ĐẦU danh sách (đã có thì kéo lên đầu, giữ số đã nhập).
+    setCountRows((rows) => [rows.find((row) => row.itemId === item.id) || { itemId: item.id, inputs: {}, unitCost: "", reason: "" }, ...rows.filter((row) => row.itemId !== item.id)]);
     setAddItemCode("");
+    setCountSearch("");
   };
   const patchCount = (itemId: string, patch: Partial<CountRow>) => setCountRows((rows) => rows.map((row) => (row.itemId === itemId ? { ...row, ...patch } : row)));
   const baseQuantityOf = (row: CountRow) => {
@@ -533,8 +546,20 @@ export default function StocktakeByLocation(props: {
             <>
               <div className="flex flex-wrap items-end gap-2">
                 <input type="search" className="control !mt-0 flex-1 min-w-[180px]" placeholder="Tìm nhanh mặt hàng..." value={countSearch} onChange={(e) => setCountSearch(e.target.value)} />
-                <input list="stocktake-location-items" className="control !mt-0 w-44" placeholder="Thêm mã ngoài form" value={addItemCode} onChange={(e) => setAddItemCode(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCountItem(); } }} />
-                <button type="button" className="secondary-button" onClick={addCountItem}>Thêm</button>
+                <div className="relative w-56 max-w-full">
+                  <input type="search" className="control !mt-0 w-full" placeholder="Thêm mã ngoài form (mã / tên)" value={addItemCode} onChange={(e) => setAddItemCode(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCountItem(); } }} />
+                  {addSuggestions.length > 0 && (
+                    <div className="absolute left-0 top-full z-30 mt-1 w-72 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
+                      {addSuggestions.map((item) => (
+                        <button key={item.id} type="button" className="block w-full border-b border-slate-100 px-3 py-2 text-left last:border-b-0 hover:bg-blue-50 active:bg-blue-100" onClick={() => addCountItem(item)}>
+                          <span className="block text-sm font-medium text-slate-800">{item.name}</span>
+                          <span className="block text-xs text-slate-500">{item.code} · {item.unit}{countRows.some((row) => row.itemId === item.id) ? " · đã có trên phiếu" : ""}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <button type="button" className="secondary-button" onClick={() => addCountItem()}>Thêm</button>
                 {!editingSheet && <button type="button" className="secondary-button" onClick={() => loadTemplate(activeLocation)}>Nạp lại form mẫu</button>}
               </div>
               <p className="text-xs text-slate-500">
