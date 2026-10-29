@@ -36,7 +36,7 @@ const fileRows = [
   ["15/03/2031", "HCM", "CBTEST_CON2", "Món con 2", "CBTEST_COMBO", 2, "ĐỒ ĂN", "TM_HCM", 0, 0],
   // Cùng món con nhưng bán lẻ: vẫn phải rã.
   ["15/03/2031", "HCM", "CBTEST_CON1", "Món con 1", "", 1, "ĐỒ ĂN", "TM_HCM", 90000, 90000],
-  // Ô Mã combo ghi "-" (POS để trống kiểu này, khách 29/10/2026) = bán lẻ, vẫn rã.
+  // Ô Mã combo có ký tự bất kỳ, kể cả "-" (khách chốt 29/10/2026) = không rã.
   ["15/03/2031", "HCM", "CBTEST_CON2", "Món con 2", "-", 3, "ĐỒ ĂN", "TM_HCM", 120000, 120000],
 ];
 
@@ -46,7 +46,7 @@ test("mã tham chiếu: món con combo tách khỏi món bán lẻ; file không 
   assert.notEqual(generatedRevenuePosReference({ ...base, combo_code: "CBTEST_COMBO" }), generatedRevenuePosReference(base));
 });
 
-test("import: dòng combo chờ rã, món con có mã combo không rã, món bán lẻ (kể cả Mã combo \"-\") vẫn rã", async () => {
+test("import: dòng combo chờ rã, món con có mã combo không rã, Mã combo ghi \"-\" cũng không rã, món bán lẻ vẫn rã", async () => {
   const parsed = await parseImportFile(posFile(fileRows), template);
   assert.equal(parsed.mapping.combo_code, "Mã combo");
   assert.equal(parsed.rows.length, 5, "món con trong combo không gộp với cùng món bán lẻ");
@@ -60,7 +60,7 @@ test("import: dòng combo chờ rã, món con có mã combo không rã, món bá
     "CBTEST_CON1|1|PENDING",
     "CBTEST_CON1|2|NOT_REQUIRED",
     "CBTEST_CON2|2|NOT_REQUIRED",
-    "CBTEST_CON2|3|PENDING",
+    "CBTEST_CON2|3|NOT_REQUIRED",
   ]);
   assert.match(rows.find((row) => row.productCode === "CBTEST_CON2").note || "", /Món con combo CBTEST_COMBO/);
 });

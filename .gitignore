@@ -60,3 +60,6 @@ outputs/
 # Tài liệu hướng dẫn sử dụng: 34MB PDF + ảnh chụp màn hình, giữ ngoài git để
 # lịch sử repo không phình ra vĩnh viễn. Bản gốc nằm ở máy/kho tài liệu riêng.
 docs/huong-dan-su-dung/
+
+# Bản sao trước khi chạy script sửa dữ liệu trên máy chủ
+/backups/

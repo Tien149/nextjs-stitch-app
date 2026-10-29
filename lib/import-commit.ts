@@ -59,13 +59,11 @@ import { applyOpeningInventoryChange } from "@/lib/opening-inventory";
  * nên tuyệt đối không bắt Error chung ở chỗ gọi.
  */
 /**
- * Ô "Mã combo" để trống kiểu POS: "-", "—", "0", "N/A"… là KHÔNG thuộc combo (khách 29/10/2026: file
- * tháng 10 ghi "-" ở mọi dòng → 3.545 dòng NME bán lẻ bị coi là món con combo, không rã).
+ * Ô "Mã combo": có BẤT KỲ ký tự nào (kể cả "-") thì dòng đó là món con combo, KHÔNG rã; trống mới rã
+ * (khách chốt lại 29/10/2026 — từng đổi "-" thành bán lẻ trong commit dcbaa14, khách bảo ngược).
  */
 export function normalizeComboCode(value: unknown) {
-  const code = String(value ?? "").trim().toUpperCase();
-  if (!/[A-Z0-9]/.test(code) || /^(0+|N\/?A|NONE|NULL|KHONG|KHÔNG)$/.test(code)) return "";
-  return code;
+  return String(value ?? "").trim().toUpperCase();
 }
 
 export class BankRowNeedsFixError extends Error {
