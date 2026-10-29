@@ -413,6 +413,27 @@ async function loadUncountedLines(
   }));
 }
 
+/**
+ * Giải trình đã gõ của đợt bị MỞ LẠI rồi duyệt lại (khách 29/10/2026: KKT-2026-0001 mở lại → duyệt
+ * thành KKT-2026-0002, bản giải trình mới trống, 47 dòng ghi chú nằm lại bản cũ). Lấy từ bản giải
+ * trình của đợt KHÔNG còn hiệu lực (mở lại / xoá) cùng kho, cùng đầu kỳ — bản mới nhất trước.
+ */
+export async function inheritedExplanationNotes(db: TxClient, warehouseCode: string, periodFrom: Date | null, excludeSourceId: string) {
+  const candidates = await db.stocktakeExplanation.findMany({
+    where: { warehouseCode, periodFrom, sourceId: { not: excludeSourceId } },
+    orderBy: { updatedAt: "asc" },
+  });
+  const notes = new Map<string, string>();
+  for (const candidate of candidates) {
+    const source = await loadStocktakeSource(db, candidate.sourceType as StocktakeSourceType, candidate.sourceId);
+    if (source?.status === STOCKTAKE_APPROVED) continue; // bản của đợt còn hiệu lực: không phải bản cũ
+    for (const line of (Array.isArray(candidate.lines) ? candidate.lines : []) as unknown as ExplanationLine[]) {
+      if (line.explanation?.trim()) notes.set(line.itemId, line.explanation);
+    }
+  }
+  return notes;
+}
+
 /** Chụp số liệu giải trình cho một đợt (giữ phần giải trình cũ theo mã hàng nếu có). */
 export async function snapshotExplanation(db: TxClient, sourceType: StocktakeSourceType, sourceId: string, previousNotes: Map<string, string> = new Map()) {
   const source = await loadStocktakeSource(db, sourceType, sourceId);

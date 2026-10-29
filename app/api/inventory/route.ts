@@ -23,7 +23,7 @@ import { loadMissingRecipeReport } from "@/lib/missing-recipes";
 import { buildMonthlyCostSummary } from "@/lib/recipe-cost-summary";
 import { netMovementsAfter } from "@/lib/stocktake-batch";
 import { buildStockSummary, type MovementTotalRow, type OpeningInventoryTotal } from "@/lib/stock-summary";
-import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, listStocktakeSources, loadStocktakeSource, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
+import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, inheritedExplanationNotes, listStocktakeSources, loadStocktakeSource, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
 import { postStocktakeAdjustments, resyncOpenStocktakes, resyncStocktake, resyncStocktakeBatch, unpostStocktakeAdjustments } from "@/lib/stocktake-resync";
 import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, dispatchTransferRequest, TRANSFER_APPROVED, TRANSFER_DISPATCH_REFERENCE, TRANSFER_PENDING, TRANSFER_RETURNED, undoTransferDispatch } from "@/lib/inventory-transfer-request";
@@ -1865,8 +1865,11 @@ export async function POST(request: Request) {
         if (sourceType === "SESSION") await resyncStocktake(sourceId, auth.session.name).catch((error) => console.error(error));
         const existing = await prisma.stocktakeExplanation.findFirst({ where: { sourceType, sourceId } });
         if (existing) return NextResponse.json({ explanation: existing });
-        const snapshot = await snapshotExplanation(prisma as unknown as TxClient, sourceType, sourceId);
+        let snapshot = await snapshotExplanation(prisma as unknown as TxClient, sourceType, sourceId);
         assertScope(snapshot.source);
+        // Đợt duyệt lại sau khi mở lại: mang giải trình đã gõ ở bản cũ sang (theo mã hàng).
+        const inherited = await inheritedExplanationNotes(prisma as unknown as TxClient, snapshot.source.warehouseCode, snapshot.periodFrom, sourceId);
+        if (inherited.size > 0) snapshot = { ...snapshot, lines: snapshot.lines.map((line) => ({ ...line, explanation: line.explanation || inherited.get(line.itemId) || "" })) };
         const created = await prisma.stocktakeExplanation.create({
           data: {
             sourceType, sourceId, sourceCode: snapshot.source.code,
@@ -1890,6 +1893,20 @@ export async function POST(request: Request) {
        * số chụp nháp) — Chốt là lúc số kiểm kê đứng yên (khách 21/10/2026).
        */
       const sameSourceRefresh = action === "REFRESH_STOCKTAKE_EXPLANATION" && !cleanText(body.sourceId);
+      // Bản lập ra cho đợt duyệt lại mà chưa có dòng giải trình nào (lập trước khi có luật mang sang, 29/10/2026):
+      // Cập nhật tồn hệ thống lấy giải trình của bản cũ sang. Đã có ghi chú thì thôi — không ghi đè chỗ đã xoá.
+      if (sameSourceRefresh && current!.status !== EXPLANATION_LOCKED) {
+        const currentLines = (Array.isArray(current!.lines) ? current!.lines : []) as unknown as ExplanationLine[];
+        if (!currentLines.some((line) => line.explanation?.trim())) {
+          const inherited = await inheritedExplanationNotes(prisma as unknown as TxClient, current!.warehouseCode, current!.periodFrom, current!.sourceId);
+          if (inherited.size > 0) {
+            current = await prisma.stocktakeExplanation.update({
+              where: { id: current!.id },
+              data: { lines: currentLines.map((line) => ({ ...line, explanation: inherited.get(line.itemId) || "" })) },
+            });
+          }
+        }
+      }
       if ((action === "LOCK_STOCKTAKE_EXPLANATION" || sameSourceRefresh) && current!.sourceType === "SESSION" && current!.status !== EXPLANATION_LOCKED) {
         const synced = await resyncStocktake(current!.sourceId, auth.session.name);
         if (synced.changed) {

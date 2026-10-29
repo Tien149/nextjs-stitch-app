@@ -93,9 +93,25 @@ export async function POST(request: Request) {
     const action = cleanText(body.action);
     const permission = ["PREVIEW_BATCH", "APPROVE_BATCH", "REOPEN_BATCH"].includes(action)
       ? "approve"
-      : action === "SAVE_SHEET" ? "create" : "edit";
+      : action === "SAVE_SHEET" ? "create" : action === "DELETE_LOCATION" ? "delete" : "edit";
     const auth = requireMenuAction(request, menuHref, permission);
     if (!auth.ok) return auth.response;
+
+    /**
+     * Xoá vị trí + form mẫu CHƯA dùng (khách 29/10/2026). Vị trí đã có phiếu đếm thì chặn — phiếu đếm,
+     * đợt duyệt, giải trình cũ còn tra theo mã vị trí; chuyển Ngưng thay vì xoá.
+     */
+    if (action === "DELETE_LOCATION") {
+      const location = await prisma.stocktakeLocation.findUnique({ where: { id: cleanText(body.id) } });
+      if (!location) businessError("Không tìm thấy vị trí kiểm kê");
+      assertBranchAccess(auth.session, location!.branchCode);
+      assertWarehouseAccess(auth.session, location!.warehouseCode);
+      const used = await prisma.stocktakeSession.count({ where: { warehouseCode: location!.warehouseCode, locationCode: location!.code } });
+      if (used > 0) businessError(`Vị trí ${location!.code} đã có ${used} phiếu đếm nên không xoá được — chuyển Trạng thái sang Ngưng để không dùng nữa.`);
+      await prisma.stocktakeLocation.delete({ where: { id: location!.id } });
+      await writeAuditLog({ session: auth.session, module: menuHref, action, entityType: "StocktakeLocation", entityId: location!.id, entityCode: `${location!.warehouseCode}/${location!.code}`, branchCode: location!.branchCode, metadata: { name: location!.name } });
+      return NextResponse.json({ ok: true });
+    }
 
     /** Tạo / sửa vị trí + form mẫu (danh sách mã theo thứ tự đếm). */
     if (action === "SAVE_LOCATION") {

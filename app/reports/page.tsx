@@ -3024,6 +3024,31 @@ function RevenueImportRowsSection({ data, branchCode, canDelete, onDeleted }: {
 
   const hourLabel = (hour: number | null) => (hour === null || hour === undefined ? "Cả ngày" : `${String(hour).padStart(2, "0")}h`);
 
+  const [exporting, setExporting] = useState(false);
+  /** Xuất lại doanh thu theo đúng mẫu file import (khách 29/10/2026). */
+  const exportImportFile = async () => {
+    setExporting(true);
+    setNotice(null);
+    try {
+      const params = new URLSearchParams({ type: "revenue-import-export", from: data.dateFrom, to: data.dateTo, branchCode });
+      const response = await fetch(`/api/reports?${params.toString()}`);
+      const payload = await response.json().catch(() => ({})) as { rows?: Record<string, unknown>[]; truncated?: boolean; error?: string };
+      if (!response.ok) {
+        setNotice({ tone: "error", text: payload.error || "Không xuất được file doanh thu" });
+        return;
+      }
+      const XLSX = await import("xlsx");
+      const columns = ["Thời gian", "Giờ bán", "Cửa hàng", "Mã hàng", "Tên hàng", "Mã combo", "Số lượng", "Đơn vị tính", "Hình thức bán", "Nhóm doanh thu", "Nguồn tiền", "Doanh thu", "Giảm giá", "SVC", "Phí cà thẻ", "Phí bán hàng qua app", "Thuế", "Tổng tiền", "Ghi chú"];
+      const sheet = XLSX.utils.json_to_sheet(payload.rows || [], { header: columns });
+      const book = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(book, sheet, "Import doanh thu");
+      XLSX.writeFile(book, `revenue_pos_raw_v1_${branchCode}_${data.dateFrom}_${data.dateTo}.xlsx`);
+      if (payload.truncated) setNotice({ tone: "error", text: "Khoảng ngày quá nhiều dòng — file chỉ có 60.000 dòng đầu, chia nhỏ khoảng ngày để xuất đủ." });
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <section className="table-panel">
       <PanelHeader
@@ -3031,6 +3056,13 @@ function RevenueImportRowsSection({ data, branchCode, canDelete, onDeleted }: {
         subtitle={`Từ ${dayLabel(data.dateFrom)} đến ${dayLabel(data.dateTo)}. Mỗi ngày một dòng tổng; bấm vào ngày để xem từng dòng đúng như file import (không gộp)${canDelete ? ", tick dòng sai rồi Xoá — không cần vào Import" : ""}.`}
         exportFileName="doanh_thu_tung_ngay"
       />
+      <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-slate-100" data-no-export>
+        <button type="button" className="secondary-button !min-h-8 !py-1" disabled={exporting || days.length === 0} onClick={() => void exportImportFile()}>
+          <span className="material-symbols-outlined text-[16px]">file_download</span>
+          {exporting ? "Đang xuất…" : "Xuất file như lúc import"}
+        </button>
+        <span className="text-xs text-slate-500">Đúng cột file mẫu import doanh thu POS, theo khoảng ngày & cửa hàng đang lọc — sửa rồi nạp lại được (mỗi dòng là một dòng đã gộp).</span>
+      </div>
       {notice && (
         <p className={`mx-5 mb-3 rounded-lg border px-3 py-2 text-sm ${notice.tone === "ok" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-rose-200 bg-rose-50 text-rose-700"}`}>{notice.text}</p>
       )}

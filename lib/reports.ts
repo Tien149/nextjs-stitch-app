@@ -2639,6 +2639,64 @@ export async function getRevenueExplosionCheck(from: string, to: string, branchC
   return { from, to, branchCode, items: result };
 }
 
+/** Cột của file mẫu import doanh thu POS thô (REVENUE_POS_RAW_V1) — đúng thứ tự file khách đẩy lên. */
+export const REVENUE_IMPORT_EXPORT_COLUMNS = [
+  "Thời gian", "Giờ bán", "Cửa hàng", "Mã hàng", "Tên hàng", "Mã combo", "Số lượng", "Đơn vị tính", "Hình thức bán",
+  "Nhóm doanh thu", "Nguồn tiền", "Doanh thu", "Giảm giá", "SVC", "Phí cà thẻ", "Phí bán hàng qua app", "Thuế", "Tổng tiền", "Ghi chú",
+] as const;
+
+/**
+ * Xuất lại doanh thu đã nạp theo ĐÚNG mẫu file import (khách 29/10/2026: xuất ra giống file mẫu ban
+ * đầu, sửa rồi nạp lại). Hệ thống chỉ giữ dòng đã GỘP (ngày × giờ × kênh × nguồn × mã món × mã
+ * combo), nên mỗi dòng xuất là một dòng gộp — nạp lại ra đúng số liệu như cũ. Số tiền / phân loại lấy
+ * theo sổ hiện tại (kể cả chỗ đã sửa trên Sổ doanh thu); tên món, ĐVT, mã combo lấy theo file gốc.
+ */
+export async function getRevenueImportExport(from: string, to: string, branchCode: string) {
+  const start = new Date(`${from}T00:00:00+07:00`);
+  const end = new Date(`${to}T24:00:00+07:00`);
+  const rows = await prisma.revenueImportRow.findMany({
+    where: { saleDate: { gte: start, lt: end }, ...(branchCode === "ALL" ? {} : { branchCode }) },
+    orderBy: [{ saleDate: "asc" }, { saleHour: "asc" }, { branchCode: "asc" }, { createdAt: "asc" }],
+    take: 60000,
+  });
+  const sources = new Map((await prisma.importRow.findMany({
+    where: { targetType: "REVENUE_POS", targetId: { in: rows.map((row) => row.id) } },
+    select: { targetId: true, normalizedJson: true },
+  })).map((row) => {
+    let values: Record<string, unknown> = {};
+    try { values = JSON.parse(row.normalizedJson) as Record<string, unknown>; } catch { /* dòng cũ không có bản chuẩn hoá */ }
+    return [row.targetId, values];
+  }));
+  const text = (value: unknown) => (value === null || value === undefined ? "" : String(value));
+  const data = rows.map((row) => {
+    const source = sources.get(row.id) || {};
+    const [year, month, day] = vietnamBusinessDayKey(row.saleDate).split("-");
+    return {
+      "Thời gian": `${day}/${month}/${year}`,
+      "Giờ bán": row.saleHour === null ? "" : `${String(row.saleHour).padStart(2, "0")}:00`,
+      "Cửa hàng": row.branchCode,
+      "Mã hàng": row.productCode || "",
+      "Tên hàng": text(source.product_name),
+      "Mã combo": text(source.combo_code),
+      "Số lượng": row.productQuantity ?? "",
+      "Đơn vị tính": text(source.unit),
+      "Hình thức bán": row.channel || "",
+      "Nhóm doanh thu": row.revenueSource,
+      "Nguồn tiền": row.paymentMethod,
+      "Doanh thu": row.grossAmount,
+      "Giảm giá": row.discountAmount || "",
+      "SVC": row.feeAmount || "",
+      "Phí cà thẻ": row.cardFeeAmount || "",
+      "Phí bán hàng qua app": row.appFeeAmount || "",
+      "Thuế": row.vatAmount || "",
+      "Tổng tiền": row.netAmount,
+      // Ghi chú hệ thống tự thêm lúc nạp (món con combo) không phải của file: bỏ ra.
+      "Ghi chú": (row.note || "").replace(/\s*(?:·\s*)?Món con combo .*? — không rã \(rã theo dòng combo\)/, "").trim(),
+    };
+  });
+  return { from, to, branchCode, rows: data, truncated: rows.length >= 60000 };
+}
+
 /**
  * Đối chiếu doanh thu bán hàng với tiền thực về, theo từng Ngày và từng Nguồn tiền.
  *

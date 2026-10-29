@@ -465,6 +465,15 @@ export default function StocktakeByLocation(props: {
     }
   };
 
+  const deleteLocation = async (location: Location) => {
+    if (!window.confirm(`Xoá vị trí ${location.name} (${location.code}) cùng form mẫu ${location.items.length} mã?\n\nChỉ xoá được vị trí chưa có phiếu đếm nào; đã dùng thì chuyển Ngưng.`)) return;
+    const payload = await post({ action: "DELETE_LOCATION", id: location.id }, `Đã xoá vị trí ${location.code}.`);
+    if (payload) {
+      if (locationForm.id === location.id) setLocationForm(emptyLocation);
+      await load();
+    }
+  };
+
   const itemLabel = (itemId: string) => {
     const item = itemById.get(itemId);
     return item ? `${item.code} · ${item.name}` : itemId;
@@ -807,7 +816,10 @@ export default function StocktakeByLocation(props: {
                     <p className="font-bold text-sm">{location.name} <span className="text-xs text-slate-400">{location.code}</span> {location.status !== "ACTIVE" && <span className="status bg-slate-100 text-slate-500">Ngưng</span>}</p>
                     <p className="text-xs text-slate-500 truncate">{location.items.length} mã: {location.items.slice(0, 8).map((entry) => entry.item.name).join(", ")}{location.items.length > 8 ? "…" : ""}</p>
                   </div>
-                  <ActionIcon kind="edit" title="Sửa vị trí" onClick={() => editLocation(location)} />
+                  <div className="flex shrink-0 items-center gap-1">
+                    <ActionIcon kind="edit" title="Sửa vị trí" onClick={() => editLocation(location)} />
+                    {canDelete && <ActionIcon kind="delete" title="Xoá vị trí (chỉ khi chưa có phiếu đếm)" disabled={busy} onClick={() => void deleteLocation(location)} />}
+                  </div>
                 </div>
               ))}
             </div>
