@@ -1962,7 +1962,8 @@ export async function POST(request: Request) {
       }
       const snapshot = await snapshotExplanation(prisma as unknown as TxClient, targetType, targetId, new Map(lines.map((line) => [line.itemId, line.explanation || ""])));
       // Chưa duyệt lại nhưng vừa rã phần kiểm dư BTP (sổ sách sau rã đổi) thì vẫn cập nhật được.
-      if (!reapproved && !explanationNumbersChanged(lines, snapshot.lines)) {
+      // Đợt theo vị trí bấm "Cập nhật tồn hệ thống": chụp lại số theo sổ mới nhất, không đổi thì thôi (không báo lỗi).
+      if (!reapproved && !sameSourceRefresh && !explanationNumbersChanged(lines, snapshot.lines)) {
         businessError("Đợt kiểm kê chưa được duyệt lại và chưa rã thêm gì nên số liệu không đổi — giải trình giữ nguyên số đã chụp.");
       }
       const updated = await prisma.stocktakeExplanation.update({

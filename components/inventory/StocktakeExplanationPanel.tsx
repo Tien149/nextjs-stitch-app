@@ -371,7 +371,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                   Lưu giải trình{dirtyIds.length > 0 ? ` (${dirtyIds.length})` : ""}
                 </button>
               )}
-              {canApprove && !locked && !sourceReopened && explanation.sourceType === "SESSION" && (
+              {canApprove && !locked && !sourceReopened && (
                 <button
                   type="button"
                   className="secondary-button !min-h-9"
