@@ -1,8 +1,8 @@
 import { prisma, type TxClient } from "@/lib/prisma";
 import { isPeriodLocked } from "@/lib/phase3";
 import { latestKnownUnitCost, postInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
-import { netMovementsAfter } from "@/lib/stocktake-batch";
-import { EXPLOSION_PENDING } from "@/lib/explosion-sources";
+import { STOCKTAKE_BATCH_APPROVED, loadBookAtCutoff, netMovementsAfter } from "@/lib/stocktake-batch";
+import { EXPLOSION_PENDING, semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
 import { STOCKTAKE_APPROVED } from "@/lib/stocktake-status";
 import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, snapshotExplanation, warehouseStockAtCutoff, type ExplanationLine } from "@/lib/stocktake-explanation";
 
@@ -19,7 +19,7 @@ import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, snapshotExplanation, warehouseSt
  *
  * Sổ sách hiển thị = tồn tại giờ chốt bỏ phần điều chỉnh của chính phiếu và phần rã kiểm dư của nó
  * (Giải trình cộng lại phần chế biến đó vào cột nhập / xuất chế biến).
- * Bỏ qua: phiếu theo vị trí / đợt duyệt gộp, kỳ đã khoá.
+ * Bỏ qua: phiếu theo vị trí (đợt duyệt gộp đi riêng — resyncStocktakeBatch), kỳ đã khoá.
  */
 export type ResyncResult = { code: string; changed: boolean; skipped?: string; documents?: string[]; date: Date; branchCode: string };
 
@@ -50,15 +50,8 @@ async function liveBook(tx: Tx, session: SessionWithLines) {
     }),
     tx.inventoryTransaction.findMany({ where: { referenceType: "PRODUCTION", referenceId: session.id, deletedAt: null, transactionType: { notIn: STOCKTAKE_TYPES } }, include: { lines: true } }),
   ]);
-  const net = (docs: typeof ownDocs) => {
-    const map = new Map<string, number>();
-    for (const doc of docs) for (const line of doc.lines) {
-      map.set(line.itemId, (map.get(line.itemId) || 0) + (doc.transactionType.startsWith("NHAP_") ? line.quantity : -line.quantity));
-    }
-    return map;
-  };
-  const ownAdj = net(ownDocs);
-  const explosionNet = net(explosionDocs);
+  const ownAdj = netByItem(ownDocs);
+  const explosionNet = netByItem(explosionDocs);
   const balanceOf = new Map(balances.map((balance) => [balance.itemId, balance]));
   const rows = [];
   let linesChanged = false;
@@ -89,11 +82,29 @@ async function removeOwnAdjustments(tx: Tx, docs: Array<{ id: string; code: stri
   if (docs.length > 0) await tx.journalEntry.deleteMany({ where: { sourceType: "INVENTORY_ISSUE", sourceId: { in: docs.map((doc) => doc.id) } } });
 }
 
-async function refreshDraftExplanation(sessionId: string, actor: string) {
-  const explanation = await prisma.stocktakeExplanation.findFirst({ where: { sourceType: "SESSION", sourceId: sessionId } });
+/** Mã phiếu chưa dùng (kể cả phiếu đã xoá mềm): `KK-…-N`, rồi `KK-…-N-2`, `-3`… */
+async function freeDocumentCode(tx: Tx, prefix: string) {
+  const taken = new Set((await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "InventoryTransaction" WHERE "code" = ${prefix} OR "code" LIKE ${`${prefix}-%`}`).map((row) => row.code));
+  if (!taken.has(prefix)) return prefix;
+  let suffix = 2;
+  while (taken.has(`${prefix}-${suffix}`)) suffix += 1;
+  return `${prefix}-${suffix}`;
+}
+
+/** Σ(nhập − xuất) theo mã của các phiếu. */
+function netByItem(docs: Array<{ transactionType: string; lines: Array<{ itemId: string; quantity: number }> }>) {
+  const map = new Map<string, number>();
+  for (const doc of docs) for (const line of doc.lines) {
+    map.set(line.itemId, (map.get(line.itemId) || 0) + (doc.transactionType.startsWith("NHAP_") ? line.quantity : -line.quantity));
+  }
+  return map;
+}
+
+async function refreshDraftExplanation(sessionId: string, actor: string, sourceType: "SESSION" | "BATCH" = "SESSION") {
+  const explanation = await prisma.stocktakeExplanation.findFirst({ where: { sourceType, sourceId: sessionId } });
   if (!explanation || explanation.status !== EXPLANATION_DRAFT) return;
   const notes = new Map(((Array.isArray(explanation.lines) ? explanation.lines : []) as unknown as ExplanationLine[]).map((line) => [line.itemId, line.explanation || ""]));
-  const snapshot = await snapshotExplanation(prisma as unknown as TxClient, "SESSION", sessionId, notes);
+  const snapshot = await snapshotExplanation(prisma as unknown as TxClient, sourceType, sessionId, notes);
   await prisma.stocktakeExplanation.update({
     where: { id: explanation.id },
     data: { lines: snapshot.lines, periodFrom: snapshot.periodFrom, periodTo: snapshot.source.cutoffAt, sourceApprovedAt: snapshot.source.approvedAt, snapshotBy: actor, snapshotAt: new Date() },
@@ -172,13 +183,7 @@ export async function postStocktakeAdjustments(sessionId: string, actor: string)
         }
       }
     }
-    const freeCode = async (prefix: string) => {
-      const taken = new Set((await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "InventoryTransaction" WHERE "code" = ${prefix} OR "code" LIKE ${`${prefix}-%`}`).map((row) => row.code));
-      if (!taken.has(prefix)) return prefix;
-      let suffix = 2;
-      while (taken.has(`${prefix}-${suffix}`)) suffix += 1;
-      return `${prefix}-${suffix}`;
-    };
+    const freeCode = (prefix: string) => freeDocumentCode(tx, prefix);
     const header = {
       transactionDate: session!.stocktakeDate, branchCode: session!.branchCode, warehouseCode: session!.warehouseCode,
       referenceType: "STOCKTAKE", referenceId: session!.id, referenceCode: session!.code,
@@ -207,6 +212,130 @@ export async function unpostStocktakeAdjustments(sessionId: string, actor: strin
 }
 
 /**
+ * ĐỢT KIỂM THEO VỊ TRÍ (StocktakeBatch) ghi -N/-X ngay lúc duyệt gộp, phần kiểm dư bán thành phẩm rã
+ * BOM SAU đó (khách 29/10/2026, KKT-2026-0001: Chanh dây dư 550 đã rã mà Giải trình vẫn lệch +550;
+ * nguyên liệu làm ra phần dư bị trừ thêm sau khi -X đã đưa về số đếm — Chanh Dây đếm 4.000 còn 857).
+ * Sau mỗi lần rã / hoàn tác rã: ghi lại -N/-X = số đếm − tồn tại giờ chốt (đã gồm phiếu rã của
+ * đợt) để mọi mã về đúng số đếm. Kiểm dư BTP còn chờ rã vẫn hoãn như lúc duyệt. Sổ sách trên dòng
+ * = tồn trước phần rã của đợt (Giải trình / Kết quả cộng lại phần chế biến đó, như phiếu cả kho).
+ * Chỉ áp cho đợt có kiểm dư BTP (explosionStatus khác null); bỏ qua đợt đã chốt giải trình, kỳ khoá.
+ */
+export async function resyncStocktakeBatch(batchId: string, actor: string): Promise<ResyncResult> {
+  const batch = await prisma.stocktakeBatch.findUnique({
+    where: { id: batchId },
+    include: { lines: { include: { item: { select: { id: true, code: true, unit: true, itemType: true } } } } },
+  });
+  if (!batch) throw new Error("BUSINESS:Không tìm thấy đợt kiểm kê");
+  const base = { code: batch.code, date: batch.cutoffAt, branchCode: batch.branchCode };
+  if (batch.status !== STOCKTAKE_BATCH_APPROVED) return { ...base, changed: false, skipped: "chưa duyệt" };
+  if (await isPeriodLocked(batch.cutoffAt, batch.branchCode)) return { ...base, changed: false, skipped: "kỳ đã khoá" };
+  const explanation = await prisma.stocktakeExplanation.findFirst({ where: { sourceType: "BATCH", sourceId: batchId }, select: { status: true } });
+  if (explanation?.status === EXPLANATION_LOCKED) return { ...base, changed: false, skipped: "giải trình đã chốt" };
+
+  const result = await prisma.$transaction(async (tx) => {
+    const db = tx as unknown as TxClient;
+    const [book, ownDocs, explosionDocs] = await Promise.all([
+      loadBookAtCutoff(db, batch.warehouseCode, batch.cutoffAt, batch.lines.map((line) => line.itemId)),
+      tx.inventoryTransaction.findMany({ where: { referenceType: "STOCKTAKE", referenceId: batch.id, deletedAt: null }, include: { lines: true } }),
+      tx.inventoryTransaction.findMany({ where: { referenceType: "PRODUCTION", referenceId: batch.id, deletedAt: null, transactionType: { notIn: STOCKTAKE_TYPES } }, include: { lines: true } }),
+    ]);
+    const ownAdj = netByItem(ownDocs);
+    const explosionNet = netByItem(explosionDocs);
+    const stockOf = new Map(book.map((row) => [row.itemId, row]));
+    /** Tồn tại giờ chốt KHÔNG kể -N/-X của chính đợt (đã gồm phần rã kiểm dư). */
+    const systemStock = (itemId: string) => (stockOf.get(itemId)?.quantity || 0) - (ownAdj.get(itemId) || 0);
+    const isExplodable = batch.explosionStatus === EXPLOSION_PENDING
+      ? await semiFinishedWithRecipeChecker(db, batch.branchCode, batch.cutoffAt)
+      : null;
+
+    // Mã có tồn tại giờ chốt mà đợt chưa có dòng (nguyên liệu chỉ phát sinh từ lần rã): không đếm = kiểm 0, như lúc duyệt.
+    const lineItemIds = new Set(batch.lines.map((line) => line.itemId));
+    const extraIds = book.filter((row) => !lineItemIds.has(row.itemId) && Math.abs(systemStock(row.itemId)) > EPS).map((row) => row.itemId);
+    const extraItems = extraIds.length > 0
+      ? await tx.inventoryItem.findMany({ where: { id: { in: extraIds } }, select: { id: true, code: true, unit: true, itemType: true } })
+      : [];
+    const rows = [
+      ...batch.lines.map((line) => ({ item: line.item, counted: line.countedQuantity, unitCost: line.unitCost, line })),
+      ...extraItems.map((item) => ({ item, counted: 0, unitCost: 0, line: null })),
+    ];
+
+    const planned = new Map<string, number>();
+    for (const row of rows) {
+      const adjustment = row.counted - systemStock(row.item.id);
+      if (Math.abs(adjustment) <= EPS) continue;
+      // Kiểm dư BTP có định lượng còn chờ rã: chưa nhập kiểm kê (rã mới sinh BTP có giá vốn).
+      if (adjustment > 0 && isExplodable?.(row.item)) continue;
+      planned.set(row.item.id, adjustment);
+    }
+    const adjustmentsChanged = [...new Set([...planned.keys(), ...ownAdj.keys()])]
+      .some((itemId) => Math.abs((planned.get(itemId) || 0) - (ownAdj.get(itemId) || 0)) > EPS);
+
+    const postedCost = new Map<string, number>();
+    const documents: string[] = [];
+    if (adjustmentsChanged) {
+      await removeOwnAdjustments(tx, ownDocs, actor);
+      const inbound = [];
+      const outbound = [];
+      for (const row of rows) {
+        const adjustment = planned.get(row.item.id);
+        if (!adjustment) continue;
+        if (adjustment > 0) {
+          let unitCost = row.unitCost > 0 ? row.unitCost : stockOf.get(row.item.id)?.averageCost || 0;
+          if (!(unitCost > 0)) unitCost = await latestKnownUnitCost(db, row.item.id, batch.warehouseCode);
+          inbound.push({ itemId: row.item.id, inputQuantity: adjustment, inputUnitCode: row.item.unit, inputUnitCost: unitCost });
+        } else {
+          outbound.push({ itemId: row.item.id, inputQuantity: -adjustment, inputUnitCode: row.item.unit, inputUnitCost: 0 });
+        }
+      }
+      const header = {
+        transactionDate: batch.cutoffAt, branchCode: batch.branchCode, warehouseCode: batch.warehouseCode,
+        referenceType: "STOCKTAKE", referenceId: batch.id, referenceCode: batch.code,
+        note: `Kiểm kê chốt ${batch.code} (ghi lại sau rã kiểm dư)`, createdBy: actor,
+      };
+      const docs = [];
+      if (inbound.length > 0) docs.push(await postInventoryTransaction(db, { ...header, code: await freeDocumentCode(tx, `${batch.code}-N`), transactionType: "NHAP_KIEM_KE", lines: inbound }));
+      if (outbound.length > 0) docs.push(await postInventoryTransaction(db, { ...header, code: await freeDocumentCode(tx, `${batch.code}-X`), transactionType: "XUAT_KIEM_KE", lines: outbound }));
+      for (const doc of docs) {
+        documents.push(doc.code);
+        for (const line of doc.lines) postedCost.set(line.itemId, line.unitCost);
+      }
+    }
+
+    let linesChanged = false;
+    for (const row of rows) {
+      const bookQuantity = systemStock(row.item.id) - (explosionNet.get(row.item.id) || 0);
+      const varianceQuantity = row.counted - bookQuantity;
+      const unitCost = postedCost.get(row.item.id) ?? row.unitCost;
+      if (!row.line) {
+        linesChanged = true;
+        await tx.stocktakeBatchLine.create({
+          data: { batchId: batch.id, itemId: row.item.id, bookQuantity, countedQuantity: 0, varianceQuantity, unitCost, varianceValue: varianceQuantity * unitCost, notCounted: true },
+        });
+      } else if (Math.abs(row.line.bookQuantity - bookQuantity) > EPS || Math.abs(row.line.unitCost - unitCost) > EPS) {
+        linesChanged = true;
+        await tx.stocktakeBatchLine.update({
+          where: { id: row.line.id },
+          data: { bookQuantity, varianceQuantity, unitCost, varianceValue: varianceQuantity * unitCost },
+        });
+      }
+    }
+    if (linesChanged) {
+      const lines = await tx.stocktakeBatchLine.findMany({ where: { batchId: batch.id }, select: { varianceValue: true } });
+      await tx.stocktakeBatch.update({
+        where: { id: batch.id },
+        data: {
+          shortageValue: lines.filter((line) => line.varianceValue < 0).reduce((sum, line) => sum + line.varianceValue, 0),
+          surplusValue: lines.filter((line) => line.varianceValue > 0).reduce((sum, line) => sum + line.varianceValue, 0),
+        },
+      });
+    }
+    return { changed: adjustmentsChanged || linesChanged, documents };
+  }, { timeout: 5 * 60 * 1000, maxWait: 30000 });
+  if (result.changed) await refreshDraftExplanation(batchId, actor, "BATCH");
+  return { ...base, ...result };
+}
+
+/**
  * Đồng bộ mọi phiếu kiểm cả kho đã duyệt, chưa chốt, của cửa hàng (ALL = mọi cửa hàng) có giờ chốt
  * từ `from` trở đi — gọi sau khi rã / hoàn tác rã / import phiếu kho, trước khi tính giá vốn tháng.
  */
@@ -221,12 +350,30 @@ export async function resyncOpenStocktakes(input: { branchCode?: string | null; 
     select: { id: true },
     orderBy: { stocktakeDate: "asc" },
   });
+  // Đợt theo vị trí có kiểm dư BTP (rã sau khi duyệt) — xem resyncStocktakeBatch.
+  const batches = await prisma.stocktakeBatch.findMany({
+    where: {
+      status: STOCKTAKE_BATCH_APPROVED, explosionStatus: { not: null },
+      ...(input.ids ? { id: { in: input.ids } } : {}),
+      ...(input.branchCode && input.branchCode !== "ALL" ? { branchCode: input.branchCode } : {}),
+      ...(input.from ? { cutoffAt: { gte: input.from } } : {}),
+    },
+    select: { id: true },
+    orderBy: { cutoffAt: "asc" },
+  });
   const results: ResyncResult[] = [];
   for (const session of sessions) {
     try {
       results.push(await resyncStocktake(session.id, actor));
     } catch (error) {
       console.error("Không đồng bộ được chênh lệch kiểm kê:", error);
+    }
+  }
+  for (const batch of batches) {
+    try {
+      results.push(await resyncStocktakeBatch(batch.id, actor));
+    } catch (error) {
+      console.error("Không đồng bộ được chênh lệch đợt kiểm kê:", error);
     }
   }
   return results;

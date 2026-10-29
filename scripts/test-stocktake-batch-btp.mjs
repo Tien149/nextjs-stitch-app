@@ -8,7 +8,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { postInventoryTransaction } from "../lib/inventory-stock.ts";
+import { postInventoryTransaction, reverseStockEffect } from "../lib/inventory-stock.ts";
+import { resyncStocktakeBatch } from "../lib/stocktake-resync.ts";
+import { loadStocktakeSource } from "../lib/stocktake-explanation.ts";
 import { approveStocktakeBatch, buildBatchPreview, reopenStocktakeBatch } from "../lib/stocktake-batch.ts";
 import { loadPendingExplosionSources, releaseExplosionSources } from "../lib/explosion-sources.ts";
 
@@ -102,6 +104,7 @@ test("mở lại đợt chờ rã: xoá trạng thái chờ; đợt đã rã th�
   assert.equal((await prisma.stocktakeBatch.findUnique({ where: { id: ids.batch } })).explosionStatus, null);
 
   const again = await prisma.$transaction((tx) => approveStocktakeBatch(tx, { stocktakeIds: [ids.sheet], cutoffAt: vn("2032-01-02T12:00"), approvedBy: "test" }));
+  ids.again = again.batch.id;
   await prisma.stocktakeBatch.update({ where: { id: again.batch.id }, data: { explosionStatus: "POSTED:RA-KKBT-1" } });
   await assert.rejects(() => prisma.$transaction((tx) => reopenStocktakeBatch(tx, { batchId: again.batch.id, reopenedBy: "test" })), /RA-KKBT-1/);
 
@@ -109,4 +112,39 @@ test("mở lại đợt chờ rã: xoá trạng thái chờ; đợt đã rã th�
   const released = await prisma.$transaction((tx) => releaseExplosionSources(tx, "RA-KKBT-1"));
   assert.ok(released.stocktakeIds.includes(again.batch.id));
   assert.equal((await prisma.stocktakeBatch.findUnique({ where: { id: again.batch.id } })).explosionStatus, "PENDING");
+});
+
+test("rã kiểm dư sau khi duyệt: -N/-X ghi lại để mọi mã về đúng số đếm; hoàn tác rã thì về như lúc duyệt", async () => {
+  // Giả lập lần rã RA-KKBT-1 (dư BTP 3 kg × 2 kg hành) — phiếu mang giờ chốt, referenceId = đợt.
+  const cutoffAt = vn("2032-01-02T12:00");
+  const production = { transactionDate: cutoffAt, branchCode: BRANCH, warehouseCode: WH, referenceType: "PRODUCTION", referenceId: ids.again, referenceCode: "RA-KKBT-1" };
+  const docs = await prisma.$transaction(async (tx) => [
+    await postInventoryTransaction(tx, { ...production, code: "RA-KKBT-1-1X", transactionType: "XUAT_CHE_BIEN", lines: [{ itemId: ids[NVL], inputQuantity: 6, inputUnitCode: "KG", inputUnitCost: 0 }] }),
+    await postInventoryTransaction(tx, { ...production, code: "RA-KKBT-1-1N", transactionType: "NHAP_CHE_BIEN", lines: [{ itemId: ids[BTP], inputQuantity: 3, inputUnitCode: "KG", inputUnitCost: 200 }] }),
+  ]);
+  await prisma.stocktakeBatch.update({ where: { id: ids.again }, data: { explosionStatus: "POSTED:RA-KKBT-1" } });
+  assert.equal(await balanceOf(NVL), 4, "trước khi sửa: hành đã đếm 10 bị rã trừ thêm 6");
+
+  const synced = await resyncStocktakeBatch(ids.again, "test");
+  assert.equal(synced.changed, true);
+  assert.equal(await balanceOf(NVL), 10, "hành về đúng số đếm");
+  assert.equal(await balanceOf(BTP), 5, "BTP = số đếm, không nhập kiểm kê thêm");
+  const source = await loadStocktakeSource(prisma, "BATCH", ids.again);
+  const line = (code) => source.countLines.find((row) => row.itemCode === code);
+  assert.equal(line(BTP).closing, 5, "Giải trình / Kết quả: BTP dư đã rã hết chênh");
+  assert.equal(line(NVL).closing, 4, "hành: sổ sách sau rã, chênh +6 = phần làm ra BTP dư");
+  assert.equal((await resyncStocktakeBatch(ids.again, "test")).changed, false, "chạy lại không đổi gì");
+
+  // Hoàn tác rã: đợt về chờ rã, -N bù hành bị gỡ, kiểm dư BTP vẫn hoãn.
+  await prisma.$transaction(async (tx) => {
+    for (const doc of docs) {
+      await reverseStockEffect(tx, doc);
+      await tx.inventoryTransaction.update({ where: { id: doc.id }, data: { deletedAt: new Date() } });
+    }
+  });
+  await prisma.$transaction((tx) => releaseExplosionSources(tx, "RA-KKBT-1"));
+  await resyncStocktakeBatch(ids.again, "test");
+  assert.equal(await balanceOf(NVL), 10);
+  assert.equal(await balanceOf(BTP), 2, "kiểm dư BTP chờ rã: chưa nhập kiểm kê");
+  assert.equal(await prisma.inventoryTransaction.count({ where: { referenceType: "STOCKTAKE", referenceId: ids.again, deletedAt: null } }), 0);
 });

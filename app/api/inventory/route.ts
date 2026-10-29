@@ -25,7 +25,7 @@ import { netMovementsAfter } from "@/lib/stocktake-batch";
 import { buildStockSummary, type MovementTotalRow, type OpeningInventoryTotal } from "@/lib/stock-summary";
 import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, listStocktakeSources, loadStocktakeSource, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
-import { postStocktakeAdjustments, resyncOpenStocktakes, resyncStocktake, unpostStocktakeAdjustments } from "@/lib/stocktake-resync";
+import { postStocktakeAdjustments, resyncOpenStocktakes, resyncStocktake, resyncStocktakeBatch, unpostStocktakeAdjustments } from "@/lib/stocktake-resync";
 import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, dispatchTransferRequest, TRANSFER_APPROVED, TRANSFER_DISPATCH_REFERENCE, TRANSFER_PENDING, TRANSFER_RETURNED, undoTransferDispatch } from "@/lib/inventory-transfer-request";
 import {
   duplicatedInTrashMessage,
@@ -1900,6 +1900,19 @@ export async function POST(request: Request) {
         // Chốt = lúc chênh lệch được GHI NHẬN: phiếu -N/-X theo tồn hệ thống tại giờ chốt (vào giá vốn).
         const posted = await postStocktakeAdjustments(current!.sourceId, auth.session.name);
         await repostInventoryCogs([{ date: posted.date, branchCode: posted.branchCode }], auth.session.name);
+      }
+      // Đợt theo vị trí: -N/-X ghi lại theo tồn sau rã kiểm dư BTP (lib/stocktake-resync.ts, 29/10/2026).
+      if ((action === "LOCK_STOCKTAKE_EXPLANATION" || sameSourceRefresh) && current!.sourceType === "BATCH" && current!.status !== EXPLANATION_LOCKED) {
+        const batch = await prisma.stocktakeBatch.findUnique({ where: { id: current!.sourceId }, select: { code: true, explosionStatus: true } });
+        if (action === "LOCK_STOCKTAKE_EXPLANATION" && batch?.explosionStatus === EXPLOSION_PENDING) {
+          businessError(`Đợt ${batch.code} còn phần kiểm dư bán thành phẩm CHỜ RÃ — rã ở tab Chế biến (Chỉ rã phần còn chờ) trước khi chốt, để nguyên liệu làm ra phần dư được trừ đúng.`);
+        }
+        const synced = await resyncStocktakeBatch(current!.sourceId, auth.session.name);
+        if (synced.changed) {
+          await repostInventoryCogs([{ date: synced.date, branchCode: synced.branchCode }], auth.session.name);
+          current = await prisma.stocktakeExplanation.findFirst({ where: { id: current!.id } });
+          if (sameSourceRefresh) return NextResponse.json({ explanation: current });
+        }
       }
       const record = current!;
       const lines = (Array.isArray(record.lines) ? record.lines : []) as unknown as ExplanationLine[];

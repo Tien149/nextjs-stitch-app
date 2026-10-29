@@ -295,13 +295,15 @@ export async function loadStocktakeSource(db: TxClient, sourceType: StocktakeSou
       include: { lines: { include: { item: { select: { id: true, code: true, name: true, unit: true, goodsGroup: true } } } } },
     });
     if (!batch) return null;
+    // Đợt theo vị trí: phần rã kiểm dư BTP cũng cộng vào sổ sách (resyncStocktakeBatch, 29/10/2026).
+    const producedInBatch = await explodedSurplusNet(db, batch.id);
     return {
       status: batch.status === "APPROVED" ? STOCKTAKE_APPROVED : batch.status,
       code: batch.code, branchCode: batch.branchCode, warehouseCode: batch.warehouseCode,
       cutoffAt: batch.cutoffAt, approvedAt: batch.approvedAt,
       countLines: batch.lines.map((line) => ({
         itemId: line.itemId, itemCode: line.item.code, itemName: line.item.name, goodsGroup: line.item.goodsGroup, unit: line.item.unit,
-        closing: line.bookQuantity, counted: line.countedQuantity, unitCost: line.unitCost,
+        closing: line.bookQuantity + (producedInBatch.get(line.itemId) || 0), counted: line.countedQuantity, unitCost: line.unitCost,
       })),
     };
   }
