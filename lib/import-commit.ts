@@ -58,6 +58,16 @@ import { applyOpeningInventoryChange } from "@/lib/opening-inventory";
  * Chỉ dùng cho lỗi nghiệp vụ của đúng một dòng. Lỗi database vẫn phải làm hỏng cả lô như cũ,
  * nên tuyệt đối không bắt Error chung ở chỗ gọi.
  */
+/**
+ * Ô "Mã combo" để trống kiểu POS: "-", "—", "0", "N/A"… là KHÔNG thuộc combo (khách 29/10/2026: file
+ * tháng 10 ghi "-" ở mọi dòng → 3.545 dòng NME bán lẻ bị coi là món con combo, không rã).
+ */
+export function normalizeComboCode(value: unknown) {
+  const code = String(value ?? "").trim().toUpperCase();
+  if (!/[A-Z0-9]/.test(code) || /^(0+|N\/?A|NONE|NULL|KHONG|KHÔNG)$/.test(code)) return "";
+  return code;
+}
+
 export class BankRowNeedsFixError extends Error {
   constructor(message: string) {
     super(message);
@@ -1206,7 +1216,7 @@ export async function commitImport(input: CommitInput) {
          * rã theo định lượng combo) và các dòng món con 0 đ ghi mã combo ở cột "Mã combo". Rã cả
          * món con là trừ kho hai lần nên món con không vào hàng chờ rã.
          */
-        const comboCode = asText(row.values.combo_code).toUpperCase();
+        const comboCode = normalizeComboCode(row.values.combo_code);
         const comboChild = Boolean(comboCode) && comboCode !== productCode;
         const rowNote = [asText(row.values.note), comboChild ? `Món con combo ${comboCode} — không rã (rã theo dòng combo)` : ""].filter(Boolean).join(" · ");
         const revenueRow = await tx.revenueImportRow.create({
