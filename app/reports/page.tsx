@@ -26,6 +26,9 @@ import RevenueTrendTab from "@/components/reports/RevenueTrendTab";
 import { statValueTextClass } from "@/components/reports/report-ui";
 import { isRevenueGroupCategory } from "@/lib/voucher-rules";
 import { DocLink } from "@/components/DocLink";
+import { ShowMoreRows, useRowLimit } from "@/components/ShowMoreRows";
+import { matchesSearch } from "@/lib/search-text";
+import { revenueExplosionKind, revenueExplosionRun, revenueSkipReason } from "@/lib/revenue-explosion-status";
 
 type Pnl = {
   revenue: number;
@@ -2515,7 +2518,7 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, canDelete
   onSaved: () => void;
 }) {
   /** "channel" = gộp theo kênh như cũ; "rows" = tổng từng ngày + từng dòng đúng như file import. */
-  const [mode, setMode] = useState<"channel" | "rows">("rows");
+  const [mode, setMode] = useState<"channel" | "rows" | "explosion">("rows");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [details, setDetails] = useState<Record<string, RevenueLedgerDetailRow[]>>({});
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
@@ -2607,7 +2610,7 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, canDelete
 
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs font-bold text-slate-500">Xem:</span>
-        {([["rows", "Tổng từng ngày · dòng import"], ["channel", "Gộp theo kênh bán"]] as const).map(([value, label]) => (
+        {([["rows", "Tổng từng ngày · dòng import"], ["channel", "Gộp theo kênh bán"], ["explosion", "Đối chiếu bán – rã theo mã"]] as const).map(([value, label]) => (
           <button
             key={value}
             type="button"
@@ -2620,6 +2623,8 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, canDelete
       </div>
 
       {mode === "rows" && <RevenueImportRowsSection data={data} branchCode={branchCode} canDelete={canDelete} onDeleted={onSaved} />}
+
+      {mode === "explosion" && <RevenueExplosionCheckSection dateFrom={data.dateFrom} dateTo={data.dateTo} branchCode={branchCode} />}
 
       {mode === "channel" && <section className="table-panel">
         <PanelHeader
@@ -2781,6 +2786,146 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, canDelete
         </Table>
       </section>}
     </div>
+  );
+}
+
+/** Cột Rã BOM của dòng doanh thu: mã lần rã / Chờ rã / Không rã + lý do (khách 29/10/2026). */
+function RevenueExplosionBadge({ row }: { row: { inventoryStatus: string | null; note?: string | null; productCode?: string | null; productQuantity?: number | null } }) {
+  const kind = revenueExplosionKind(row.inventoryStatus);
+  if (kind === "POSTED") return <span className="text-amber-700 font-semibold">{revenueExplosionRun(row.inventoryStatus)}</span>;
+  if (kind === "PENDING") return <span className="font-semibold text-blue-700">Chờ rã</span>;
+  if (!row.productCode) return <span className="text-slate-300">—</span>;
+  const reason = revenueSkipReason(row);
+  return <span className="text-rose-700" title={reason}>Không rã · {reason}</span>;
+}
+
+type RevenueExplosionCheckDay = { date: string; sold: number; posted: number; pending: number; skipped: number; runs: string[]; skipReasons: Record<string, number> };
+type RevenueExplosionCheckItem = Omit<RevenueExplosionCheckDay, "date" | "runs"> & { productCode: string; productName: string; days: RevenueExplosionCheckDay[] };
+
+/**
+ * Đối chiếu bán – rã theo mã món (khách 29/10/2026: SIGN005 bán 21 ly mà kho chỉ trừ 10): SL bán trên
+ * Sổ doanh thu so với SL đã rã / chờ rã / không rã (kèm lý do), bấm một mã để xem từng ngày.
+ */
+function RevenueExplosionCheckSection({ dateFrom, dateTo, branchCode }: { dateFrom: string; dateTo: string; branchCode: string }) {
+  // Kết quả gắn với bộ lọc đã tải: đổi khoảng ngày / cửa hàng thì coi như đang tải lại.
+  const loadKey = `${dateFrom}|${dateTo}|${branchCode}`;
+  const [loaded, setLoaded] = useState<{ key: string; items: RevenueExplosionCheckItem[] | null; error: string | null }>({ key: "", items: null, error: null });
+  const [search, setSearch] = useState("");
+  const [onlyGap, setOnlyGap] = useState(true);
+  const [openCode, setOpenCode] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const params = new URLSearchParams({ type: "revenue-explosion-check", from: dateFrom, to: dateTo, branchCode });
+      const response = await fetch(`/api/reports?${params.toString()}`);
+      const payload = await response.json().catch(() => ({})) as { items?: RevenueExplosionCheckItem[]; error?: string };
+      if (!alive) return;
+      setLoaded(response.ok
+        ? { key: `${dateFrom}|${dateTo}|${branchCode}`, items: payload.items || [], error: null }
+        : { key: `${dateFrom}|${dateTo}|${branchCode}`, items: null, error: payload.error || "Không tải được đối chiếu bán – rã" });
+    })();
+    return () => { alive = false; };
+  }, [dateFrom, dateTo, branchCode]);
+  const items = loaded.key === loadKey ? loaded.items : null;
+  const error = loaded.key === loadKey ? loaded.error : null;
+
+  const dayLabel = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
+  const qty = (value: number) => (Math.abs(value) < 1e-9 ? "" : value.toLocaleString("vi-VN", { maximumFractionDigits: 3 }));
+  const gapOf = (item: { sold: number; posted: number }) => item.sold - item.posted;
+  const reasonsText = (reasons: Record<string, number>) => Object.entries(reasons).map(([reason, value]) => `${reason} (${qty(value)})`).join("; ");
+  const filtered = useMemo(
+    () => (items || []).filter((item) => (!onlyGap || gapOf(item) > 1e-9) && matchesSearch(search, [item.productCode, item.productName])),
+    [items, onlyGap, search],
+  );
+  const rowLimit = useRowLimit(100, JSON.stringify([dateFrom, dateTo, branchCode, search, onlyGap]));
+  const totals = filtered.reduce((sum, item) => ({ sold: sum.sold + item.sold, posted: sum.posted + item.posted, pending: sum.pending + item.pending, skipped: sum.skipped + item.skipped }), { sold: 0, posted: 0, pending: 0, skipped: 0 });
+
+  return (
+    <section className="table-panel">
+      <PanelHeader
+        title="Đối chiếu bán – rã theo mã món"
+        subtitle={`Từ ${dayLabel(dateFrom)} đến ${dayLabel(dateTo)}. SL bán = tổng số lượng các dòng doanh thu đã nạp (Sổ doanh thu); Đã rã = đã trừ nguyên liệu; Chờ rã = chưa bấm Rã ở Kho › Chế biến; Không rã = dòng được bỏ qua (món con combo, nhóm không theo dõi kho…). Chưa trừ kho = SL bán − Đã rã. Bấm một mã để xem từng ngày.`}
+        exportFileName="doi_chieu_ban_ra"
+      />
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-slate-100" data-no-export>
+        <input type="search" className="control !w-64" placeholder="Tìm mã / tên món…" value={search} onChange={(event) => setSearch(event.target.value)} />
+        <label className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600">
+          <input type="checkbox" checked={onlyGap} onChange={(event) => setOnlyGap(event.target.checked)} />
+          Chỉ mã chưa trừ kho đủ
+        </label>
+        {items && <span className="text-xs text-slate-500">{filtered.length.toLocaleString("vi-VN")} / {items.length.toLocaleString("vi-VN")} mã</span>}
+      </div>
+      {error && <p className="px-4 py-3 text-sm text-rose-700">{error}</p>}
+      {!items && !error && <p className="px-4 py-3 text-sm text-slate-500">Đang tải…</p>}
+      {items && (
+        <Table headers={["Mã món", "Tên món", "SL bán", "Đã rã", "Chờ rã", "Không rã", "Lý do không rã", "Chưa trừ kho"]}>
+          {filtered.length === 0 && (
+            <tr className="border-t border-slate-100"><td colSpan={8} className="px-4 py-3 text-center text-slate-400">{onlyGap ? "Mọi mã đã trừ kho đủ trong khoảng ngày này." : "Không có dòng doanh thu nào có mã món."}</td></tr>
+          )}
+          {filtered.slice(0, rowLimit.limit).flatMap((item) => {
+            const isOpen = openCode === item.productCode;
+            return [
+              <tr key={item.productCode} onClick={() => setOpenCode(isOpen ? null : item.productCode)} className={`cursor-pointer border-t border-slate-100 hover:bg-slate-50 ${isOpen ? "bg-blue-50/60" : ""}`}>
+                <Cell>
+                  <span className="inline-flex items-center gap-1">
+                    <span className={`material-symbols-outlined text-sm text-slate-400 transition-transform ${isOpen ? "rotate-90" : ""}`} data-no-export>chevron_right</span>
+                    <b>{item.productCode}</b>
+                  </span>
+                </Cell>
+                <Cell>{item.productName}</Cell>
+                <Cell right>{qty(item.sold)}</Cell>
+                <Cell right>{qty(item.posted)}</Cell>
+                <Cell right><span className="text-blue-700">{qty(item.pending)}</span></Cell>
+                <Cell right><span className="text-rose-700">{qty(item.skipped)}</span></Cell>
+                <Cell><span className="text-xs text-slate-600">{reasonsText(item.skipReasons)}</span></Cell>
+                <Cell right><b className={gapOf(item) > 1e-9 ? "text-rose-700" : "text-emerald-700"}>{qty(gapOf(item)) || "0"}</b></Cell>
+              </tr>,
+              isOpen && (
+                <tr key={`${item.productCode}-days`} className="bg-slate-50/70" data-no-export>
+                  <td colSpan={8} className="px-4 py-3">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-slate-500">
+                          {["Ngày", "SL bán", "Đã rã", "Lần rã", "Chờ rã", "Không rã", "Lý do không rã", "Chưa trừ kho"].map((label) => <th key={label} className="px-2 py-1 text-left font-bold">{label}</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {item.days.map((day) => (
+                          <tr key={day.date} className={`border-t border-slate-200 ${gapOf(day) > 1e-9 ? "text-rose-800" : ""}`}>
+                            <td className="px-2 py-1 whitespace-nowrap">{dayLabel(day.date)}</td>
+                            <td className="px-2 py-1 tabular-nums">{qty(day.sold)}</td>
+                            <td className="px-2 py-1 tabular-nums">{qty(day.posted)}</td>
+                            <td className="px-2 py-1">{day.runs.join(", ")}</td>
+                            <td className="px-2 py-1 tabular-nums text-blue-700">{qty(day.pending)}</td>
+                            <td className="px-2 py-1 tabular-nums text-rose-700">{qty(day.skipped)}</td>
+                            <td className="px-2 py-1">{reasonsText(day.skipReasons)}</td>
+                            <td className="px-2 py-1 tabular-nums font-bold">{qty(gapOf(day)) || "0"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </td>
+                </tr>
+              ),
+            ];
+          })}
+          {filtered.length > 0 && (
+            <tr className="border-t-2 border-slate-200 bg-slate-50 font-bold">
+              <Cell>Tổng ({filtered.length.toLocaleString("vi-VN")} mã)</Cell>
+              <Cell>{""}</Cell>
+              <Cell right>{qty(totals.sold)}</Cell>
+              <Cell right>{qty(totals.posted)}</Cell>
+              <Cell right>{qty(totals.pending)}</Cell>
+              <Cell right>{qty(totals.skipped)}</Cell>
+              <Cell>{""}</Cell>
+              <Cell right>{qty(totals.sold - totals.posted) || "0"}</Cell>
+            </tr>
+          )}
+        </Table>
+      )}
+      <ShowMoreRows shown={Math.min(rowLimit.limit, filtered.length)} total={filtered.length} step={100} onMore={rowLimit.more} onAll={rowLimit.all} unit="mã" />
+    </section>
   );
 }
 
@@ -2965,7 +3110,7 @@ function RevenueImportRowsSection({ data, branchCode, canDelete, onDeleted }: {
                                 <td className="px-2 py-1.5 text-right tabular-nums">{row.vatAmount ? money(row.vatAmount) : ""}</td>
                                 <td className="px-2 py-1.5 text-right tabular-nums">{row.serviceAmount ? money(row.serviceAmount) : ""}</td>
                                 <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-emerald-700">{money(row.netAmount)}</td>
-                                <td className="px-2 py-1.5 whitespace-nowrap">{(row.inventoryStatus || "").startsWith("POSTED") ? <span className="text-amber-700 font-semibold">{(row.inventoryStatus || "").replace(/^POSTED:?/, "") || "Đã rã"}</span> : <span className="text-slate-300">—</span>}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap"><RevenueExplosionBadge row={row} /></td>
                                 <td className="px-2 py-1.5 max-w-[220px] truncate text-slate-500" title={row.fileName || ""}>{row.fileName || ""}</td>
                               </tr>
                             ))}

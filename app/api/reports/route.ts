@@ -4,7 +4,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { allowedMenuTabs, canViewFinancialDashboard } from "@/lib/auth-demo";
 import { assertBranchAccess, ensureRevenueComponentCategories, postJournalEntry, requestedBranch } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
-import { cashSourceAnchorPeriod, createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueDayImportRows, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
+import { cashSourceAnchorPeriod, createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueDayImportRows, getRevenueExplosionCheck, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
 import { deleteRevenueImportRows } from "@/lib/import-commit";
 import { getPayrollBudgetReport, getPnlHistoryEditor, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
 import { headcountToStored, isPnlHistoryChannelMetric, isPnlHistoryHeadcountMetric, isPnlHistoryPeriod, PNL_HISTORY_HEADCOUNT_PREFIX, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX } from "@/lib/pnl-history";
@@ -1260,7 +1260,7 @@ export async function GET(request: Request) {
     // (Thu chi ngày) vừa là nguồn số của bảng "Đối chiếu tiền vào đã đủ chưa" nằm ở đầu tab
     // Tiền về đủ chưa (chuyển sang 05/09/2026), nên ai có MỘT TRONG HAI tab đều gọi được.
     // "revenue-ledger-detail" là phần xoè chi tiết của chính tab Sổ doanh thu, không phải tab riêng.
-    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "pnl-note": "pnl", "pnl-history": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement", "revenue-ledger-detail": "revenue-ledger", "revenue-day-rows": "revenue-ledger" };
+    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "pnl-note": "pnl", "pnl-history": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement", "revenue-ledger-detail": "revenue-ledger", "revenue-day-rows": "revenue-ledger", "revenue-explosion-check": "revenue-ledger" };
     const containerTab = subViewTab[type] || type;
     // Biến động doanh thu cùng kỳ còn nằm trên Dashboard của Hoạch định P&L (khách 22/10/2026).
     const alsoAllowed = type === "revenue-trend" && permittedTabs?.includes("pnl");
@@ -1305,6 +1305,12 @@ export async function GET(request: Request) {
       const date = cleanText(params.get("date"));
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return NextResponse.json({ error: "Thiếu ngày cần xem" }, { status: 400 });
       return NextResponse.json(await getRevenueDayImportRows(date, branchCode));
+    }
+    if (type === "revenue-explosion-check") {
+      const from = cleanText(params.get("from"));
+      const to = cleanText(params.get("to"));
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return NextResponse.json({ error: "Thiếu khoảng ngày cần đối chiếu" }, { status: 400 });
+      return NextResponse.json(await getRevenueExplosionCheck(from, to, branchCode));
     }
     if (type === "revenue-ledger-detail") {
       const date = cleanText(params.get("date"));

@@ -16,6 +16,7 @@ import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/
 import { transferLegsForBranch } from "@/lib/internal-transfer";
 import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from "@/lib/wallet-settlement-allocation";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
+import { revenueExplosionKind, revenueExplosionRun, revenueSkipReason } from "@/lib/revenue-explosion-status";
 import { remainingWalletGross, selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import { comparePnlGroups, comparePnlItems, isCapexPnlCatalogItem, isDepreciationPnlName, isFixedCostPnlGroupName, isInterestPnlName, isPayrollPnlItem, isPayrollPnlName, matchDepartmentPayrollItem, otherIncomePnlItemNameOf, samePnlName } from "@/lib/pnl-ordering";
 import { loadPnlHistory, pnlHistoryLines, pnlHistoryRevenueDepartment } from "@/lib/pnl-history";
@@ -2565,6 +2566,77 @@ export async function getRevenueDayImportRows(date: string, branchCode: string) 
     inventoryStatus: row.inventoryStatus,
   }));
   return { date, branchCode, rows: result, truncated: rows.length >= 3000 };
+}
+
+export type RevenueExplosionCheckDay = {
+  date: string;
+  sold: number;
+  posted: number;
+  pending: number;
+  skipped: number;
+  runs: string[];
+  skipReasons: Record<string, number>;
+};
+export type RevenueExplosionCheckItem = Omit<RevenueExplosionCheckDay, "date" | "runs"> & {
+  productCode: string;
+  productName: string;
+  days: RevenueExplosionCheckDay[];
+};
+
+/**
+ * ĐỐI CHIẾU BÁN – RÃ theo mã món (khách 29/10/2026: SIGN005 bán 21 ly mà kho chỉ trừ 10, cần chỗ xem
+ * lệch ngày nào mà không phải xuất nhiều file). Gom dòng doanh thu đã nạp trong khoảng ngày theo
+ * mã × ngày: SL bán, đã rã, chờ rã, không rã (kèm lý do).
+ */
+export async function getRevenueExplosionCheck(from: string, to: string, branchCode: string) {
+  const start = new Date(`${from}T00:00:00+07:00`);
+  const end = new Date(`${to}T24:00:00+07:00`);
+  const rows = await prisma.$queryRaw<Array<{ productCode: string; saleDate: Date; inventoryStatus: string | null; combo: string | null; hasQuantity: boolean; quantity: number }>>(Prisma.sql`
+    SELECT UPPER(r."productCode") AS "productCode", r."saleDate", r."inventoryStatus",
+           substring(r."note" from 'Món con combo .*? — không rã') AS combo,
+           (COALESCE(r."productQuantity", 0) > 0) AS "hasQuantity",
+           SUM(COALESCE(r."productQuantity", 0))::float8 AS quantity
+    FROM "RevenueImportRow" r
+    WHERE r."saleDate" >= ${start} AND r."saleDate" < ${end}
+      AND COALESCE(r."productCode", '') <> ''
+      ${branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND r."branchCode" = ${branchCode}`}
+    GROUP BY 1, 2, 3, 4, 5
+  `);
+  const names = new Map((await prisma.inventoryItem.findMany({
+    where: { code: { in: [...new Set(rows.map((row) => row.productCode))] } },
+    select: { code: true, name: true },
+  })).map((item) => [item.code.toUpperCase(), item.name]));
+  const items = new Map<string, RevenueExplosionCheckItem & { dayMap: Map<string, RevenueExplosionCheckDay> }>();
+  for (const row of rows) {
+    const item = items.get(row.productCode) || {
+      productCode: row.productCode, productName: names.get(row.productCode) || "",
+      sold: 0, posted: 0, pending: 0, skipped: 0, skipReasons: {}, days: [], dayMap: new Map(),
+    };
+    items.set(row.productCode, item);
+    const date = vietnamBusinessDayKey(row.saleDate);
+    const day = item.dayMap.get(date) || { date, sold: 0, posted: 0, pending: 0, skipped: 0, runs: [], skipReasons: {} };
+    item.dayMap.set(date, day);
+    const kind = revenueExplosionKind(row.inventoryStatus);
+    for (const target of [item, day]) {
+      target.sold += row.quantity;
+      if (kind === "POSTED") target.posted += row.quantity;
+      else if (kind === "PENDING") target.pending += row.quantity;
+      else {
+        target.skipped += row.quantity;
+        const reason = revenueSkipReason({ note: row.combo, productCode: row.productCode, productQuantity: row.hasQuantity ? 1 : 0 });
+        target.skipReasons[reason] = (target.skipReasons[reason] || 0) + row.quantity;
+      }
+    }
+    if (kind === "POSTED") {
+      const run = revenueExplosionRun(row.inventoryStatus);
+      if (!day.runs.includes(run)) day.runs.push(run);
+    }
+  }
+  const result: RevenueExplosionCheckItem[] = [...items.values()].map(({ dayMap, ...item }) => ({
+    ...item,
+    days: [...dayMap.values()].sort((a, b) => a.date.localeCompare(b.date)),
+  })).sort((a, b) => (b.sold - b.posted) - (a.sold - a.posted) || a.productCode.localeCompare(b.productCode));
+  return { from, to, branchCode, items: result };
 }
 
 /**
