@@ -9,6 +9,7 @@ import { FilterApplyButton } from "@/components/FilterApplyButton";
 import { DateInput, DateTimeInput, MonthInput } from "@/components/DateInput";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
+import { isTransferDestination } from "@/lib/warehouse-scope";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
 import { goodsGroupKey, normalizeGoodsGroup } from "@/lib/goods-group";
 import { recipeValidity, validityInMonth, vnDay, type RecipeValidity } from "@/lib/recipe-validity";
@@ -147,7 +148,7 @@ const RECIPE_VIEWS: Array<{ id: RecipeView; label: string; icon: string }> = [
   { id: "recipes", label: "Định lượng", icon: "menu_book" },
   { id: "monthly", label: "Thông tin định lượng trong tháng", icon: "fact_check" },
 ];
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; /** Mã món → FOOD (Bếp) / DRINK (Bar): nhóm doanh thu của mặt hàng, chưa gán thì theo file POS. */ productKitchenKinds?: Record<string, string>; /** Mặt hàng → số định lượng đang dùng (tab Mặt hàng). */ recipeUsage?: Record<string, number>; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[]; /** Hạng mục P&L chọn cho phiếu Xuất khác. */ issuePnlItems?: Array<{ code: string; name: string; groupName: string }> };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null; group?: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; /** Mã món → FOOD (Bếp) / DRINK (Bar): nhóm doanh thu của mặt hàng, chưa gán thì theo file POS. */ productKitchenKinds?: Record<string, string>; /** Mặt hàng → số định lượng đang dùng (tab Mặt hàng). */ recipeUsage?: Record<string, number>; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[]; /** Hạng mục P&L chọn cho phiếu Xuất khác. */ issuePnlItems?: Array<{ code: string; name: string; groupName: string }> };
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
 type ReturnSourceReceipt = { id: string; code: string; transactionDate: string; branchCode: string; warehouseCode: string; referenceCode: string | null; lines: Array<{ itemId: string; itemCode: string; itemName: string; unit: string; quantity: number; returned: number; refundUnit: number }> };
@@ -966,6 +967,9 @@ export default function InventoryPage() {
   const transferableItems = data.items.filter((item) => item.itemType !== "FINISHED");
   /** Kho nhận chọn được ở MỌI nhà hàng (máy chủ gửi riêng — `warehouses` chỉ có kho của người xem). */
   const transferDestinationOptions = data.transferDestinations?.length ? data.transferDestinations : warehouseOptions;
+  /** Kho xuất của phiếu — kho nhận lọc theo loại kho + nhà hàng của nó (isTransferDestination). */
+  const transferSource = transferDestinationOptions.find((warehouse) => warehouse.code === transferForm.warehouseCode)
+    || warehouseOptions.find((warehouse) => warehouse.code === transferForm.warehouseCode);
   const transferDestination = transferDestinationOptions.find((warehouse) => warehouse.code === transferForm.toWarehouseCode);
   const transferCrossBranch = !!transferDestination && !!transferDestination.branch && transferDestination.branch !== transferForm.branchCode;
 
@@ -3697,7 +3701,12 @@ export default function InventoryPage() {
                   </select>
                 </Input>
                 <Input label="Kho xuất">
-                  <select className="control" value={transferForm.warehouseCode} onChange={(e) => setTransferForm({ ...transferForm, warehouseCode: e.target.value })}>
+                  <select className="control" value={transferForm.warehouseCode} onChange={(e) => {
+                    const source = transferDestinationOptions.find((warehouse) => warehouse.code === e.target.value) || warehouseOptions.find((warehouse) => warehouse.code === e.target.value);
+                    const destination = transferDestinationOptions.find((warehouse) => warehouse.code === transferForm.toWarehouseCode);
+                    const keep = !source || !destination || isTransferDestination(source, destination);
+                    setTransferForm({ ...transferForm, warehouseCode: e.target.value, ...(keep ? {} : { toWarehouseCode: "" }) });
+                  }}>
                     {warehouseOptions.filter((warehouse) => warehouse.branch === transferForm.branchCode || !warehouse.branch).map((warehouse) => (
                       <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>
                     ))}
@@ -3706,10 +3715,10 @@ export default function InventoryPage() {
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Kho nhận (mọi nhà hàng)">
+                <Input label="Kho nhận (cùng loại kho hoặc cùng nhà hàng)">
                   <select className="control" value={transferForm.toWarehouseCode} onChange={(e) => setTransferForm({ ...transferForm, toWarehouseCode: e.target.value })}>
                     <option value="">Chọn kho nhận</option>
-                    {transferDestinationOptions.filter((warehouse) => warehouse.code !== transferForm.warehouseCode).map((warehouse) => (
+                    {transferDestinationOptions.filter((warehouse) => !transferSource || isTransferDestination(transferSource, warehouse)).map((warehouse) => (
                       <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}{warehouse.branch ? ` · ${storeLabel(warehouse.branch)}` : ""}</option>
                     ))}
                   </select>

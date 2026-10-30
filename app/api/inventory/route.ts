@@ -7,7 +7,7 @@ import { prisma, prismaRaw, type TxClient } from "@/lib/prisma";
 import { vnDay as vnDayOf } from "@/lib/recipe-validity";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess, repostInventoryCogs } from "@/lib/accounting";
-import { allowedWarehousesOf, assertWarehouseAccess, scopeWarehouses, transferDestinationsFor } from "@/lib/warehouse-scope";
+import { allowedWarehousesOf, assertWarehouseAccess, isTransferDestination, scopeWarehouses } from "@/lib/warehouse-scope";
 import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { createPurchasePayable, payableUnitByItem, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
 import { postStockTransfer, syncTransferInternalDebt } from "@/lib/inventory-transfer";
@@ -642,12 +642,17 @@ async function loadStocktakes(where: Prisma.StocktakeSessionWhereInput) {
   return rows.map((row) => ({ ...row, reopened: reopenedIds.has(row.id) }));
 }
 
-/** Kho nhận phải cùng loại với kho được giao (lib/warehouse-scope.ts transferDestinationsFor). */
-async function assertTransferDestination(session: DemoSession, toWarehouseCode: string) {
-  if (!allowedWarehousesOf(session)) return;
-  const warehouses = await prisma.masterDataItem.findMany({ where: { type: "WAREHOUSE" }, select: { code: true, group: true } });
-  if (!transferDestinationsFor(session, warehouses).some((warehouse) => warehouse.code.toUpperCase() === toWarehouseCode.toUpperCase())) {
-    businessError(`Kho nhận ${toWarehouseCode} không cùng loại với kho bạn được giao — chỉ điều chuyển sang kho cùng loại (vd Bếp → Bếp).`);
+/** Kho nhận phải cùng loại với kho xuất hoặc cùng nhà hàng (lib/warehouse-scope.ts isTransferDestination). */
+async function assertTransferDestination(fromWarehouseCode: string, toWarehouseCode: string) {
+  const warehouses = await prisma.masterDataItem.findMany({
+    where: { type: "WAREHOUSE", code: { in: [fromWarehouseCode, toWarehouseCode] } },
+    select: { code: true, branch: true, group: true },
+  });
+  const find = (code: string) => warehouses.find((warehouse) => warehouse.code.toUpperCase() === code.toUpperCase());
+  const source = find(fromWarehouseCode);
+  const destination = find(toWarehouseCode);
+  if (source && destination && !isTransferDestination(source, destination)) {
+    businessError(`Kho nhận ${toWarehouseCode} không cùng loại với kho xuất ${fromWarehouseCode} và không cùng nhà hàng — chỉ điều chuyển sang kho cùng loại (vd Bếp → Bếp) hoặc kho trong nội bộ nhà hàng.`);
   }
 }
 
@@ -1138,7 +1143,7 @@ export async function GET(request: Request) {
         where: { type: "WAREHOUSE", status: "ACTIVE" },
         select: { code: true, name: true, branch: true, group: true },
         orderBy: [{ branch: "asc" }, { code: "asc" }],
-      }).then((rows) => transferDestinationsFor(auth.session, rows)),
+      }),
     ]);
     const transferRequests = openTransferRequests
       .map((request) => ({ ...request, canApprove: canReceiveTransfer(auth.session, request), canEdit: canSendTransfer(auth.session, request) }))
@@ -2491,7 +2496,7 @@ export async function POST(request: Request) {
       ]);
       if (!sourceWarehouse) businessError(`Kho ${warehouseCode} không thuộc cửa hàng ${branchCode}.`);
       if (!destinationWarehouse) businessError(`Kho nhận ${toWarehouseCode} không tồn tại hoặc ngưng hoạt động`);
-      await assertTransferDestination(auth.session, toWarehouseCode);
+      await assertTransferDestination(warehouseCode, toWarehouseCode);
       const toBranchCode = (destinationWarehouse?.branch || branchCode).toUpperCase();
       const inputLines = linesFrom(body.lines);
       if (inputLines.length === 0) businessError("Cần ít nhất một dòng hàng điều chuyển");
@@ -2679,7 +2684,7 @@ export async function POST(request: Request) {
       });
       if (!destinationWarehouse) businessError(`Kho nhận ${toWarehouseCode} không tồn tại hoặc ngưng hoạt động`);
       if (destinationWarehouse?.branch) assertBranchAccess(auth.session, destinationWarehouse.branch);
-      await assertTransferDestination(auth.session, toWarehouseCode);
+      await assertTransferDestination(warehouseCode, toWarehouseCode);
       // Điều chuyển liên nhà hàng giờ được hỗ trợ chính thức: phiếu nhớ cửa hàng nhận
       // (toBranchCode) và postStockTransfer sinh cặp công nợ nội bộ, nên báo cáo hai bên
       // đều giải thích được tồn tăng/giảm.

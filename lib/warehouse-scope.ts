@@ -33,15 +33,16 @@ export function assertWarehouseAccess(session: DemoSession, warehouseCode: strin
   throw new Error(`BUSINESS:${label} ${warehouseCode} nằm ngoài các kho được phân công (${allowed.join(", ")}).`);
 }
 
+type TransferWarehouse = { code: string; branch?: string | null; group?: string | null };
+
 /**
- * Kho nhận điều chuyển cho người bị giới hạn kho (khách 24/10/2026: team Bếp điều chuyển thì kho
- * nhận chỉ hiện kho Bếp): chỉ các kho CÙNG LOẠI (ô Nhóm của danh mục kho: KHO BẾP / KHO BAR /
- * KHO FOH...) với kho được giao, ở mọi nhà hàng. Người không bị giới hạn kho thấy mọi kho.
+ * Kho nhận điều chuyển theo KHO XUẤT (khách 30/10/2026, thay luật 24/10 theo kho được giao): kho
+ * CÙNG LOẠI (ô Nhóm của danh mục kho: KHO BẾP / KHO BAR / KHO FOH...) ở mọi nhà hàng, cộng mọi kho
+ * trong nội bộ nhà hàng của kho xuất. Vd kho bếp ASA → kho bếp Nam Mê + kho bar / FOH / ... của ASA.
  */
-export function transferDestinationsFor<T extends { code: string; group?: string | null }>(session: DemoSession | null | undefined, warehouses: T[]): T[] {
-  const allowed = allowedWarehousesOf(session);
-  if (!allowed) return warehouses;
-  const groupOf = (warehouse: T) => (warehouse.group || "").trim().toUpperCase();
-  const groups = new Set(warehouses.filter((warehouse) => allowed.includes(warehouse.code.toUpperCase())).map(groupOf).filter(Boolean));
-  return warehouses.filter((warehouse) => allowed.includes(warehouse.code.toUpperCase()) || (groupOf(warehouse) && groups.has(groupOf(warehouse))));
+export function isTransferDestination(source: TransferWarehouse, destination: TransferWarehouse) {
+  const norm = (value: string | null | undefined) => (value || "").trim().toUpperCase();
+  if (norm(source.code) === norm(destination.code)) return false;
+  if (norm(source.branch) && norm(source.branch) === norm(destination.branch)) return true;
+  return Boolean(norm(source.group)) && norm(source.group) === norm(destination.group);
 }
