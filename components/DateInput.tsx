@@ -193,3 +193,24 @@ export function DateTimeInput({ value, onChange, className = "", ariaLabel }: { 
     </div>
   );
 }
+
+/**
+ * Ô ngày + ô giờ của bộ lọc khoảng thời gian (khách 30/10/2026: lọc báo cáo / phiếu kho theo giờ để
+ * khớp giờ chốt kiểm kê). Giờ để trống = cả ngày (lib/date-range vnRangeBounds).
+ */
+export function DateWithTimeInput({ date, time, onDate, onTime, ariaLabel }: { date: string; time: string; onDate: (value: string) => void; onTime: (value: string) => void; ariaLabel?: string }) {
+  return (
+    // Ô hẹp (điện thoại, lưới nhiều cột) thì ô giờ xuống dòng dưới ô ngày thay vì bóp nhỏ ô ngày.
+    <div className="flex flex-wrap gap-2">
+      <DateInput className="control min-w-[8.5rem] flex-1" value={date} onChange={onDate} ariaLabel={ariaLabel} />
+      <input
+        type="time"
+        className="control w-28 shrink-0 grow basis-24"
+        value={time}
+        aria-label={ariaLabel ? `Giờ — ${ariaLabel}` : "Giờ"}
+        title="Giờ (để trống = cả ngày)"
+        onChange={(event) => onTime(event.target.value)}
+      />
+    </div>
+  );
+}

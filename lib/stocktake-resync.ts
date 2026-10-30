@@ -218,9 +218,13 @@ export async function unpostStocktakeAdjustments(sessionId: string, actor: strin
  * Sau mỗi lần rã / hoàn tác rã: ghi lại -N/-X = số đếm − tồn tại giờ chốt (đã gồm phiếu rã của
  * đợt) để mọi mã về đúng số đếm. Kiểm dư BTP còn chờ rã vẫn hoãn như lúc duyệt. Sổ sách trên dòng
  * = tồn trước phần rã của đợt (Giải trình / Kết quả cộng lại phần chế biến đó, như phiếu cả kho).
- * Chỉ áp cho đợt có kiểm dư BTP (explosionStatus khác null); bỏ qua đợt đã chốt giải trình, kỳ khoá.
+ * Bỏ qua đợt đã chốt giải trình, kỳ khoá.
+ *
+ * Từ 30/10/2026 đợt theo vị trí đi như phiếu kiểm cả kho (khách: "chưa chốt kiểm kê, đang giải trình
+ * mà đã có phiếu xuất kiểm kê"): duyệt gộp chỉ chốt số đếm; chưa chốt giải trình thì chỉ cập nhật sổ
+ * sách trên dòng và GỠ -N/-X còn sót; `post: true` (lúc Chốt giải trình) mới ghi -N/-X.
  */
-export async function resyncStocktakeBatch(batchId: string, actor: string): Promise<ResyncResult> {
+export async function resyncStocktakeBatch(batchId: string, actor: string, options: { post?: boolean } = {}): Promise<ResyncResult> {
   const batch = await prisma.stocktakeBatch.findUnique({
     where: { id: batchId },
     include: { lines: { include: { item: { select: { id: true, code: true, unit: true, itemType: true } } } } },
@@ -262,7 +266,7 @@ export async function resyncStocktakeBatch(batchId: string, actor: string): Prom
     const planned = new Map<string, number>();
     for (const row of rows) {
       const adjustment = row.counted - systemStock(row.item.id);
-      if (Math.abs(adjustment) <= EPS) continue;
+      if (!options.post || Math.abs(adjustment) <= EPS) continue;
       // Kiểm dư BTP có định lượng còn chờ rã: chưa nhập kiểm kê (rã mới sinh BTP có giá vốn).
       if (adjustment > 0 && isExplodable?.(row.item)) continue;
       planned.set(row.item.id, adjustment);
@@ -290,7 +294,7 @@ export async function resyncStocktakeBatch(batchId: string, actor: string): Prom
       const header = {
         transactionDate: batch.cutoffAt, branchCode: batch.branchCode, warehouseCode: batch.warehouseCode,
         referenceType: "STOCKTAKE", referenceId: batch.id, referenceCode: batch.code,
-        note: `Kiểm kê chốt ${batch.code} (ghi lại sau rã kiểm dư)`, createdBy: actor,
+        note: `Chênh lệch kiểm kê ${batch.code} (chốt giải trình)`, createdBy: actor,
       };
       const docs = [];
       if (inbound.length > 0) docs.push(await postInventoryTransaction(db, { ...header, code: await freeDocumentCode(tx, `${batch.code}-N`), transactionType: "NHAP_KIEM_KE", lines: inbound }));
@@ -305,7 +309,7 @@ export async function resyncStocktakeBatch(batchId: string, actor: string): Prom
     for (const row of rows) {
       const bookQuantity = systemStock(row.item.id) - (explosionNet.get(row.item.id) || 0);
       const varianceQuantity = row.counted - bookQuantity;
-      const unitCost = postedCost.get(row.item.id) ?? row.unitCost;
+      const unitCost = postedCost.get(row.item.id) ?? (row.unitCost > 0 ? row.unitCost : stockOf.get(row.item.id)?.averageCost || 0);
       if (!row.line) {
         linesChanged = true;
         await tx.stocktakeBatchLine.create({
@@ -350,10 +354,10 @@ export async function resyncOpenStocktakes(input: { branchCode?: string | null; 
     select: { id: true },
     orderBy: { stocktakeDate: "asc" },
   });
-  // Đợt theo vị trí có kiểm dư BTP (rã sau khi duyệt) — xem resyncStocktakeBatch.
+  // Đợt theo vị trí chưa chốt giải trình: sổ sách sống + gỡ -N/-X còn sót — xem resyncStocktakeBatch.
   const batches = await prisma.stocktakeBatch.findMany({
     where: {
-      status: STOCKTAKE_BATCH_APPROVED, explosionStatus: { not: null },
+      status: STOCKTAKE_BATCH_APPROVED,
       ...(input.ids ? { id: { in: input.ids } } : {}),
       ...(input.branchCode && input.branchCode !== "ALL" ? { branchCode: input.branchCode } : {}),
       ...(input.from ? { cutoffAt: { gte: input.from } } : {}),

@@ -124,6 +124,7 @@
     "repair:payroll-employee-partner": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/repair-payroll-employee-partner.mjs",
     "repair:opening-asset-branch-lots": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/repair-opening-asset-branch-lots.mjs",
     "repair:revenue-combo-placeholder": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/repair-revenue-combo-placeholder.mjs",
+    "repair:unpost-open-stocktake-batches": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/unpost-open-stocktake-batches.mjs",
     "test:department-resolve": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-department-resolve.mjs",
     "test:ebitda-depreciation": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-ebitda-depreciation.mjs",
     "audit:deposit-amounts": "node scripts/audit-deposit-amount-sync.cjs",

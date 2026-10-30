@@ -445,9 +445,9 @@ export async function snapshotExplanation(db: TxClient, sourceType: StocktakeSou
   const uncounted = await loadUncountedLines(db, {
     warehouseCode: source.warehouseCode, from: periodFrom, to: source.cutoffAt,
     countedIds: new Set(source.countLines.map((line) => line.itemId)),
-    // Không đếm = kiểm 0 cho cả hai loại (khách 30/10/2026). Phiếu cả kho ghi lúc Chốt; đợt theo vị trí
-    // ghi lúc duyệt gộp / resyncStocktakeBatch (mã có tồn đã thành dòng đợt, ở đây chỉ còn mã tồn 0).
-    ownSourceId: sourceType === "SESSION" ? sourceId : null,
+    // Không đếm = kiểm 0 cho cả hai loại (khách 30/10/2026), ghi -N/-X lúc Chốt giải trình. Đợt theo vị
+    // trí: mã có tồn đã thành dòng đợt (resyncStocktakeBatch), ở đây chỉ còn mã tồn 0.
+    ownSourceId: sourceId,
     countAsZero: true,
   });
   const allLines = [...source.countLines, ...uncounted];

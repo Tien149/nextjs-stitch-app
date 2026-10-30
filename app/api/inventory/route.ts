@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prismaDateRange } from "@/lib/date-range";
+import { prismaDateRange, vnRangeBounds, vnToday } from "@/lib/date-range";
 import { loadActivePrices } from "@/lib/supplier-price-list-db";
 import { Prisma } from "@prisma/custom-client";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
@@ -343,14 +343,12 @@ function buildStockMovements(transactions: MovementLineSource[], partnerNames: M
 function stockPeriod(searchParams: URLSearchParams) {
   // Ngày theo giờ VIỆT NAM (đầu ngày 00:00 +07): "đến 26/08" là hết 23:59:59 ngày 26/08 giờ VN,
   // khớp giờ chốt kiểm kê / Giải trình (trước đây mốc 00:00 UTC = 07:00 sáng hôm sau).
-  const parse = (value: string | null) => {
-    if (!value) return null;
-    const date = new Date(`${value}T00:00:00+07:00`);
-    return Number.isNaN(date.getTime()) ? null : date;
-  };
-  const from = parse(searchParams.get("reportFrom"));
-  const to = parse(searchParams.get("reportTo"));
-  return { from, toEnd: to ? new Date(to.getTime() + 86_400_000) : null };
+  // Kèm giờ (khách 30/10/2026): "đến 16:48" tính trọn phút như giờ chốt kiểm kê.
+  const bounds = vnRangeBounds({
+    from: searchParams.get("reportFrom"), to: searchParams.get("reportTo"),
+    fromTime: searchParams.get("reportFromTime"), toTime: searchParams.get("reportToTime"),
+  });
+  return { from: bounds.start, toEnd: bounds.end };
 }
 
 async function loadMovementTotals(branchCode: string, period: { from: Date | null; toEnd: Date | null } = { from: null, toEnd: null }) {
@@ -1014,13 +1012,13 @@ export async function GET(request: Request) {
      * những ngày đầu rơi mất và người dùng tưởng hệ thống không sinh phiếu (feedback khách
      * 05/09/2026). Mặc định 90 ngày gần nhất; người dùng chọn lại khoảng ngày thì lấy đúng khoảng đó.
      */
-    const flowTo = new Date(searchParams.get("flowTo") || Date.now());
-    if (Number.isNaN(flowTo.getTime())) flowTo.setTime(Date.now());
-    flowTo.setHours(23, 59, 59, 999);
-    const flowFromParam = searchParams.get("flowFrom");
-    const flowFrom = flowFromParam ? new Date(flowFromParam) : new Date(flowTo.getTime() - 90 * 24 * 60 * 60 * 1000);
-    if (Number.isNaN(flowFrom.getTime())) flowFrom.setTime(flowTo.getTime() - 90 * 24 * 60 * 60 * 1000);
-    flowFrom.setHours(0, 0, 0, 0);
+    // Ngày + giờ theo giờ VN (khách 30/10/2026 thêm Từ giờ / Đến giờ; giờ trống = cả ngày).
+    const flowBounds = vnRangeBounds({
+      from: searchParams.get("flowFrom"), to: searchParams.get("flowTo") || vnToday(),
+      fromTime: searchParams.get("flowFromTime"), toTime: searchParams.get("flowToTime"),
+    });
+    const flowTo = new Date((flowBounds.end || vnRangeBounds({ to: vnToday() }).end!).getTime() - 1);
+    const flowFrom = flowBounds.start || new Date(flowTo.getTime() + 1 - 90 * 24 * 60 * 60 * 1000);
 
     /**
      * Tải theo phần (khách báo màn Kho chậm 11/10/2026): một lượt tải mọi tab là ~6 giây và
@@ -1923,13 +1921,13 @@ export async function POST(request: Request) {
         const posted = await postStocktakeAdjustments(current!.sourceId, auth.session.name);
         await repostInventoryCogs([{ date: posted.date, branchCode: posted.branchCode }], auth.session.name);
       }
-      // Đợt theo vị trí: -N/-X ghi lại theo tồn sau rã kiểm dư BTP (lib/stocktake-resync.ts, 29/10/2026).
+      // Đợt theo vị trí (30/10/2026): chưa chốt thì chỉ số sống, Chốt mới ghi -N/-X (lib/stocktake-resync.ts).
       if ((action === "LOCK_STOCKTAKE_EXPLANATION" || sameSourceRefresh) && current!.sourceType === "BATCH" && current!.status !== EXPLANATION_LOCKED) {
         const batch = await prisma.stocktakeBatch.findUnique({ where: { id: current!.sourceId }, select: { code: true, explosionStatus: true } });
         if (action === "LOCK_STOCKTAKE_EXPLANATION" && batch?.explosionStatus === EXPLOSION_PENDING) {
           businessError(`Đợt ${batch.code} còn phần kiểm dư bán thành phẩm CHỜ RÃ — rã ở tab Chế biến (Chỉ rã phần còn chờ) trước khi chốt, để nguyên liệu làm ra phần dư được trừ đúng.`);
         }
-        const synced = await resyncStocktakeBatch(current!.sourceId, auth.session.name);
+        const synced = await resyncStocktakeBatch(current!.sourceId, auth.session.name, { post: action === "LOCK_STOCKTAKE_EXPLANATION" });
         if (synced.changed) {
           await repostInventoryCogs([{ date: synced.date, branchCode: synced.branchCode }], auth.session.name);
           current = await prisma.stocktakeExplanation.findFirst({ where: { id: current!.id } });
@@ -1963,6 +1961,11 @@ export async function POST(request: Request) {
         if (!lock && record.sourceType === "SESSION") {
           const unposted = await unpostStocktakeAdjustments(record.sourceId, auth.session.name);
           await resyncStocktake(record.sourceId, auth.session.name);
+          if (unposted.changed) await repostInventoryCogs([{ date: unposted.date, branchCode: unposted.branchCode }], auth.session.name);
+          updated = (await prisma.stocktakeExplanation.findFirst({ where: { id: record.id } }))!;
+        }
+        if (!lock && record.sourceType === "BATCH") {
+          const unposted = await resyncStocktakeBatch(record.sourceId, auth.session.name);
           if (unposted.changed) await repostInventoryCogs([{ date: unposted.date, branchCode: unposted.branchCode }], auth.session.name);
           updated = (await prisma.stocktakeExplanation.findFirst({ where: { id: record.id } }))!;
         }

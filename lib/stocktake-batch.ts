@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/custom-client";
 import type { TxClient } from "@/lib/prisma";
-import { latestKnownUnitCost, postInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
+import { latestKnownUnitCost, reverseStockEffect } from "@/lib/inventory-stock";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { EXPLOSION_PENDING, explodedRunOf, semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING } from "@/lib/stocktake-status";
@@ -337,57 +337,23 @@ export async function approveStocktakeBatch(
     },
   });
 
-  const variances = preview.rows.filter(hasVariance);
   /**
-   * Kiểm DƯ bán thành phẩm có định lượng không ghi nhập kiểm kê mà chờ rã BOM (khách 26/10/2026, cùng
-   * luật phiếu kiểm cả kho 28/09): phần dư là hàng đã chế biến mà chưa rã — bấm Rã ở tab Chế biến
-   * mới trừ nguyên liệu và nhập BTP có giá vốn. Kiểm THIẾU BTP vẫn xuất kiểm kê như nguyên liệu.
+   * Duyệt gộp = chốt SỐ ĐẾM, KHÔNG sinh phiếu -N/-X (khách 30/10/2026, như phiếu kiểm cả kho từ 21/10):
+   * chênh lệch ghi khi Chốt giải trình (resyncStocktakeBatch post). Kiểm DƯ bán thành phẩm có định
+   * lượng vẫn đưa đợt vào hàng chờ rã BOM (khách 26/10/2026) — rã xong mới chốt được.
    */
-  const deferredSurplus = variances.filter((row) => row.deferToExplosion);
-  const deferredIds = new Set(deferredSurplus.map((row) => row.itemId));
-  const surplus = variances.filter((row) => row.varianceQuantity > 0 && !deferredIds.has(row.itemId));
-  const shortage = variances.filter((row) => row.varianceQuantity < 0);
-  const base = {
-    transactionDate: preview.cutoffAt,
-    branchCode: preview.branchCode,
-    warehouseCode: preview.warehouseCode,
-    referenceType: "STOCKTAKE",
-    referenceId: batch.id,
-    referenceCode: code,
-    note: `Kiểm kê chốt ${formatVnDateTime(preview.cutoffAt)}`,
-    createdBy: input.approvedBy,
-  };
-  const docs = [];
-  if (surplus.length > 0) docs.push(await postInventoryTransaction(tx, {
-    ...base,
-    code: `${code}-N`,
-    transactionType: "NHAP_KIEM_KE",
-    lines: surplus.map((row) => ({ itemId: row.itemId, inputQuantity: row.varianceQuantity, inputUnitCode: row.unit, inputUnitCost: row.unitCost })),
+  const deferredSurplus = preview.rows.filter((row) => hasVariance(row) && row.deferToExplosion);
+  const lineData = preview.rows.map((row) => ({
+    batchId: batch.id,
+    itemId: row.itemId,
+    bookQuantity: row.bookQuantity,
+    countedQuantity: row.countedQuantity,
+    varianceQuantity: row.varianceQuantity,
+    unitCost: row.unitCost,
+    varianceValue: row.varianceQuantity * row.unitCost,
+    breakdownJson: JSON.stringify(row.breakdown),
+    notCounted: row.notCounted,
   }));
-  if (shortage.length > 0) docs.push(await postInventoryTransaction(tx, {
-    ...base,
-    code: `${code}-X`,
-    transactionType: "XUAT_KIEM_KE",
-    lines: shortage.map((row) => ({ itemId: row.itemId, inputQuantity: Math.abs(row.varianceQuantity), inputUnitCode: row.unit, inputUnitCost: 0 })),
-  }));
-
-  // Giá trị thật lấy từ dòng phiếu đã ghi (phần thiếu xuất theo bình quân kho lúc ghi).
-  const postedCost = new Map<string, number>();
-  for (const doc of docs) for (const line of doc.lines) postedCost.set(line.itemId, line.unitCost);
-  const lineData = preview.rows.map((row) => {
-    const unitCost = postedCost.get(row.itemId) ?? row.unitCost;
-    return {
-      batchId: batch.id,
-      itemId: row.itemId,
-      bookQuantity: row.bookQuantity,
-      countedQuantity: row.countedQuantity,
-      varianceQuantity: row.varianceQuantity,
-      unitCost,
-      varianceValue: row.varianceQuantity * unitCost,
-      breakdownJson: JSON.stringify(row.breakdown),
-      notCounted: row.notCounted,
-    };
-  });
   if (lineData.length > 0) await tx.stocktakeBatchLine.createMany({ data: lineData });
   const shortageValue = lineData.filter((line) => line.varianceQuantity < 0).reduce((sum, line) => sum + line.varianceValue, 0);
   const surplusValue = lineData.filter((line) => line.varianceQuantity > 0).reduce((sum, line) => sum + line.varianceValue, 0);
@@ -398,7 +364,7 @@ export async function approveStocktakeBatch(
     where: { id: { in: preview.sheets.map((sheet) => sheet.id) } },
     data: { status: STOCKTAKE_APPROVED, approvedBy: input.approvedBy, approvedAt, batchId: batch.id },
   });
-  return { batch: { ...batch, shortageValue, surplusValue }, documents: docs.map((doc) => doc.code), preview };
+  return { batch: { ...batch, shortageValue, surplusValue }, documents: [] as string[], preview };
 }
 
 /**

@@ -6,7 +6,7 @@ import { DocLink } from "@/components/DocLink";
 import { focusRowClass, readDocFocus, scrollToDoc } from "@/lib/doc-focus";
 import { useFilterDraft } from "@/lib/use-applied-filters";
 import { FilterApplyButton } from "@/components/FilterApplyButton";
-import { DateInput, DateTimeInput, MonthInput } from "@/components/DateInput";
+import { DateInput, DateTimeInput, DateWithTimeInput, MonthInput } from "@/components/DateInput";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { isTransferDestination } from "@/lib/warehouse-scope";
@@ -127,9 +127,13 @@ const TAB_SECTIONS: Record<string, string[]> = {
 };
 
 /** Tham số khoảng ngày của nhật ký nhập/xuất gửi lên API — ô ngày bỏ trống thì không chặn đầu đó. */
-function movementRangeQuery(range: { from: string; to: string }) {
-  // pack=1: nhật ký nhập/xuất về dạng gọn, bung lại ở withUnpackedMovements.
-  return new URLSearchParams({ reportFrom: range.from, reportTo: range.to, pack: "1" }).toString();
+function movementRangeQuery(range: { from: string; to: string; fromTime?: string; toTime?: string }) {
+  // pack=1: nhật ký nhập/xuất về dạng gọn, bung lại ở withUnpackedMovements. Giờ trống = cả ngày.
+  return new URLSearchParams({ reportFrom: range.from, reportTo: range.to, reportFromTime: range.fromTime || "", reportToTime: range.toTime || "", pack: "1" }).toString();
+}
+/** Khoảng ngày + giờ của danh sách phiếu kho gửi lên máy chủ (khách 30/10/2026 thêm giờ). */
+function flowRangeQuery(range: { from: string; to: string; fromTime: string; toTime: string }) {
+  return new URLSearchParams({ flowFrom: range.from, flowTo: range.to, flowFromTime: range.fromTime, flowToTime: range.toTime }).toString();
 }
 /** Bung nhật ký nhập/xuất dạng gọn (lib/stock-movement-pack) về từng dòng như cũ. */
 function withUnpackedMovements<T extends { stockMovements?: StockMovement[]; stockMovementsPacked?: PackedStockMovements }>(payload: T): Omit<T, "stockMovementsPacked"> {
@@ -264,7 +268,7 @@ export default function InventoryPage() {
   /** Nhóm hàng hóa của bộ lọc tab Tồn kho: "ALL", tên nhóm, hoặc "__NONE__" = chưa gán nhóm. */
   const [reportGoodsGroup, setReportGoodsGroup] = useState("ALL");
   /** Khoảng ngày của bảng "Chi tiết phát sinh theo loại giao dịch" — trước đây luôn cắt 100 dòng cuối. */
-  const [reportRange, setReportRange] = useState({ from: daysAgo(90), to: today() });
+  const [reportRange, setReportRange] = useState({ from: daysAgo(90), to: today(), fromTime: "", toTime: "" });
   // Bộ lọc hai màn hình Nhập kho / Xuất kho: theo nhà hàng + theo loại nhập/xuất.
   const [flowBranch, setFlowBranch] = useState("ALL");
   /** Lọc theo NCC / đối tác của phiếu. "NONE" = chỉ những phiếu chưa khai đối tác. */
@@ -297,12 +301,12 @@ export default function InventoryPage() {
   const [purchasePrintPicks, setPurchasePrintPicks] = useState<Array<{ id: string; partner: string }>>([]);
   const [outboundType, setOutboundType] = useState("ALL");
   /** Khoảng NGÀY CHỨNG TỪ của danh sách phiếu nhập/xuất — mặc định 90 ngày gần nhất, gửi lên server. */
-  const [flowRange, setFlowRange] = useState({ from: daysAgo(90), to: today() });
+  const [flowRange, setFlowRange] = useState({ from: daysAgo(90), to: today(), fromTime: "", toTime: "" });
   /** Thanh lọc phiếu Chế biến: ngày dùng chung với Nhập / Xuất; chỉ chạy khi bấm Lọc. */
   const productionListFilter = useFilterDraft(
     { from: flowRange.from, to: flowRange.to, ...productionFilter },
     ({ from, to, ...rest }) => {
-      setFlowRange({ from, to });
+      setFlowRange((current) => ({ ...current, from, to }));
       setProductionFilter(rest);
     },
   );
@@ -310,21 +314,21 @@ export default function InventoryPage() {
   const wasteReportDraft = useFilterDraft(wasteReportFilter, setWasteReportFilter);
   /** Thanh lọc Điều chuyển: chỉ chạy khi bấm Lọc (khách 28/10/2026). Ngày dùng chung với Nhập / Xuất. */
   const transferFilter = useFilterDraft(
-    { search: transferSearch, store: transferStore, from: flowRange.from, to: flowRange.to, fromWarehouse: transferFromWarehouse, toWarehouse: transferToWarehouse },
+    { search: transferSearch, store: transferStore, from: flowRange.from, to: flowRange.to, fromTime: flowRange.fromTime, toTime: flowRange.toTime, fromWarehouse: transferFromWarehouse, toWarehouse: transferToWarehouse },
     (draft) => {
       setTransferSearch(draft.search);
       setTransferStore(draft.store);
-      setFlowRange({ from: draft.from, to: draft.to });
+      setFlowRange({ from: draft.from, to: draft.to, fromTime: draft.fromTime, toTime: draft.toTime });
       setTransferFromWarehouse(draft.fromWarehouse);
       setTransferToWarehouse(draft.toWarehouse);
     },
   );
   /** Thanh lọc Nhập / Xuất kho: chỉ chạy khi bấm Lọc (khách 28/10/2026). */
   const flowFilter = useFilterDraft(
-    { search: flowSearch, from: flowRange.from, to: flowRange.to, branch: flowBranch, warehouse: flowWarehouse, inType: inboundType, outType: outboundType, partner: flowPartner },
+    { search: flowSearch, from: flowRange.from, to: flowRange.to, fromTime: flowRange.fromTime, toTime: flowRange.toTime, branch: flowBranch, warehouse: flowWarehouse, inType: inboundType, outType: outboundType, partner: flowPartner },
     (draft) => {
       setFlowSearch(draft.search);
-      setFlowRange({ from: draft.from, to: draft.to });
+      setFlowRange({ from: draft.from, to: draft.to, fromTime: draft.fromTime, toTime: draft.toTime });
       setFlowBranch(draft.branch);
       setFlowWarehouse(draft.warehouse);
       setInboundType(draft.inType);
@@ -556,7 +560,7 @@ export default function InventoryPage() {
     window.setTimeout(() => {
       setActive(focus.tab);
       setFocusCode(focus.code);
-      if (focus.date) setFlowRange({ from: focus.date, to: focus.date });
+      if (focus.date) setFlowRange({ from: focus.date, to: focus.date, fromTime: "", toTime: "" });
       if (focus.tab === "transfer") {
         setTransferStore("ALL");
         setTransferFromWarehouse("ALL");
@@ -1305,7 +1309,7 @@ export default function InventoryPage() {
     const sections = TAB_SECTIONS[active] || [];
     // Lượt tải chính đã mang nhật ký của khoảng ngày này — effect nhật ký khỏi gọi trùng.
     if (sections.includes("stock")) loadTracker.movementRange = movementRange;
-    const response = await fetch(`/api/inventory?sections=${sections.join(",")}&flowFrom=${flowRange.from}&flowTo=${flowRange.to}&${movementRange}`, {
+    const response = await fetch(`/api/inventory?sections=${sections.join(",")}&${flowRangeQuery(flowRange)}&${movementRange}`, {
       headers: getSessionHeaders(),
     });
     // Đổi khoảng ngày liên tục thì lượt tải cũ về muộn không được đè lên số của lượt mới.
@@ -1358,7 +1362,7 @@ export default function InventoryPage() {
     }, 400);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, reportRange.from, reportRange.to]);
+  }, [loading, reportRange.from, reportRange.to, reportRange.fromTime, reportRange.toTime]);
 
   /**
    * Chuyển sang tab mà phần dữ liệu chưa tải (hoặc đã cũ sau lần lưu) thì tải riêng phần đó,
@@ -1376,7 +1380,7 @@ export default function InventoryPage() {
       const movementRange = movementRangeQuery(reportRange);
       setSectionLoading(true);
       try {
-        const response = await fetch(`/api/inventory?core=0&sections=${missing.join(",")}&flowFrom=${flowRange.from}&flowTo=${flowRange.to}&${movementRange}`, { headers: getSessionHeaders() });
+        const response = await fetch(`/api/inventory?core=0&sections=${missing.join(",")}&${flowRangeQuery(flowRange)}&${movementRange}`, { headers: getSessionHeaders() });
         if (!response.ok || seq !== loadTracker.sectionSeq || mainSeq !== loadTracker.seq) return;
         const payload = withUnpackedMovements(await response.json() as Partial<Data> & { stockMovementsPacked?: PackedStockMovements });
         if (seq !== loadTracker.sectionSeq || mainSeq !== loadTracker.seq) return;
@@ -1396,7 +1400,7 @@ export default function InventoryPage() {
   // Đổi khoảng ngày của danh sách phiếu nhập/xuất thì phải hỏi lại server: phiếu ngoài khoảng
   // không nằm sẵn trên trình duyệt.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (!loading) window.setTimeout(() => void loadData(), 0); }, [loading, flowRange.from, flowRange.to]);
+  useEffect(() => { if (!loading) window.setTimeout(() => void loadData(), 0); }, [loading, flowRange.from, flowRange.to, flowRange.fromTime, flowRange.toTime]);
   // Bảng giá NCC đang hiệu lực của NCC + cửa hàng trên form Nhập mua.
   const supplierPriceQuery = active === "inbound" && stockForm.transactionType === "NHAP_MUA" && stockForm.partnerCode ? `${stockForm.partnerCode}|${stockForm.branchCode}` : "";
   useEffect(() => {
@@ -3420,15 +3424,15 @@ export default function InventoryPage() {
                 Khoảng ngày này có quá nhiều phiếu — danh sách chỉ tải các phiếu mới nhất. Chọn khoảng ngày ngắn hơn để xem đủ.
               </p>
             )}
-            <div className="px-5 pb-4 grid sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-3">
+            <div className="px-5 pb-4 grid *:min-w-0 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-7 gap-3">
               <Input label="Tìm mã / tên hàng">
                 <input className="control" placeholder="Mã, tên hàng hoặc số phiếu..." value={flowFilter.draft.search} onChange={(e) => flowFilter.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") flowFilter.apply(); }} />
               </Input>
               <Input label="Từ ngày chứng từ">
-                <DateInput className="control" value={flowFilter.draft.from} onChange={(value) => flowFilter.update({ from: value })} />
+                <DateWithTimeInput date={flowFilter.draft.from} time={flowFilter.draft.fromTime} onDate={(value) => flowFilter.update({ from: value })} onTime={(value) => flowFilter.update({ fromTime: value })} ariaLabel="Từ ngày chứng từ" />
               </Input>
               <Input label="Đến ngày chứng từ">
-                <DateInput className="control" value={flowFilter.draft.to} onChange={(value) => flowFilter.update({ to: value })} />
+                <DateWithTimeInput date={flowFilter.draft.to} time={flowFilter.draft.toTime} onDate={(value) => flowFilter.update({ to: value })} onTime={(value) => flowFilter.update({ toTime: value })} ariaLabel="Đến ngày chứng từ" />
               </Input>
               <Input label="Nhà hàng">
                 <select className="control" value={flowFilter.draft.branch} onChange={(e) => flowFilter.update({ branch: e.target.value, warehouse: "ALL" })}>
@@ -3788,7 +3792,7 @@ export default function InventoryPage() {
           <section className="table-panel shadow-sm">
             <Panel title="Phiếu điều chuyển" reload={loadData} exportFileName="phieu_dieu_chuyen" />
             {/* Khung danh sách đứng cạnh form nên hẹp: 2 cột, màn rộng mới trải 4 cột. */}
-            <div className="px-5 pb-4 grid grid-cols-2 2xl:grid-cols-3 gap-3">
+            <div className="px-5 pb-4 grid grid-cols-2 *:min-w-0 2xl:grid-cols-3 gap-3">
               <Input label="Tìm mã / tên hàng">
                 <input className="control" placeholder="Mã, tên hàng hoặc số phiếu..." value={transferFilter.draft.search} onChange={(e) => transferFilter.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") transferFilter.apply(); }} />
               </Input>
@@ -3799,10 +3803,10 @@ export default function InventoryPage() {
                 </select>
               </Input>
               <Input label="Từ ngày chứng từ">
-                <DateInput className="control" value={transferFilter.draft.from} onChange={(value) => transferFilter.update({ from: value })} />
+                <DateWithTimeInput date={transferFilter.draft.from} time={transferFilter.draft.fromTime} onDate={(value) => transferFilter.update({ from: value })} onTime={(value) => transferFilter.update({ fromTime: value })} ariaLabel="Từ ngày chứng từ" />
               </Input>
               <Input label="Đến ngày chứng từ">
-                <DateInput className="control" value={transferFilter.draft.to} onChange={(value) => transferFilter.update({ to: value })} />
+                <DateWithTimeInput date={transferFilter.draft.to} time={transferFilter.draft.toTime} onDate={(value) => transferFilter.update({ to: value })} onTime={(value) => transferFilter.update({ toTime: value })} ariaLabel="Đến ngày chứng từ" />
               </Input>
               <Input label="Kho xuất">
                 <select className="control" value={transferFilter.draft.fromWarehouse} onChange={(e) => transferFilter.update({ fromWarehouse: e.target.value })}>
@@ -5714,12 +5718,12 @@ export default function InventoryPage() {
 
             <section className="table-panel shadow-sm">
               <Panel title="Phiếu hủy" reload={loadData} exportFileName="phieu_huy" />
-              <div className="px-5 pb-4 grid grid-cols-2 xl:grid-cols-3 gap-3">
+              <div className="px-5 pb-4 grid grid-cols-2 *:min-w-0 xl:grid-cols-3 gap-3">
                 <Input label="Từ ngày chứng từ">
-                  <DateInput className="control" value={flowRange.from} onChange={(value) => setFlowRange({ ...flowRange, from: value })} />
+                  <DateWithTimeInput date={flowRange.from} time={flowRange.fromTime} onDate={(value) => setFlowRange({ ...flowRange, from: value })} onTime={(value) => setFlowRange({ ...flowRange, fromTime: value })} ariaLabel="Từ ngày chứng từ" />
                 </Input>
                 <Input label="Đến ngày chứng từ">
-                  <DateInput className="control" value={flowRange.to} onChange={(value) => setFlowRange({ ...flowRange, to: value })} />
+                  <DateWithTimeInput date={flowRange.to} time={flowRange.toTime} onDate={(value) => setFlowRange({ ...flowRange, to: value })} onTime={(value) => setFlowRange({ ...flowRange, toTime: value })} ariaLabel="Đến ngày chứng từ" />
                 </Input>
                 <Input label="Cửa hàng">
                   <select className="control" value={wasteStore} onChange={(e) => setWasteStore(e.target.value)}>

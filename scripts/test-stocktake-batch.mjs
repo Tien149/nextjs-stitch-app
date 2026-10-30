@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { postInventoryTransaction } from "../lib/inventory-stock.ts";
 import { approveStocktakeBatch, buildBatchPreview, reopenStocktakeBatch } from "../lib/stocktake-batch.ts";
+import { resyncStocktakeBatch } from "../lib/stocktake-resync.ts";
 
 const require = createRequire(import.meta.url);
 const { PrismaClient } = require("@prisma/custom-client");
@@ -106,10 +107,22 @@ test("tổng hợp: cộng các vị trí, sổ sách lấy tại giờ chốt, 
   assert.equal(row(SOT).varianceQuantity, -3);
 });
 
-test("duyệt gộp: một bộ phiếu điều chỉnh mang đúng giờ chốt, tồn hiện tại trừ đúng phần chênh", async () => {
+test("duyệt gộp chỉ chốt số đếm; Chốt giải trình mới ghi một bộ phiếu mang đúng giờ chốt, Mở chốt gỡ ra", async () => {
   const outcome = await prisma.$transaction((tx) => approveStocktakeBatch(tx, { stocktakeIds: [ids.sheet1, ids.sheet2], cutoffAt: vn("2031-01-02T11:00"), approvedBy: "test" }));
   ids.batch1 = outcome.batch.id;
-  assert.deepEqual(outcome.documents, [`${outcome.batch.code}-X`]);
+  assert.deepEqual(outcome.documents, [], "khách 30/10/2026: duyệt chưa sinh phiếu nhập/xuất kiểm kê");
+  assert.equal(await balanceOf(GA), 15, "tồn chưa đổi khi chưa chốt giải trình");
+  assert.equal(await balanceOf(SOT), 3);
+  const sessions = await prisma.stocktakeSession.findMany({ where: { id: { in: [ids.sheet1, ids.sheet2] } } });
+  assert.ok(sessions.every((session) => session.status === "APPROVED" && session.batchId === ids.batch1));
+  const lines = await prisma.stocktakeBatchLine.findMany({ where: { batchId: ids.batch1 } });
+  assert.equal(lines.length, 4);
+  assert.equal(outcome.batch.shortageValue, -(1 * 100 + 5 * 200 + 10 * 1 + 3 * 50));
+  assert.equal((await resyncStocktakeBatch(ids.batch1, "test")).changed, false, "chưa chốt: đồng bộ không sinh phiếu");
+
+  // Chốt giải trình.
+  const posted = await resyncStocktakeBatch(ids.batch1, "test", { post: true });
+  assert.deepEqual(posted.documents, [`${outcome.batch.code}-X`]);
   const doc = await prisma.inventoryTransaction.findUnique({ where: { code: `${outcome.batch.code}-X` }, include: { lines: true } });
   assert.equal(doc.transactionDate.getTime(), vn("2031-01-02T11:00").getTime());
   assert.equal(doc.lines.length, 4);
@@ -117,11 +130,13 @@ test("duyệt gộp: một bộ phiếu điều chỉnh mang đúng giờ chốt
   assert.equal(await balanceOf(BO), 0);
   assert.equal(await balanceOf(HOP), 90);
   assert.equal(await balanceOf(SOT), 0);
-  const sessions = await prisma.stocktakeSession.findMany({ where: { id: { in: [ids.sheet1, ids.sheet2] } } });
-  assert.ok(sessions.every((session) => session.status === "APPROVED" && session.batchId === ids.batch1));
-  const lines = await prisma.stocktakeBatchLine.findMany({ where: { batchId: ids.batch1 } });
-  assert.equal(lines.length, 4);
-  assert.equal(outcome.batch.shortageValue, -(1 * 100 + 5 * 200 + 10 * 1 + 3 * 50));
+
+  // Mở chốt: đồng bộ thường gỡ phiếu, tồn về như trước; chốt lại thì ghi lại.
+  await resyncStocktakeBatch(ids.batch1, "test");
+  assert.equal(await balanceOf(GA), 15);
+  assert.equal(await prisma.inventoryTransaction.count({ where: { referenceType: "STOCKTAKE", referenceId: ids.batch1, deletedAt: null } }), 0);
+  await resyncStocktakeBatch(ids.batch1, "test", { post: true });
+  assert.equal(await balanceOf(GA), 14);
 });
 
 test("mở lại đợt: đảo phiếu điều chỉnh dù đã có phiếu phát sinh sau, phiếu đếm về Chờ duyệt", async () => {
@@ -147,6 +162,8 @@ test("duyệt lại với giờ chốt khác: sổ sách tính lại theo giờ 
   assert.equal(line(GA).varianceQuantity, 1, "đếm 16 > sổ 15: thừa 1");
   assert.equal(line(GA).unitCost, 100);
   assert.equal(line(HOP).bookQuantity, 100, "phần bán hộp lúc 18h nằm sau giờ chốt");
+  assert.equal(await balanceOf(GA), 15, "chưa chốt giải trình: tồn chưa đổi");
+  await resyncStocktakeBatch(outcome.batch.id, "test", { post: true });
   assert.equal(await balanceOf(GA), 16);
   assert.equal(await balanceOf(HOP), 85, "95 − 10 thiếu");
 });

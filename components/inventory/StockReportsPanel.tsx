@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { FilterApplyButton } from "@/components/FilterApplyButton";
 import { useFilterDraft } from "@/lib/use-applied-filters";
-import { DateInput } from "@/components/DateInput";
+import { DateWithTimeInput } from "@/components/DateInput";
+import { vnRangeBounds, vnRangeEdgeText } from "@/lib/date-range";
 import CopyableText from "@/components/CopyableText";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
@@ -28,7 +29,7 @@ import {
 export type StockReportSection = "nxt" | "movements" | "realtime";
 
 type Warehouse = { code: string; name?: string | null; branch?: string | null };
-type Range = { from: string; to: string };
+type Range = { from: string; to: string; fromTime: string; toTime: string };
 
 type Props = {
   summary: StockSummaryInput[];
@@ -238,12 +239,12 @@ export default function StockReportsPanel(props: Props) {
 
   const storeKey = store.toUpperCase();
   // Bộ lọc chỉ chạy khi bấm Lọc (khách 28/10/2026).
-  const bar = useFilterDraft({ store, warehouse, goodsGroup, search, from: range.from, to: range.to }, (draft) => {
+  const bar = useFilterDraft({ store, warehouse, goodsGroup, search, from: range.from, to: range.to, fromTime: range.fromTime, toTime: range.toTime }, (draft) => {
     setStore(draft.store);
     setWarehouse(draft.warehouse);
     setGoodsGroup(draft.goodsGroup);
     setSearch(draft.search);
-    setRange({ from: draft.from, to: draft.to });
+    setRange({ from: draft.from, to: draft.to, fromTime: draft.fromTime, toTime: draft.toTime });
   });
   const warehouseOptions = warehouses.filter((row) => bar.draft.store === "ALL" || (row.branch || "").toUpperCase() === bar.draft.store.toUpperCase());
   const warehouseName = (code: string) => warehouses.find((row) => row.code === code)?.name || "";
@@ -301,22 +302,24 @@ export default function StockReportsPanel(props: Props) {
         ...pair(["Xuất trong kỳ", "Cộng xuất"], (row) => row.outbound),
         ...pair(["Cuối kỳ"], (row) => row.closing),
       ];
-  const periodText = `${range.from ? range.from.split("-").reverse().join("/") : "đầu"} → ${range.to ? range.to.split("-").reverse().join("/") : "nay"}`;
+  const periodText = `${vnRangeEdgeText(range.from, range.fromTime, "đầu")} → ${vnRangeEdgeText(range.to, range.toTime, "nay")}`;
   const scopeText = `${store === "ALL" ? "Tất cả cửa hàng" : storeLabel(store)}${warehouse === "ALL" ? "" : ` — kho ${warehouse}`}`;
 
   // ---------- Báo cáo phát sinh ----------
   const direction = report.startsWith("in-") ? "IN" : report.startsWith("out-") ? "OUT" : null;
   const typeOptions = direction === "IN" ? IN_TYPES : direction === "OUT" ? OUT_TYPES : [...IN_TYPES, ...OUT_TYPES];
   const effectiveType = typeOptions.includes(reportType) ? reportType : "ALL";
+  // Theo ngày giờ VN, khớp bảng Nhập - Xuất - Tồn của máy chủ (giờ trống = cả ngày).
+  const bounds = useMemo(() => vnRangeBounds(range), [range]);
   const reportRows = useMemo(() => movements.filter((row) => {
-    const day = String(row.transactionDate).slice(0, 10);
-    if (range.from && day < range.from) return false;
-    if (range.to && day > range.to) return false;
+    const at = new Date(row.transactionDate).getTime();
+    if (bounds.start && at < bounds.start.getTime()) return false;
+    if (bounds.end && at >= bounds.end.getTime()) return false;
     const moved = movementDirection(row);
     if (direction && moved.direction !== direction) return false;
     if (effectiveType !== "ALL" && moved.type !== effectiveType) return false;
     return true;
-  }), [movements, range.from, range.to, direction, effectiveType])
+  }), [movements, bounds, direction, effectiveType])
     .filter((row) => passes(row.warehouseCode, row.itemCode, row.itemName, row.goodsGroup))
     .filter((row) => partner === "ALL" || (partner === "NONE" ? !row.partnerCode : (row.partnerCode || "").toUpperCase() === partner));
   const partnerOptions = useMemo(() => {
@@ -423,7 +426,7 @@ export default function StockReportsPanel(props: Props) {
             </button>
           </div>
         </div>
-        <div className="grid grid-cols-1 *:min-w-0 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+        <div className="grid grid-cols-1 *:min-w-0 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-[repeat(3,minmax(0,1fr))_repeat(2,minmax(0,1.6fr))_minmax(0,1fr)_auto] gap-3">
           <label className="text-xs font-bold text-slate-500">Cửa hàng
             <select
               className="control mt-1"
@@ -451,11 +454,11 @@ export default function StockReportsPanel(props: Props) {
               <option value={NO_GROUP}>(Chưa gán nhóm)</option>
             </select>
           </label>
-          <label className="text-xs font-bold text-slate-500">Từ ngày
-            <DateInput className="control mt-1" value={bar.draft.from} onChange={(value) => bar.update({ from: value })} />
+          <label className="text-xs font-bold text-slate-500">Từ ngày · giờ
+            <div className="mt-1"><DateWithTimeInput date={bar.draft.from} time={bar.draft.fromTime} onDate={(value) => bar.update({ from: value })} onTime={(value) => bar.update({ fromTime: value })} ariaLabel="Từ ngày" /></div>
           </label>
-          <label className="text-xs font-bold text-slate-500">Đến ngày
-            <DateInput className="control mt-1" value={bar.draft.to} onChange={(value) => bar.update({ to: value })} />
+          <label className="text-xs font-bold text-slate-500">Đến ngày · giờ
+            <div className="mt-1"><DateWithTimeInput date={bar.draft.to} time={bar.draft.toTime} onDate={(value) => bar.update({ to: value })} onTime={(value) => bar.update({ toTime: value })} ariaLabel="Đến ngày" /></div>
           </label>
           <label className="text-xs font-bold text-slate-500">Tìm mã / tên hàng
             <input className="control mt-1" placeholder="Gõ mã hoặc tên..." value={bar.draft.search} onChange={(e) => bar.update({ search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") bar.apply(); }} />

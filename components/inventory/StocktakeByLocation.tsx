@@ -304,10 +304,10 @@ export default function StocktakeByLocation(props: {
   };
   const approve = async () => {
     if (!preview) return;
-    if (!window.confirm(`Duyệt gộp ${preview.sheets.length} phiếu đếm của kho ${warehouseName(preview.warehouseCode)}, chốt tồn lúc ${dateTimeText(cutoffInput)}?\nHệ thống sinh phiếu nhập/xuất kiểm kê theo phần chênh ${preview.totals.varianceRows} mã.`)) return;
+    if (!window.confirm(`Duyệt gộp ${preview.sheets.length} phiếu đếm của kho ${warehouseName(preview.warehouseCode)}, chốt tồn lúc ${dateTimeText(cutoffInput)}?\nDuyệt là chốt số đếm (${preview.totals.varianceRows} mã chênh lệch); phiếu nhập/xuất kiểm kê chỉ ghi khi Chốt giải trình.`)) return;
     const payload = await post({ action: "APPROVE_BATCH", stocktakeIds: selected, cutoffAt: cutoffIso(), unitCosts: costPayload() }, "");
     if (payload) {
-      setMessage(`Đã duyệt đợt ${payload.batch.code} — ${payload.documents.length ? `phiếu ${payload.documents.join(", ")}` : "không có chênh lệch"}.`);
+      setMessage(`Đã duyệt đợt ${payload.batch.code}. Chênh lệch ghi nhận khi Chốt giải trình ở tab Giải trình kiểm kê.`);
       setPreview(null);
       setSelectedIds(null);
       setUnitCosts({});
@@ -321,7 +321,7 @@ export default function StocktakeByLocation(props: {
   const [openBatchId, setOpenBatchId] = useState("");
   const reopen = async (batch: Batch) => {
     if (!window.confirm(`Mở lại đợt ${batch.code} (chốt ${dateTimeText(batch.cutoffAt)})?\nPhiếu điều chỉnh của đợt bị đảo, tồn kho trả về như trước khi duyệt, các phiếu đếm về Chờ duyệt để duyệt lại (chọn được giờ chốt khác).`)) return;
-    const payload = await post({ action: "REOPEN_BATCH", batchId: batch.id }, `Đã mở lại đợt ${batch.code} và đảo phiếu điều chỉnh. Chọn giờ chốt rồi duyệt lại.`);
+    const payload = await post({ action: "REOPEN_BATCH", batchId: batch.id }, `Đã mở lại đợt ${batch.code}. Chọn giờ chốt rồi duyệt lại.`);
     if (payload) {
       await load();
       onStockChanged();

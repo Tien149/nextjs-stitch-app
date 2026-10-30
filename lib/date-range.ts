@@ -89,3 +89,30 @@ export function vnDateTimeParts(value: Date | string) {
   const time = local.slice(11, 16);
   return { day: local.slice(0, 10), time: time === "07:00" || time === "00:00" ? "" : time };
 }
+
+/** Khoảng ngày + giờ Việt Nam (giờ "HH:MM", trống = cả ngày) — bộ lọc báo cáo kho / danh sách phiếu kho. */
+export type DateTimeRange = { from?: string | null; to?: string | null; fromTime?: string | null; toTime?: string | null };
+
+/**
+ * Mốc đầu (gồm) và mốc cuối (KHÔNG gồm) của khoảng ngày giờ VN (khách 30/10/2026: lọc theo giờ để
+ * khớp giờ chốt kiểm kê). "Đến 16:48" tính trọn phút 16:48 như giờ chốt kiểm kê (cutoffMinuteEnd);
+ * không khai giờ thì từ 00:00 / hết ngày như cũ. Ngày trống = không chặn đầu đó (null).
+ */
+export function vnRangeBounds(range: DateTimeRange): { start: Date | null; end: Date | null } {
+  const day = (value?: string | null) => (value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null);
+  const time = (value?: string | null) => (value && /^\d{2}:\d{2}$/.test(value) ? value : null);
+  const at = (date: string, clock: string) => new Date(`${date}T${clock}:00+07:00`);
+  const from = day(range.from);
+  const to = day(range.to);
+  const toTime = time(range.toTime);
+  return {
+    start: from ? at(from, time(range.fromTime) || "00:00") : null,
+    end: to ? (toTime ? new Date(at(to, toTime).getTime() + 60_000) : new Date(at(to, "00:00").getTime() + DAY_MS)) : null,
+  };
+}
+
+/** "dd/mm/yyyy" kèm giờ nếu có — nhãn kỳ của báo cáo. */
+export function vnRangeEdgeText(day: string | null | undefined, time: string | null | undefined, fallback: string) {
+  if (!day) return fallback;
+  return `${day.split("-").reverse().join("/")}${time ? ` ${time}` : ""}`;
+}

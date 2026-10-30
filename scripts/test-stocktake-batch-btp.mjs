@@ -88,8 +88,8 @@ test("xem trước: BTP có trên phiếu được so sổ sách và đánh dấ
 test("duyệt gộp: kiểm dư BTP không nhập kiểm kê, đợt vào hàng chờ rã BOM", async () => {
   const outcome = await prisma.$transaction((tx) => approveStocktakeBatch(tx, { stocktakeIds: [ids.sheet], cutoffAt: vn("2032-01-02T11:00"), approvedBy: "test" }));
   ids.batch = outcome.batch.id;
-  assert.deepEqual(outcome.documents, [`${outcome.batch.code}-X`], "chỉ phiếu xuất cho BTP không đếm, không nhập kiểm kê phần dư BTP");
-  assert.equal(await balanceOf(BTP_NO_RECIPE), 0);
+  assert.deepEqual(outcome.documents, [], "duyệt chưa sinh phiếu kiểm kê (ghi khi chốt giải trình, 30/10/2026)");
+  assert.equal(await balanceOf(BTP_NO_RECIPE), 4);
   assert.equal(await balanceOf(BTP), 2, "tồn BTP chưa đổi — chờ rã BOM mới nhập");
   const batch = await prisma.stocktakeBatch.findUnique({ where: { id: ids.batch } });
   assert.equal(batch.explosionStatus, "PENDING");
@@ -116,7 +116,7 @@ test("mở lại đợt chờ rã: xoá trạng thái chờ; đợt đã rã th�
   assert.equal((await prisma.stocktakeBatch.findUnique({ where: { id: again.batch.id } })).explosionStatus, "PENDING");
 });
 
-test("rã kiểm dư sau khi duyệt: -N/-X ghi lại để mọi mã về đúng số đếm; hoàn tác rã thì về như lúc duyệt", async () => {
+test("rã kiểm dư sau khi duyệt: chốt giải trình ghi -N/-X để mọi mã về đúng số đếm; mở chốt + hoàn tác rã thì về như lúc duyệt", async () => {
   // Giả lập lần rã RA-KKBT-1 (dư BTP 3 kg × 2 kg hành) — phiếu mang giờ chốt, referenceId = đợt.
   const cutoffAt = vn("2032-01-02T12:00");
   const production = { transactionDate: cutoffAt, branchCode: BRANCH, warehouseCode: WH, referenceType: "PRODUCTION", referenceId: ids.again, referenceCode: "RA-KKBT-1" };
@@ -127,17 +127,20 @@ test("rã kiểm dư sau khi duyệt: -N/-X ghi lại để mọi mã về đún
   await prisma.stocktakeBatch.update({ where: { id: ids.again }, data: { explosionStatus: "POSTED:RA-KKBT-1" } });
   assert.equal(await balanceOf(NVL), 4, "trước khi sửa: hành đã đếm 10 bị rã trừ thêm 6");
 
-  const synced = await resyncStocktakeBatch(ids.again, "test");
+  await resyncStocktakeBatch(ids.again, "test");
+  assert.equal(await balanceOf(NVL), 4, "chưa chốt giải trình: chưa ghi -N/-X");
+  const synced = await resyncStocktakeBatch(ids.again, "test", { post: true });
   assert.equal(synced.changed, true);
-  assert.equal(await balanceOf(NVL), 10, "hành về đúng số đếm");
+  assert.equal(await balanceOf(NVL), 10, "chốt: hành về đúng số đếm");
+  assert.equal(await balanceOf(BTP_NO_RECIPE), 0, "BTP không đếm về 0");
   assert.equal(await balanceOf(BTP), 5, "BTP = số đếm, không nhập kiểm kê thêm");
   const source = await loadStocktakeSource(prisma, "BATCH", ids.again);
   const line = (code) => source.countLines.find((row) => row.itemCode === code);
   assert.equal(line(BTP).closing, 5, "Giải trình / Kết quả: BTP dư đã rã hết chênh");
   assert.equal(line(NVL).closing, 4, "hành: sổ sách sau rã, chênh +6 = phần làm ra BTP dư");
-  assert.equal((await resyncStocktakeBatch(ids.again, "test")).changed, false, "chạy lại không đổi gì");
+  assert.equal((await resyncStocktakeBatch(ids.again, "test", { post: true })).changed, false, "chốt lại không đổi gì");
 
-  // Hoàn tác rã: đợt về chờ rã, -N bù hành bị gỡ, kiểm dư BTP vẫn hoãn.
+  // Mở chốt + hoàn tác rã: đợt về chờ rã, -N/-X gỡ hết, kiểm dư BTP vẫn hoãn.
   await prisma.$transaction(async (tx) => {
     for (const doc of docs) {
       await reverseStockEffect(tx, doc);
@@ -148,7 +151,6 @@ test("rã kiểm dư sau khi duyệt: -N/-X ghi lại để mọi mã về đún
   await resyncStocktakeBatch(ids.again, "test");
   assert.equal(await balanceOf(NVL), 10);
   assert.equal(await balanceOf(BTP), 2, "kiểm dư BTP chờ rã: chưa nhập kiểm kê");
-  assert.equal(await balanceOf(BTP_NO_RECIPE), 0, "BTP không đếm vẫn về 0");
-  const left = await prisma.inventoryTransaction.findMany({ where: { referenceType: "STOCKTAKE", referenceId: ids.again, deletedAt: null }, include: { lines: true } });
-  assert.deepEqual(left.flatMap((doc) => doc.lines.map((row) => row.itemId)), [ids[BTP_NO_RECIPE]], "chỉ còn phiếu xuất của BTP không đếm");
+  assert.equal(await balanceOf(BTP_NO_RECIPE), 4, "chưa chốt: chưa xuất kiểm kê");
+  assert.equal(await prisma.inventoryTransaction.count({ where: { referenceType: "STOCKTAKE", referenceId: ids.again, deletedAt: null } }), 0);
 });
