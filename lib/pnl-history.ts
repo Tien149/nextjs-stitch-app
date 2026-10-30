@@ -1,5 +1,11 @@
 import { prisma } from "@/lib/prisma";
-import { REVENUE_SVC_CATEGORY_CODE, REVENUE_VAT_CATEGORY_CODE } from "@/lib/revenue-pos-journal";
+import {
+  REVENUE_CHANNEL_DELIVERY_PNL_ITEM_CODE,
+  REVENUE_CHANNEL_DINE_IN_PNL_ITEM_CODE,
+  REVENUE_CHANNEL_TAKEAWAY_PNL_ITEM_CODE,
+  REVENUE_SVC_CATEGORY_CODE,
+  REVENUE_VAT_CATEGORY_CODE,
+} from "@/lib/revenue-pos-journal";
 
 /**
  * Số liệu P&L THỰC TẾ của các tháng trước khi lên phần mềm (khách chốt 19/10/2026: "có 1 trường
@@ -41,6 +47,25 @@ export const PNL_HISTORY_REVENUE_KINDS: ReadonlyArray<{ kind: string; sample: st
  */
 export const PNL_HISTORY_CHANNEL_PREFIX = "channel:";
 export const PNL_HISTORY_DEFAULT_CHANNELS = ["Tại chỗ", "Mang về", "Grab"];
+const CHANNEL_CODE_LABELS: Record<string, string> = {
+  [REVENUE_CHANNEL_DINE_IN_PNL_ITEM_CODE]: "Tại chỗ",
+  [REVENUE_CHANNEL_TAKEAWAY_PNL_ITEM_CODE]: "Mang về",
+  [REVENUE_CHANNEL_DELIVERY_PNL_ITEM_CODE]: "Grab",
+};
+const channelText = (value: string) =>
+  value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/[^a-z0-9]+/g, " ").trim();
+/**
+ * Tên kênh bán thống nhất cho mọi bảng "Doanh thu theo nguồn" (khách 30/10/2026): file POS từ
+ * 08/2026 ghi mã hạng mục (PNL_DT_TAICHO, PNL_DT_GRAB), file khác ghi "Tại chỗ" / "TẠI CHỖ" /
+ * "Grab" — cùng một kênh nên gộp về tên mặc định. Kênh lạ giữ nguyên chữ trên file.
+ */
+export function revenueChannelLabel(channel: string | null | undefined) {
+  const raw = String(channel ?? "").trim();
+  const byCode = CHANNEL_CODE_LABELS[raw.toUpperCase()];
+  if (byCode) return byCode;
+  const text = channelText(raw);
+  return PNL_HISTORY_DEFAULT_CHANNELS.find((name) => channelText(name) === text) || raw;
+}
 export const pnlHistoryChannelMetric = (channel: string) => `${PNL_HISTORY_CHANNEL_PREFIX}${channel.trim().toUpperCase()}`;
 export const isPnlHistoryChannelMetric = (metric: string) => metric.startsWith(PNL_HISTORY_CHANNEL_PREFIX);
 

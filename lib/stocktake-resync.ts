@@ -235,7 +235,7 @@ export async function resyncStocktakeBatch(batchId: string, actor: string): Prom
   const result = await prisma.$transaction(async (tx) => {
     const db = tx as unknown as TxClient;
     const [book, ownDocs, explosionDocs] = await Promise.all([
-      loadBookAtCutoff(db, batch.warehouseCode, batch.cutoffAt, batch.lines.map((line) => line.itemId)),
+      loadBookAtCutoff(db, batch.warehouseCode, batch.cutoffAt),
       tx.inventoryTransaction.findMany({ where: { referenceType: "STOCKTAKE", referenceId: batch.id, deletedAt: null }, include: { lines: true } }),
       tx.inventoryTransaction.findMany({ where: { referenceType: "PRODUCTION", referenceId: batch.id, deletedAt: null, transactionType: { notIn: STOCKTAKE_TYPES } }, include: { lines: true } }),
     ]);

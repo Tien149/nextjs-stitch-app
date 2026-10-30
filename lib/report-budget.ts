@@ -5,7 +5,7 @@ import { createDepartmentResolver } from "@/lib/department-resolve";
 import { departmentNameMap, shortDepartmentName } from "@/lib/revenue-department";
 import { isRevenueComponentCategory, REVENUE_ADJUST_CATEGORY_CODE, REVENUE_SVC_CATEGORY_CODE, REVENUE_VAT_CATEGORY_CODE, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
-import { headcountFromStored, isPnlHistoryChannelMetric, isPnlHistoryHeadcountMetric, loadPnlHistory, PNL_HISTORY_HEADCOUNT_PREFIX, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_DEFAULT_CHANNELS, pnlHistoryChannelMetric, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX, pnlHistoryLines, pnlHistoryRevenueDepartment } from "@/lib/pnl-history";
+import { headcountFromStored, isPnlHistoryChannelMetric, isPnlHistoryHeadcountMetric, loadPnlHistory, PNL_HISTORY_HEADCOUNT_PREFIX, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_DEFAULT_CHANNELS, pnlHistoryChannelMetric, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX, pnlHistoryLines, pnlHistoryRevenueDepartment, revenueChannelLabel } from "@/lib/pnl-history";
 
 /* ------------------------------------------------------------------------- *
  * Báo cáo theo feedback chị Bình 26/08/2026 (report_Feedback.pdf):
@@ -384,7 +384,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
         // Doanh thu không thuộc Bếp/Bar trên khối "Doanh thu theo bộ phận" là phụ thu — chị Bình
         // đặt tên dòng "DT Phụ Thu" (25/09/2026). Các bảng lương/ngân sách nhân sự giữ nhãn cũ.
         bumpSeries(netRevenueByDepartment, lineDept, lineDept === UNASSIGNED_DEPARTMENT ? "DT Phụ Thu" : `DT ${revenueDeptLabel(lineDept)}`, monthIndex, amount);
-        const channel = (row.channel || "").trim() || "Chưa rõ kênh";
+        const channel = revenueChannelLabel(row.channel) || "Chưa rõ kênh";
         bumpSeries(netRevenueByChannel, channel.toUpperCase(), `DT ${channel}`, monthIndex, amount);
       }
     }
@@ -420,9 +420,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     if (!isPnlHistoryChannelMetric(entry.metric)) continue;
     const monthIndex = months.indexOf(entry.period);
     if (monthIndex < 0 || Math.abs(entry.amount) < 0.5) continue;
-    const channel = entry.metric.slice(PNL_HISTORY_CHANNEL_PREFIX.length);
-    const label = PNL_HISTORY_DEFAULT_CHANNELS.find((name) => name.toUpperCase() === channel) || channel;
-    bumpSeries(netRevenueByChannel, channel, `DT ${label}`, monthIndex, entry.amount);
+    const label = revenueChannelLabel(entry.metric.slice(PNL_HISTORY_CHANNEL_PREFIX.length));
+    bumpSeries(netRevenueByChannel, label.toUpperCase(), `DT ${label}`, monthIndex, entry.amount);
     const key = `${entry.period}|${entry.branchCode}`;
     historyChannelSplit.set(key, (historyChannelSplit.get(key) || 0) + entry.amount);
   }
@@ -1164,8 +1163,9 @@ export async function getPnlHistoryEditor(year: string, branchCode: string) {
   const tree = createPnlDetailTree({ pnlItems, pnlGroups, categories, departments }, 1);
   const channelItems = new Map<string, PnlHistoryEditorItem>();
   const addChannel = (name: string) => {
-    const metric = pnlHistoryChannelMetric(name);
-    if (name.trim() && !channelItems.has(metric)) channelItems.set(metric, { metric, name: `DT ${name.trim()}` });
+    const label = revenueChannelLabel(name);
+    const metric = pnlHistoryChannelMetric(label);
+    if (label && !channelItems.has(metric)) channelItems.set(metric, { metric, name: `DT ${label}` });
   };
   PNL_HISTORY_DEFAULT_CHANNELS.forEach(addChannel);
   importedChannels.forEach((row) => addChannel(row.channel || ""));

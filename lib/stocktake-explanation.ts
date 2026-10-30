@@ -304,6 +304,7 @@ export async function loadStocktakeSource(db: TxClient, sourceType: StocktakeSou
       countLines: batch.lines.map((line) => ({
         itemId: line.itemId, itemCode: line.item.code, itemName: line.item.name, goodsGroup: line.item.goodsGroup, unit: line.item.unit,
         closing: line.bookQuantity + (producedInBatch.get(line.itemId) || 0), counted: line.countedQuantity, unitCost: line.unitCost,
+        ...(line.notCounted ? { notCounted: true, countAsZero: true } : {}),
       })),
     };
   }
@@ -444,9 +445,10 @@ export async function snapshotExplanation(db: TxClient, sourceType: StocktakeSou
   const uncounted = await loadUncountedLines(db, {
     warehouseCode: source.warehouseCode, from: periodFrom, to: source.cutoffAt,
     countedIds: new Set(source.countLines.map((line) => line.itemId)),
-    // Phiếu kiểm cả kho: không đếm = kiểm 0 (Chốt ghi luôn). Đợt theo vị trí đã ghi lúc duyệt gộp → chỉ liệt kê.
+    // Không đếm = kiểm 0 cho cả hai loại (khách 30/10/2026). Phiếu cả kho ghi lúc Chốt; đợt theo vị trí
+    // ghi lúc duyệt gộp / resyncStocktakeBatch (mã có tồn đã thành dòng đợt, ở đây chỉ còn mã tồn 0).
     ownSourceId: sourceType === "SESSION" ? sourceId : null,
-    countAsZero: sourceType === "SESSION",
+    countAsZero: true,
   });
   const allLines = [...source.countLines, ...uncounted];
   const movements = await loadPeriodMovements(db, source.warehouseCode, periodFrom, source.cutoffAt, allLines.map((line) => line.itemId));

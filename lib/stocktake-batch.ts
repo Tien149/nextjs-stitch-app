@@ -7,7 +7,6 @@ import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING } from "@/lib/stocktake-status";
 import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import {
   LOCATION_COUNTABLE_ITEM_TYPES,
-  LOCATION_STOCKTAKE_ITEM_TYPES,
   bookAtCutoff,
   consolidateStocktake,
   hasVariance,
@@ -87,30 +86,19 @@ export async function netMovementsAfter(tx: Tx, warehouseCode: string, cutoffAt:
 }
 
 /**
- * Sổ sách của kho tại giờ chốt: mọi mã nguyên liệu / bao bì / hàng hóa / đồng phục, cộng các mã khác
- * có mặt trên phiếu đếm (`countedItemIds` — bán thành phẩm: không đếm thì bỏ qua, khách 26/10/2026).
+ * Sổ sách của kho tại giờ chốt: MỌI mã còn tồn của kho, không kể loại (khách 30/10/2026: "không kiểm
+ * thì bằng 0, không quan tâm là mã hàng nào" — đảo luật 26/10 chỉ so BTP khi có trên phiếu đếm).
+ * Mã có tồn mà không vị trí nào đếm = đếm 0, ra chênh lệch như phiếu kiểm cả kho.
  */
-export async function loadBookAtCutoff(tx: Tx, warehouseCode: string, cutoffAt: Date, countedItemIds: string[] = []): Promise<BookRow[]> {
-  const typeOrCounted = { OR: [{ itemType: { in: [...LOCATION_STOCKTAKE_ITEM_TYPES] } }, { id: { in: countedItemIds } }] };
+export async function loadBookAtCutoff(tx: Tx, warehouseCode: string, cutoffAt: Date): Promise<BookRow[]> {
   const [balances, laterNet] = await Promise.all([
     tx.inventoryBalance.findMany({
-      where: { warehouseCode, item: typeOrCounted },
+      where: { warehouseCode },
       select: { itemId: true, quantity: true, averageCost: true },
     }),
     netMovementsAfter(tx, warehouseCode, cutoffAt),
   ]);
-  const scoped = new Set(balances.map((balance) => balance.itemId));
-  // Mã có phát sinh sau giờ chốt nhưng chưa có dòng tồn: phải xác nhận thuộc phạm vi.
-  const extra = [...laterNet.keys()].filter((itemId) => !scoped.has(itemId));
-  if (extra.length > 0) {
-    const items = await tx.inventoryItem.findMany({
-      where: { id: { in: extra }, ...typeOrCounted },
-      select: { id: true },
-    });
-    for (const item of items) scoped.add(item.id);
-  }
-  const scopedNet = new Map([...laterNet].filter(([itemId]) => scoped.has(itemId)));
-  return bookAtCutoff(balances, scopedNet);
+  return bookAtCutoff(balances, laterNet);
 }
 
 export type BatchPreviewRow = {
@@ -171,7 +159,7 @@ export async function buildBatchPreview(
     if (outOfScope) batchError(`Phiếu ${session.code} có mặt hàng ngoài nhóm đếm theo vị trí.`);
   }
 
-  const book = await loadBookAtCutoff(tx, warehouseCode, input.cutoffAt, [...new Set(sessions.flatMap((session) => session.lines.map((line) => line.itemId)))]);
+  const book = await loadBookAtCutoff(tx, warehouseCode, input.cutoffAt);
   const sheets: Sheet[] = sessions.map((session) => ({
     code: session.code,
     locationCode: session.locationCode || "",

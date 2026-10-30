@@ -18,8 +18,8 @@ const EPSILON = 0.000001;
  */
 export const LOCATION_STOCKTAKE_ITEM_TYPES = ["RAW_MATERIAL", "PACKAGING", "GOODS", "UNIFORM"] as const;
 /**
- * Nhóm đưa được vào form / phiếu đếm theo vị trí: thêm bán thành phẩm (khách 26/10/2026) — BTP chỉ
- * so sổ sách khi có mặt trên phiếu đếm của đợt (không có thì bỏ qua, khách chọn).
+ * Nhóm đưa được vào form / phiếu đếm theo vị trí: thêm bán thành phẩm (khách 26/10/2026). Sổ sách khi
+ * duyệt gộp thì lấy mọi mã của kho (loadBookAtCutoff, 30/10/2026) — mã không đếm là đếm 0.
  */
 export const LOCATION_COUNTABLE_ITEM_TYPES = [...LOCATION_STOCKTAKE_ITEM_TYPES, "SEMI_FINISHED"] as const;
 

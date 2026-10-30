@@ -1,6 +1,6 @@
 /**
  * Bán thành phẩm trong kiểm kê theo vị trí (khách 26/10/2026): BTP vào được form; duyệt gộp so sổ
- * sách BTP CHỈ khi có trên phiếu đếm (không có thì bỏ qua); kiểm DƯ BTP có định lượng không nhập
+ * sách MỌI mã của kho — BTP không ai đếm là đếm 0 (khách 30/10/2026); kiểm DƯ BTP có định lượng không nhập
  * kiểm kê mà đưa đợt vào hàng chờ rã BOM (như phiếu kiểm cả kho, luật 28/09/2026).
  *
  * Chạy trên DB local với cửa hàng KKBT, năm 2032, tự dọn. Chạy: npm run test:stocktake-batch-btp
@@ -61,7 +61,7 @@ test.before(async () => {
     ],
   }));
   await prisma.stocktakeLocation.create({ data: { branchCode: BRANCH, warehouseCode: WH, code: "TU_NGOT", name: "Tủ ngọt", sortOrder: 1 } });
-  // Phiếu đếm KHÔNG có BTP_KKBT_KHONGDL → mã đó bỏ qua, không tính đếm 0.
+  // Phiếu đếm KHÔNG có BTP_KKBT_KHONGDL → mã đó tính đếm 0 (thiếu 4 kg).
   ids.sheet = (await prisma.stocktakeSession.create({
     data: {
       code: "KK_KKBT_1", branchCode: BRANCH, warehouseCode: WH, locationCode: "TU_NGOT", stocktakeDate: vn("2032-01-02T11:00"), status: "PENDING", createdBy: "test",
@@ -75,19 +75,21 @@ test.after(async () => {
   await prisma.$disconnect();
 });
 
-test("xem trước: BTP có trên phiếu được so sổ sách và đánh dấu chờ rã; BTP không đếm thì bỏ qua", async () => {
+test("xem trước: BTP có trên phiếu được so sổ sách và đánh dấu chờ rã; BTP không đếm thì đếm 0", async () => {
   const preview = await prisma.$transaction((tx) => buildBatchPreview(tx, { stocktakeIds: [ids.sheet], cutoffAt: vn("2032-01-02T11:00") }));
   const row = (code) => preview.rows.find((candidate) => candidate.itemCode === code);
   assert.equal(row(BTP).varianceQuantity, 3);
   assert.equal(row(BTP).deferToExplosion, true);
   assert.equal(row(NVL).varianceQuantity, 0);
-  assert.equal(row(BTP_NO_RECIPE), undefined, "BTP không có trên phiếu đếm nào: bỏ qua, không tính đếm 0");
+  assert.equal(row(BTP_NO_RECIPE).notCounted, true, "BTP không có trên phiếu đếm nào: đếm 0");
+  assert.equal(row(BTP_NO_RECIPE).varianceQuantity, -4);
 });
 
 test("duyệt gộp: kiểm dư BTP không nhập kiểm kê, đợt vào hàng chờ rã BOM", async () => {
   const outcome = await prisma.$transaction((tx) => approveStocktakeBatch(tx, { stocktakeIds: [ids.sheet], cutoffAt: vn("2032-01-02T11:00"), approvedBy: "test" }));
   ids.batch = outcome.batch.id;
-  assert.deepEqual(outcome.documents, [], "không có phiếu nhập kiểm kê cho phần dư BTP");
+  assert.deepEqual(outcome.documents, [`${outcome.batch.code}-X`], "chỉ phiếu xuất cho BTP không đếm, không nhập kiểm kê phần dư BTP");
+  assert.equal(await balanceOf(BTP_NO_RECIPE), 0);
   assert.equal(await balanceOf(BTP), 2, "tồn BTP chưa đổi — chờ rã BOM mới nhập");
   const batch = await prisma.stocktakeBatch.findUnique({ where: { id: ids.batch } });
   assert.equal(batch.explosionStatus, "PENDING");
@@ -146,5 +148,7 @@ test("rã kiểm dư sau khi duyệt: -N/-X ghi lại để mọi mã về đún
   await resyncStocktakeBatch(ids.again, "test");
   assert.equal(await balanceOf(NVL), 10);
   assert.equal(await balanceOf(BTP), 2, "kiểm dư BTP chờ rã: chưa nhập kiểm kê");
-  assert.equal(await prisma.inventoryTransaction.count({ where: { referenceType: "STOCKTAKE", referenceId: ids.again, deletedAt: null } }), 0);
+  assert.equal(await balanceOf(BTP_NO_RECIPE), 0, "BTP không đếm vẫn về 0");
+  const left = await prisma.inventoryTransaction.findMany({ where: { referenceType: "STOCKTAKE", referenceId: ids.again, deletedAt: null }, include: { lines: true } });
+  assert.deepEqual(left.flatMap((doc) => doc.lines.map((row) => row.itemId)), [ids[BTP_NO_RECIPE]], "chỉ còn phiếu xuất của BTP không đếm");
 });
