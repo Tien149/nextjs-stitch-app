@@ -236,6 +236,29 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
   const visibleVarianceValue = visibleLines.reduce((sum, line) => sum + varianceValueOf(line), 0);
   const visibleTotals = Object.fromEntries(NUMBER_COLUMNS.map(([key]) => [key, visibleLines.reduce((sum, line) => sum + Number(line[key] || 0), 0)])) as Record<string, number>;
 
+  /**
+   * In biên bản kiểm kê để nhà hàng ký (khách 30/10/2026) — trang /inventory/stocktake-print đọc lại
+   * bản giải trình từ máy chủ nên lưu giải trình đang gõ trước. Mở tab ngay lúc bấm (sau await trình
+   * duyệt chặn popup) rồi mới trỏ tới trang in.
+   */
+  const printReport = async () => {
+    if (!explanation) return;
+    const tab = window.open("about:blank", "_blank");
+    if (dirtyIds.length > 0 && !(await saveNotes())) {
+      tab?.close();
+      return;
+    }
+    const query = new URLSearchParams({ id: explanation.id, sk: sessionKey });
+    const warehouse = warehouses.find((row) => row.code === explanation.warehouseCode);
+    if (warehouse?.name) query.set("wname", warehouse.name);
+    if (lineFilter.group !== "ALL") query.set("group", lineFilter.group);
+    if (lineFilter.search.trim()) query.set("search", lineFilter.search.trim());
+    if (lineFilter.onlyCounted) query.set("counted", "1");
+    const url = `/inventory/stocktake-print?${query.toString()}`;
+    if (tab) tab.location.href = url;
+    else window.location.href = url;
+  };
+
   /** Xuất Excel đúng form khách: 2 hàng tiêu đề, nhóm "SL nhập / xuất trong kỳ" gộp ô. */
   const exportExcel = async () => {
     if (!explanation) return;
@@ -402,6 +425,9 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                   {spinIcon("UNLOCK_STOCKTAKE_EXPLANATION", "lock_open")}{running === "UNLOCK_STOCKTAKE_EXPLANATION" ? "Đang mở chốt…" : "Mở chốt"}
                 </button>
               )}
+              <button type="button" className="secondary-button !min-h-9" disabled={busy} onClick={() => void printReport()}>
+                <span className="material-symbols-outlined text-lg">print</span>In biên bản
+              </button>
               <button type="button" className="secondary-button !min-h-9" onClick={() => void exportExcel()}>
                 <span className="material-symbols-outlined text-lg">download</span>Xuất Excel
               </button>
