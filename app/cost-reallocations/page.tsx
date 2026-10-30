@@ -16,6 +16,7 @@ import { money as formatVndMoney } from "@/lib/format-number";
 import { DocLink } from "@/components/DocLink";
 import { FilterApplyButton } from "@/components/FilterApplyButton";
 import { useAppliedFilters } from "@/lib/use-applied-filters";
+import PnlReclassPanel from "@/components/PnlReclassPanel";
 
 type ReallocationLine = {
   id: string;
@@ -70,6 +71,8 @@ export default function CostReallocationsPage() {
     description: "",
   });
   const [draftLines, setDraftLines] = useState([emptyDraftLine(1)]);
+  /** Tab "Chuyển hạng mục trong nhà hàng" (khách 30/10/2026) — mở thẳng bằng ?tab=reclass. */
+  const [tab, setTab] = useState<"share" | "reclass">("share");
 
   const money = (value: number) => formatVndMoney(value);
   const draftTotal = draftLines.reduce((sum, line) => sum + (Number(line.amount) || 0), 0);
@@ -84,6 +87,7 @@ export default function CostReallocationsPage() {
     const session = JSON.parse(raw) as DemoSession;
     if (!menu || !canAccessMenu(session.role, menu)) return void router.push("/");
     window.setTimeout(() => {
+      if (new URLSearchParams(window.location.search).get("tab") === "reclass") setTab("reclass");
       setUser(session);
       applyFiltersNow({ branchScope: resolveInitialBranchScope(session) });
       setLoading(false);
@@ -214,7 +218,7 @@ export default function CostReallocationsPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {canCreate && (
+          {canCreate && tab === "share" && (
             <button type="button" onClick={openForm} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700">
               + Lập phiếu chia sẻ chi phí
             </button>
@@ -224,9 +228,24 @@ export default function CostReallocationsPage() {
     </header>
 
     <main className="mx-auto max-w-[1680px] space-y-4 p-6">
-      {message && <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">{message}</p>}
+      <div className="flex flex-wrap gap-2">
+        {([["share", "Chia sẻ giữa các nhà hàng"], ["reclass", "Chuyển hạng mục P&L trong nhà hàng"]] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setTab(value)}
+            className={`rounded-full border px-4 py-1.5 text-sm font-bold ${tab === value ? "border-blue-600 bg-blue-600 text-white" : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
-      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      {tab === "reclass" && user && <PnlReclassPanel user={user} pnlItems={pnlItems} initialBranch={branchScope} />}
+
+      {tab === "share" && message && <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">{message}</p>}
+
+      {tab === "share" && <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-4">
           <div>
             <h2 className="font-bold">Danh sách phiếu chia sẻ chi phí</h2>
@@ -306,7 +325,7 @@ export default function CostReallocationsPage() {
             </tbody>
           </table>
         </div>
-      </section>
+      </section>}
     </main>
 
     {formOpen && (

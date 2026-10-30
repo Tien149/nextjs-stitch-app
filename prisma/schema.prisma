@@ -1865,6 +1865,32 @@ model CostReallocation {
   @@index([deletedAt])
 }
 
+/// Phiếu điều chỉnh hạng mục P&L TRONG một nhà hàng (khách 30/10/2026): dời một số tiền chi phí từ
+/// hạng mục A sang hạng mục B mà không sửa chứng từ gốc. Một bút toán: Có chi phí hạng mục A / Nợ chi
+/// phí hạng mục B — không đụng quỹ, công nợ. Mã DCHM-YYYYMM-0001.
+model PnlReclassification {
+  id              String   @id @default(uuid())
+  code            String   @unique
+  documentDate    DateTime
+  period          String
+  branchCode      String
+  fromPnlItemCode String
+  toPnlItemCode   String
+  amount          Float
+  description     String
+  status          String   @default("POSTED")
+  createdBy       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  deletedAt DateTime?
+  deletedBy String?
+
+  @@index([period])
+  @@index([branchCode])
+  @@index([deletedAt])
+}
+
 model CostReallocationLine {
   id                 String  @id @default(uuid())
   reallocationId     String

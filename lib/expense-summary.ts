@@ -94,6 +94,7 @@ const SOURCE_GROUPS: Record<string, SourceGroup> = {
   DEPRECIATION: { key: "DEPRECIATION", label: "Khấu hao tài sản", hint: "Khấu hao đã chạy cho kỳ này", href: () => "/assets/operations" },
   PAYROLL: { key: "PAYROLL", label: "Lương nhân sự", hint: "Bảng lương đã import cho kỳ này", href: () => "/imports?tab=payroll" },
   COST_REALLOCATION: { key: "COST_REALLOCATION", label: "Điều chuyển chi phí liên nhà hàng", hint: "Nhà hàng nhận chi phí tăng, nhà hàng gánh hộ giảm", href: () => "/cost-reallocations" },
+  PNL_RECLASS: { key: "PNL_RECLASS", label: "Điều chỉnh hạng mục P&L", hint: "Dời chi phí giữa hai hạng mục trong cùng nhà hàng", href: () => "/cost-reallocations?tab=reclass" },
   DEBT_PAYABLE: { key: "DEBT_PAYABLE", label: "Công nợ phải trả", hint: "Chi phí đã phát sinh, ghi nhận bên Công nợ Đối tác và chưa trả tiền", href: () => "/debts" },
   INVENTORY: { key: "INVENTORY", label: "Xuất kho / hủy hàng", hint: "Giá vốn xuất kho và hàng hủy đã vào sổ", href: () => "/inventory" },
   ASSET: { key: "ASSET", label: "Sửa chữa / thanh lý tài sản", hint: "Chi phí phát sinh từ nghiệp vụ tài sản", href: () => "/assets/operations" },
