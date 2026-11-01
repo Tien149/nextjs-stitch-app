@@ -488,3 +488,39 @@ body {
     color: #475569 !important;
   }
 }
+
+/* Xuất PDF Dashboard P&L: chỉ in khối #pnl-dashboard-print (cùng cách với báo cáo Thu chi ngày ở trên).
+   Bề rộng giữ đúng bề rộng trên màn (--pnl-print-width, đặt lúc beforeprint) rồi zoom cho vừa trang A4
+   ngang — chart không phải vẽ lại nên giống hệt màn hình. Khổ giấy ngang do PnlDashboardTab chèn @page. */
+@media print {
+  body:where(:has(#pnl-dashboard-print)) * {
+    visibility: hidden !important;
+  }
+
+  #pnl-dashboard-print,
+  #pnl-dashboard-print * {
+    visibility: visible !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  #pnl-dashboard-print {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: var(--pnl-print-width, 100%) !important;
+    zoom: var(--pnl-print-zoom, 1);
+    margin: 0 !important;
+    background: #ffffff !important;
+  }
+
+  #pnl-dashboard-print section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    box-shadow: none !important;
+  }
+
+  /* Khung cuộn dọc (bảng chi phí hoạt động, …) bung hết dòng để bản in đủ số liệu. */
+  #pnl-dashboard-print [class*="max-h-"] {
+    max-height: none !important;
+  }
+}

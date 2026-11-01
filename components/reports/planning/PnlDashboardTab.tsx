@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { storeLabel } from "@/lib/branch-labels";
 import { opexGroupRank } from "@/lib/pnl-ordering";
 import { DonutLegendChart, MoneyLineChart, ShareDonutChart } from "@/components/charts/ReportCharts";
@@ -49,6 +49,44 @@ function shareOf(line: StatementLine | undefined, picked: MonthPick, mode: Mode)
   return nodes.map((node) => ({ name: node.name, value: nodeValue(node, picked, mode) }));
 }
 
+/** Trang in Dashboard: A4 ngang, lề 8 mm → khổ in ≈ 281 mm = 1062 px. */
+const PRINT_PAGE_WIDTH_PX = 1062;
+const PRINT_ROOT_ID = "pnl-dashboard-print";
+
+/**
+ * Xuất PDF (khách 01/11/2026: "màn hình dashboard có gì là xuất hết"): in đúng khối dashboard qua hộp
+ * thoại in của trình duyệt (chọn "Lưu dưới dạng PDF"). Khoá bề rộng in bằng bề rộng đang thấy trên màn
+ * rồi thu nhỏ (zoom) cho vừa trang — chart Recharts không phải đo lại nên in ra y như màn hình. Bấm
+ * Ctrl+P ngay trên dashboard cũng ra cùng bản in này.
+ */
+function usePrintDashboard() {
+  useEffect(() => {
+    let style: HTMLStyleElement | null = null;
+    const before = () => {
+      const root = document.getElementById(PRINT_ROOT_ID);
+      if (!root) return;
+      const width = root.offsetWidth;
+      root.style.setProperty("--pnl-print-width", `${width}px`);
+      root.style.setProperty("--pnl-print-zoom", String(Math.min(1, PRINT_PAGE_WIDTH_PX / Math.max(1, width))));
+      // @page đặt chung khổ dọc cho các phiếu in; riêng lúc in dashboard đè sang khổ ngang.
+      style = document.createElement("style");
+      style.textContent = "@page { size: A4 landscape; margin: 8mm; }";
+      document.head.appendChild(style);
+    };
+    const after = () => {
+      style?.remove();
+      style = null;
+    };
+    window.addEventListener("beforeprint", before);
+    window.addEventListener("afterprint", after);
+    return () => {
+      window.removeEventListener("beforeprint", before);
+      window.removeEventListener("afterprint", after);
+      after();
+    };
+  }, []);
+}
+
 export default function PnlDashboardTab({ data, picked, onChangePicked }: { data: PlanningData; picked: MonthPick; onChangePicked: (picked: MonthPick) => void }) {
   const [mixMode, setMixMode] = useState<Mode>(data.hasPlan ? "plan" : "actual");
   const [opexMode, setOpexMode] = useState<Mode>("actual");
@@ -56,6 +94,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
   const [cogsView, setCogsView] = useState<CogsView>("total");
   const [pieMonth, setPieMonth] = useState<number>(-1);
   const monthHeaders = data.months.map((month) => `T${Number(month.slice(5))}`);
+  usePrintDashboard();
   const actual = (key: keyof PnlBucket) => bucketSum(data.totals, key, picked);
   const plan = (key: keyof PnlBucket) => bucketSum(data.plans, key, picked);
   const statementOf = (key: string) => data.statement.find((line) => line.key === key);
@@ -229,9 +268,18 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
   );
 
   return (
-    <div className="space-y-4">
+    <div id={PRINT_ROOT_ID} className="space-y-4">
+      <div className="hidden print:block border-b border-slate-300 pb-2">
+        <h1 className="text-lg font-black text-slate-900">Dashboard P&amp;L — {storeLabel(data.branchCode)} — Năm {data.year}</h1>
+        <p className="text-xs text-slate-600">Lũy kế {monthPickLabel(picked)} · In lúc {new Date().toLocaleString("vi-VN")}</p>
+      </div>
       {!data.hasPlan && <NoPlanNotice year={data.year} />}
-      <MonthChips picked={picked} onChange={onChangePicked} />
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="min-w-0 flex-1"><MonthChips picked={picked} onChange={onChangePicked} /></div>
+        <button type="button" onClick={() => window.print()} className="print:hidden inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50" title="In toàn bộ dashboard đang xem — ở hộp thoại in chọn &quot;Lưu dưới dạng PDF&quot;">
+          <span className="material-symbols-outlined text-base text-rose-600">picture_as_pdf</span>Xuất PDF
+        </button>
+      </div>
 
       {/* Chín thẻ KPI mang số tiền hàng tỷ: xếp 3 x 3 ở màn rộng cho thẻ đủ rộng để số hiện đủ
           chữ số thay vì bị cắt. Số in to là THỰC ĐẠT, kế hoạch đứng ở dòng phụ (feedback chị
