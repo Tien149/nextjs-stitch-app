@@ -4,7 +4,7 @@ import { getExpenseSummary } from "@/lib/expense-summary";
 import { CASH_MOVING_ADJUSTMENT_FILTER, REVENUE_SETTLEMENT_WRITEOFF_SOURCE } from "@/lib/revenue-settlement-writeoff";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { addPeriod, apiError, buildAllocationSchedules, businessError, cleanText, isPeriodLocked, normalizePeriod, roundPeriodCount, toDate, toNumber } from "@/lib/phase3";
-import { requestedBranch, assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
+import { requestedBranch, assertBranchAccess, branchFilterForSession, postAccrualScheduleJournals } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { filterCashierCashSources, isCashierRoleName, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, parseMoneySourceCodes } from "@/lib/money-sources";
@@ -1905,6 +1905,8 @@ export async function POST(request: Request) {
 
       if (await isPeriodLocked(new Date(`${schedule.period}-01T00:00:00`), schedule.accrual.branchCode)) businessError("Kỳ kế toán đã khóa");
       const result = await prisma.accrualSchedule.update({ where: { id: scheduleId }, data: { status: "POSTED", postedAt: new Date() } });
+      // Ghi sổ luôn, không chờ Đồng bộ ghi sổ — Tổng hợp chi phí/P&L chỉ đọc bút toán.
+      await postAccrualScheduleJournals([{ ...result, accrual: schedule.accrual }], auth.session.name);
       const remaining = await prisma.accrualSchedule.count({ where: { accrualId: schedule.accrualId, status: "PLANNED" } });
       if (remaining === 0) await prisma.accrual.update({ where: { id: schedule.accrualId }, data: { status: "COMPLETED" } });
       await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "POST_ACCRUAL", entityType: "AccrualSchedule", entityId: result.id, entityCode: `${schedule.accrual.code}-${schedule.period}`, branchCode: schedule.accrual.branchCode, metadata: { period: schedule.period, amount: schedule.amount } });
@@ -1993,6 +1995,8 @@ export async function POST(request: Request) {
           await tx.accrual.updateMany({ where: { id: { in: accrualIds } }, data: { status: "ACTIVE" } });
         }
       });
+      // Ghi sổ luôn các kỳ vừa ghi nhận (Bỏ ghi nhận thì bút toán đã xoá trong transaction trên).
+      if (posting) await postAccrualScheduleJournals(targets, auth.session.name);
 
       const amount = targets.reduce((sum, row) => sum + row.amount, 0);
       await writeAuditLog({

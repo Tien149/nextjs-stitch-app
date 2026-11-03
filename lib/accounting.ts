@@ -173,6 +173,47 @@ export function periodClosingEntryDate(period: string) {
   return new Date(`${period}-28T00:00:00`);
 }
 
+type AccrualScheduleWithAccrual = { id: string; period: string; amount: number; accrual: { code: string; name: string; branchCode: string; categoryCode: string; pnlItemCode: string | null; sourceType: string | null } };
+
+/**
+ * Bút toán phân bổ của các kỳ đã "Ghi nhận". Dùng chung cho Đồng bộ ghi sổ và cho chính nút Ghi
+ * nhận chi phí (từng kỳ / cả tháng): trước 03/11/2026 nút Ghi nhận chỉ đổi trạng thái, phải chờ
+ * Đồng bộ ghi sổ mới có bút toán — khách Bỏ ghi nhận (xoá bút toán) rồi Ghi nhận lại kỳ 08, 09
+ * là chi phí phân bổ biến mất khỏi Tổng hợp chi phí và P&L cho tới khi đồng bộ đúng kỳ đó.
+ */
+export async function postAccrualScheduleJournals(rows: AccrualScheduleWithAccrual[], actor: string) {
+  // Vế Có phụ thuộc khoản này ĐÃ TRẢ TIỀN hay chưa:
+  // - Sinh từ phiếu chi trả trước (sourceType VOUCHER): tiền đã ra quỹ và đang treo Nợ 242,
+  //   nên mỗi kỳ phân bổ là rút dần 242 xuống. Ghi Có 335 ở đây sẽ đẻ ra một khoản phải trả
+  //   ảo không ai trả, đồng thời 242 nằm treo mãi trên bảng cân đối.
+  // - Sinh từ số dư đầu kỳ (sourceType OPENING_BALANCE, mã PB-DK-*): tiền cũng đã chi từ
+  //   trước khi lên hệ thống và số dư đầu kỳ đã treo Nợ 242, nên vế Có cũng là 242. Khoản
+  //   cũ tạo trước 10/09/2026 chưa có sourceType nên vẫn nhận diện thêm theo tiền tố mã.
+  // - Sinh từ công nợ phải trả khai tay có phân bổ (sourceType DEBT): lúc ghi sổ công nợ đã
+  //   treo Nợ 242 / Có 331, nên vế Có cũng là 242. Ghi 335 là nợ nhà cung cấp hai lần.
+  // - Khai tay ở tab Trích trước (chưa chi tiền): vẫn là Có 335 — chi phí phải trả.
+  const results: Awaited<ReturnType<typeof postJournalEntry>>[] = [];
+  for (const row of rows) {
+    // Phiếu xuất đồng phục có phân bổ (INVENTORY_ISSUE): ghi sổ giá vốn đã treo Nợ 242 / Có 152.
+    const alreadyPaid = row.accrual.sourceType === "VOUCHER"
+      || row.accrual.sourceType === "DEBT"
+      || row.accrual.sourceType === ISSUE_ALLOCATION_SOURCE
+      || row.accrual.sourceType === "OPENING_BALANCE"
+      || row.accrual.code.startsWith("PB-DK-");
+    /**
+     * Ngày bút toán = KỲ PHÂN BỔ của dòng lịch, KHÔNG phải `postedAt`.
+     *
+     * `postedAt` là lúc kế toán bấm "Ghi nhận phân bổ" — một dấu thời gian kiểm soát, không
+     * phải ngày nghiệp vụ. Bấm trễ sang tháng sau là cả khoản phân bổ nhảy sang tháng đó:
+     * kỳ phân bổ ghi 2026-08 mà chi phí lên Tổng hợp chi phí và P&L của tháng 9 (khách báo
+     * 21/09/2026 — tiền thuê mặt bằng GS25 47.021.700 đ của kỳ 08 hiện ở tháng 9).
+     * Dùng ngày 28 của chính kỳ đó, cùng quy ước với bút toán khấu hao lúc Đồng bộ ghi sổ.
+     */
+    results.push(await postJournalEntry({ entryDate: periodClosingEntryDate(row.period), branchCode: row.accrual.branchCode, sourceType: "ACCRUAL", sourceId: row.id, sourceCode: row.accrual.code, description: `Phân bổ ${row.accrual.name}`, createdBy: actor, lines: [{ accountCode: "6428", debit: row.amount, categoryCode: row.accrual.categoryCode, pnlItemCode: row.accrual.pnlItemCode }, { accountCode: alreadyPaid ? "242" : "335", credit: row.amount }] }));
+  }
+  return results;
+}
+
 export async function postJournalEntry(input: EntryInput) {
   /**
    * Tròn tới đồng NGAY TỪ ĐÂY, không để lớp ghi tự tròn từng dòng: tròn rời rạc làm hai vế
@@ -182,6 +223,13 @@ export async function postJournalEntry(input: EntryInput) {
   input = { ...input, lines: roundJournalLines(input.lines) };
   const debit = input.lines.reduce((sum, line) => sum + (line.debit || 0), 0);
   const credit = input.lines.reduce((sum, line) => sum + (line.credit || 0), 0);
+  /**
+   * Chứng từ 0 đ (tồn kho đầu kỳ có số lượng mà chưa có giá, CCDC nguyên giá 0, …) không có gì để
+   * ghi sổ — bỏ qua. Trước 03/11/2026 rơi xuống câu "không cân" bên dưới rồi ném lỗi, cả lần Đồng
+   * bộ ghi sổ dừng ngay ở số dư đầu kỳ: kỳ 08 ASA (38 dòng tồn kho đầu kỳ 0 đ import 27/10) không
+   * ghi được phân bổ, khấu hao, lương… phía sau.
+   */
+  if (debit === 0 && credit === 0) return "SKIPPED_ZERO";
   if (Math.abs(debit - credit) > 0.5 || debit <= 0) businessError(`Bút toán ${input.sourceCode || input.sourceId} không cân Nợ/Có`);
   if (await isPeriodLocked(input.entryDate, input.branchCode)) return "SKIPPED_LOCKED";
   const accounts = await ensureDefaultAccounts();
@@ -846,34 +894,7 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   for (const row of depreciation) results.push(await postJournalEntry({ entryDate: periodClosingEntryDate(period), branchCode: row.asset.branchCode, sourceType: "DEPRECIATION", sourceId: row.id, sourceCode: row.asset.code, description: `Khấu hao ${row.asset.name}`, createdBy: actor, lines: [{ accountCode: "6424", debit: row.depreciationAmount }, { accountCode: isToolGroup(row.asset.assetGroup) ? "242" : "214", credit: row.depreciationAmount }] }));
 
   const accruals = await prisma.accrualSchedule.findMany({ where: { period, status: "POSTED", ...(branchCode === "ALL" ? {} : { accrual: { branchCode } }) }, include: { accrual: true } });
-  // Vế Có phụ thuộc khoản này ĐÃ TRẢ TIỀN hay chưa:
-  // - Sinh từ phiếu chi trả trước (sourceType VOUCHER): tiền đã ra quỹ và đang treo Nợ 242,
-  //   nên mỗi kỳ phân bổ là rút dần 242 xuống. Ghi Có 335 ở đây sẽ đẻ ra một khoản phải trả
-  //   ảo không ai trả, đồng thời 242 nằm treo mãi trên bảng cân đối.
-  // - Sinh từ số dư đầu kỳ (sourceType OPENING_BALANCE, mã PB-DK-*): tiền cũng đã chi từ
-  //   trước khi lên hệ thống và số dư đầu kỳ đã treo Nợ 242, nên vế Có cũng là 242. Khoản
-  //   cũ tạo trước 10/09/2026 chưa có sourceType nên vẫn nhận diện thêm theo tiền tố mã.
-  // - Sinh từ công nợ phải trả khai tay có phân bổ (sourceType DEBT): lúc ghi sổ công nợ đã
-  //   treo Nợ 242 / Có 331, nên vế Có cũng là 242. Ghi 335 là nợ nhà cung cấp hai lần.
-  // - Khai tay ở tab Trích trước (chưa chi tiền): vẫn là Có 335 — chi phí phải trả.
-  for (const row of accruals) {
-    // Phiếu xuất đồng phục có phân bổ (INVENTORY_ISSUE): ghi sổ giá vốn đã treo Nợ 242 / Có 152.
-    const alreadyPaid = row.accrual.sourceType === "VOUCHER"
-      || row.accrual.sourceType === "DEBT"
-      || row.accrual.sourceType === ISSUE_ALLOCATION_SOURCE
-      || row.accrual.sourceType === "OPENING_BALANCE"
-      || row.accrual.code.startsWith("PB-DK-");
-    /**
-     * Ngày bút toán = KỲ PHÂN BỔ của dòng lịch, KHÔNG phải `postedAt`.
-     *
-     * `postedAt` là lúc kế toán bấm "Ghi nhận phân bổ" — một dấu thời gian kiểm soát, không
-     * phải ngày nghiệp vụ. Bấm trễ sang tháng sau là cả khoản phân bổ nhảy sang tháng đó:
-     * kỳ phân bổ ghi 2026-08 mà chi phí lên Tổng hợp chi phí và P&L của tháng 9 (khách báo
-     * 21/09/2026 — tiền thuê mặt bằng GS25 47.021.700 đ của kỳ 08 hiện ở tháng 9).
-     * Dùng ngày 28 của chính kỳ đó, cùng quy ước với bút toán khấu hao ngay bên trên.
-     */
-    results.push(await postJournalEntry({ entryDate: periodClosingEntryDate(row.period), branchCode: row.accrual.branchCode, sourceType: "ACCRUAL", sourceId: row.id, sourceCode: row.accrual.code, description: `Phân bổ ${row.accrual.name}`, createdBy: actor, lines: [{ accountCode: "6428", debit: row.amount, categoryCode: row.accrual.categoryCode, pnlItemCode: row.accrual.pnlItemCode }, { accountCode: alreadyPaid ? "242" : "335", credit: row.amount }] }));
-  }
+  results.push(...await postAccrualScheduleJournals(accruals, actor));
 
   const payroll = await prisma.payrollImportRow.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }) } });
   for (const row of payroll) {
