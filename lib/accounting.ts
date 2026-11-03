@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { prisma } from "@/lib/prisma";
 import { debtTransferJournal } from "@/lib/debt-transfer";
 import { addPeriod, businessError, isPeriodLocked, periodFromDate } from "@/lib/phase3";
@@ -5,7 +6,6 @@ import type { DemoSession } from "@/lib/auth-demo";
 import { advanceReceivableCounterpartJournal, cashAccountFor, payableDebtDebitLine, pnlItemGroupLookup, voucherJournalLines } from "@/lib/voucher-accounting";
 import { normalizeCategoryGroup } from "@/lib/voucher-rules";
 import { moneySourceAccountCode } from "@/lib/money-sources";
-import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import { isCrossBranchTransfer, planMoneyTransferJournals } from "@/lib/internal-transfer";
 import { internalPartnerCode } from "@/lib/cost-reallocation";
@@ -214,6 +214,55 @@ export async function postAccrualScheduleJournals(rows: AccrualScheduleWithAccru
   return results;
 }
 
+/**
+ * Bộ nhớ đệm cho MỘT lượt Đồng bộ ghi sổ (khách 03/11/2026: đồng bộ kỳ 09 ASA ~8.200 bút toán mất
+ * 5 phút rưỡi). Mỗi bút toán trước đây tự đọc lại danh mục tài khoản (2 câu), trạng thái khoá kỳ và
+ * bút toán cũ cùng nguồn — dù gần hết là "không đổi". Trong lượt đồng bộ: tài khoản nạp một lần,
+ * khoá kỳ nhớ theo kỳ × cửa hàng, bút toán cũ của kỳ nạp sẵn một câu. Ngoài lượt đồng bộ (ghi từng
+ * phiếu) không có store nên vẫn đọc thẳng như cũ.
+ */
+type ExistingJournal = Awaited<ReturnType<typeof findExistingJournal>>;
+type PostingCache = { accounts: Map<string, string> | null; locks: Map<string, boolean>; entries: Map<string, NonNullable<ExistingJournal>> };
+const postingCache = new AsyncLocalStorage<PostingCache>();
+
+function findExistingJournal(sourceType: string, sourceId: string) {
+  return prisma.journalEntry.findFirst({
+    where: { sourceType, sourceId, deletedAt: undefined },
+    include: { lines: true },
+  });
+}
+
+async function accountIdsFor(codes: string[]) {
+  const cache = postingCache.getStore();
+  if (cache?.accounts && codes.every((code) => cache.accounts!.has(code))) return cache.accounts;
+  const accounts = await ensureDefaultAccounts();
+  const map = new Map(accounts.map((account) => [account.code, account.id]));
+  if (cache) cache.accounts = map;
+  return map;
+}
+
+async function periodLockedForPosting(date: Date, branchCode: string) {
+  const cache = postingCache.getStore();
+  if (!cache) return isPeriodLocked(date, branchCode);
+  const key = `${periodFromDate(date)}|${branchCode}`;
+  const known = cache.locks.get(key);
+  if (known !== undefined) return known;
+  const locked = await isPeriodLocked(date, branchCode);
+  cache.locks.set(key, locked);
+  return locked;
+}
+
+/**
+ * Mã JE kế tiếp = số lớn nhất trong chuỗi "JE-<số>" + 1, tính ngay trong Postgres. Trước đây kéo
+ * TOÀN BỘ mã JE (46 nghìn dòng, 11/2026) về Node cho mỗi bút toán mới. Vẫn tính cả bút toán đã xoá
+ * mềm (mã còn dính unique) và bỏ qua mã không theo dạng số (JE-PBCP-…) như nextSeqFromCodes.
+ */
+async function nextJournalEntryCode() {
+  const rows = await prisma.$queryRaw<Array<{ seq: number | bigint | null }>>`
+    SELECT MAX(CAST(SUBSTRING("code" FROM 4) AS BIGINT)) AS seq FROM "JournalEntry" WHERE "code" ~ '^JE-[0-9]+$'`;
+  return `JE-${String(Number(rows[0]?.seq ?? 0) + 1).padStart(6, "0")}`;
+}
+
 export async function postJournalEntry(input: EntryInput) {
   /**
    * Tròn tới đồng NGAY TỪ ĐÂY, không để lớp ghi tự tròn từng dòng: tròn rời rạc làm hai vế
@@ -231,9 +280,8 @@ export async function postJournalEntry(input: EntryInput) {
    */
   if (debit === 0 && credit === 0) return "SKIPPED_ZERO";
   if (Math.abs(debit - credit) > 0.5 || debit <= 0) businessError(`Bút toán ${input.sourceCode || input.sourceId} không cân Nợ/Có`);
-  if (await isPeriodLocked(input.entryDate, input.branchCode)) return "SKIPPED_LOCKED";
-  const accounts = await ensureDefaultAccounts();
-  const accountMap = new Map(accounts.map((account) => [account.code, account.id]));
+  if (await periodLockedForPosting(input.entryDate, input.branchCode)) return "SKIPPED_LOCKED";
+  const accountMap = await accountIdsFor(input.lines.map((line) => line.accountCode));
   const period = periodFromDate(input.entryDate);
   /**
    * Tìm CẢ bút toán đã xoá mềm (`deletedAt: undefined` bỏ lớp lọc): (sourceType, sourceId) là
@@ -241,10 +289,13 @@ export async function postJournalEntry(input: EntryInput) {
    * chừng. Ca 20/10/2026: phí ví 31/07 NAM MÊ bị dọn mềm 24/09 rồi ghi lại -> đồng bộ kỳ 08 chết
    * trước khấu hao + phân bổ, P&L 08 mất toàn bộ phân bổ (CAPEX = 0). Bản đã xoá thì khôi phục.
    */
-  const existing = await prisma.journalEntry.findFirst({
-    where: { sourceType: input.sourceType, sourceId: input.sourceId, deletedAt: undefined },
-    include: { lines: true },
-  });
+  // Bút toán nạp sẵn của lượt đồng bộ chỉ dùng một lần (lấy ra là bỏ khỏi đệm) — gọi lại cùng
+  // nguồn trong lượt thì đọc thẳng, không bao giờ so với bản đã cũ.
+  const cache = postingCache.getStore();
+  const sourceKey = `${input.sourceType}:${input.sourceId}`;
+  const prefetched = cache?.entries.get(sourceKey);
+  if (prefetched) cache!.entries.delete(sourceKey);
+  const existing = prefetched ?? await findExistingJournal(input.sourceType, input.sourceId);
   const lineData = input.lines.map((line) => {
     const accountId = accountMap.get(line.accountCode);
     if (!accountId) businessError(`Thiếu tài khoản ${line.accountCode}`);
@@ -267,16 +318,22 @@ export async function postJournalEntry(input: EntryInput) {
         return !!matchingInput;
       });
     if (!existing.deletedAt && Math.abs(existingDebit - debit) <= 0.5 && existing.period === period && isSameLines) return "SKIPPED_EXISTS";
-    await prisma.$transaction(async (tx) => {
-      await tx.journalLine.deleteMany({ where: { entryId: existing.id } });
-      await tx.journalEntry.update({
-        where: { id: existing.id },
-        data: {
-          entryDate: input.entryDate, period, branchCode: input.branchCode, sourceCode: input.sourceCode, description: input.description,
-          deletedAt: null, deletedBy: null, lines: { create: lineData },
-        },
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.journalLine.deleteMany({ where: { entryId: existing.id } });
+        await tx.journalEntry.update({
+          where: { id: existing.id },
+          data: {
+            entryDate: input.entryDate, period, branchCode: input.branchCode, sourceCode: input.sourceCode, description: input.description,
+            deletedAt: null, deletedBy: null, lines: { create: lineData },
+          },
+        });
       });
-    });
+    } catch (error) {
+      // Bản nạp sẵn đã bị xoá giữa lượt đồng bộ (có người gỡ phiếu cùng lúc) -> đọc lại rồi ghi như mới.
+      if (prefetched && (error as { code?: string })?.code === "P2025") return postJournalEntry(input);
+      throw error;
+    }
     return existing.deletedAt ? "CREATED" : "UPDATED";
   }
   // Bút toán bị xoá cứng ở nhiều luồng (bỏ duyệt phiếu, xoá phiếu phân bổ, rollback import)
@@ -284,13 +341,9 @@ export async function postJournalEntry(input: EntryInput) {
   // chuỗi "JE-": mã đã xoá để lại lỗ trống, nhưng không bao giờ đâm trúng mã đang tồn tại.
   // `deletedAt: undefined` để client không tự lọc mất bút toán đã xoá mềm: mã của chúng vẫn
   // nằm trong bảng và vẫn dính ràng buộc unique, bỏ qua là cấp lại đúng mã đó rồi vỡ ghi sổ.
-  const issuedEntryCodes = await prisma.journalEntry.findMany({
-    where: { code: { startsWith: "JE-" }, deletedAt: undefined },
-    select: { code: true },
-  });
   await prisma.journalEntry.create({
     data: {
-      code: `JE-${String(nextSeqFromCodes(issuedEntryCodes.map((row) => row.code), "JE-")).padStart(6, "0")}`,
+      code: await nextJournalEntryCode(),
       entryDate: input.entryDate,
       period,
       branchCode: input.branchCode,
@@ -528,6 +581,18 @@ export async function ensureRevenueChannelPnlItems() {
 }
 
 export async function syncAccountingPeriod(period: string, branchCode: string, actor: string) {
+  const { start, end } = periodBounds(period);
+  // Nạp sẵn bút toán của kỳ (cả bản đã xoá mềm — cùng luật findExistingJournal). Bút toán nằm
+  // ngoài kỳ mà nguồn thuộc kỳ này (hiếm) không có trong đệm thì postJournalEntry tự đọc thẳng.
+  const entries = await prisma.journalEntry.findMany({
+    where: { entryDate: { gte: start, lt: end }, ...(branchCode === "ALL" ? {} : { branchCode }), deletedAt: undefined },
+    include: { lines: true },
+  });
+  const cache: PostingCache = { accounts: null, locks: new Map(), entries: new Map(entries.map((entry) => [`${entry.sourceType}:${entry.sourceId}`, entry])) };
+  return postingCache.run(cache, () => runSyncAccountingPeriod(period, branchCode, actor));
+}
+
+async function runSyncAccountingPeriod(period: string, branchCode: string, actor: string) {
   const { start, end } = periodBounds(period);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
   const results: string[] = [];
