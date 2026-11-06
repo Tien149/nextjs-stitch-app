@@ -1517,7 +1517,10 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     const voucherCategoryForCheck = resolveCategory(voucher.categoryCode, isIncome ? "RECEIPT" : "PAYMENT");
     const voucherDepositKind = depositCategoryDirection({ code: voucher.categoryCode, name: voucherCategoryForCheck?.name });
     const voucherIsDepositRefund = voucherDepositKind === "REFUND" && !isIncome;
-    const skipAsDepositCategory = Boolean(voucherDepositKind) && !voucherIsDepositRefund;
+    // Chỉ THU cọc mới nhường cho sổ cọc. Phiếu CHI mang danh mục cọc mà không phải hoàn cọc là
+    // mình đặt cọc cho NCC (CHI_DAT_COC) — tiền thật ra khỏi quỹ, sổ cọc khách không có nó. Bỏ
+    // qua là báo cáo nguồn tiền dư khống so với sổ quỹ (NAM MÊ 10/2026 lệch 20 triệu).
+    const skipAsDepositCategory = voucherDepositKind === "RECEIPT" && isIncome;
     if (!isDepositMovement && !skipAsDepositCategory && voucher.businessEffect !== "SETTLEMENT" && voucherCountsAsFlow) {
       const expectedType = isIncome ? "RECEIPT" : "PAYMENT";
       const category = resolveCategory(voucher.categoryCode, expectedType);
@@ -1723,7 +1726,8 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     // dòng "Hoàn cọc cho khách" sẵn có, giống cách xử lý ở vòng phiếu thu/chi.
     const rowDepositKind = depositCategoryDirection({ code: row.categoryCode, name: category?.name });
     const rowIsDepositRefund = rowDepositKind === "REFUND" && !isIncome;
-    if (rowDepositKind && !rowIsDepositRefund) continue;
+    // Chi đặt cọc cho NCC vẫn là tiền ra — chỉ dòng THU cọc mới nhường cho sổ cọc.
+    if (rowDepositKind === "RECEIPT" && isIncome) continue;
     recordFlow(
       expectedType,
       rowIsDepositRefund
