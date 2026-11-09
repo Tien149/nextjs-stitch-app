@@ -49,6 +49,7 @@ import { vnDateTimeValue } from "@/lib/date-range";
 
 import { ActionIcon } from "@/components/ActionIcon";
 import { ShowMoreRows, useRowLimit } from "@/components/ShowMoreRows";
+import { outputConversionRateProblem } from "@/lib/recipe-output-rate";
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; goodsGroup?: string | null; taxItemCode?: string | null; expensePnlItemCode?: string | null; minStock: number; requiresImage: boolean; status?: string | null; note?: string | null; unitConversions?: UnitConversion[] };
 type ItemGroup = { id: string; code: string; name: string; group: string | null; subGroup: string | null };
@@ -1111,6 +1112,8 @@ export default function InventoryPage() {
     return (code: string) => kindsOf(code.toUpperCase(), new Set());
   }, [data.recipes, data.productKitchenKinds]);
   const recipeStoreKey = recipeStoreFilter.toUpperCase();
+  // ĐVT tồn của món để soi hệ số mẻ: mẻ "650GR" mà hệ số 1 là cost 1 GR = cost cả mẻ.
+  const stockUnitByCode = useMemo(() => new Map(data.items.map((item) => [item.code.toUpperCase(), item.unit])), [data.items]);
   const filteredRecipeGroups = useMemo(() => {
     const recipeProductsWithStoreVersion = new Set(groupedRecipes
       .filter((group) => group.branchCodes.includes(recipeStoreKey))
@@ -4413,6 +4416,10 @@ export default function InventoryPage() {
                           <td rowSpan={span} className={groupCell}>
                             <b>{recipe.productCode} - {recipe.productName}</b>
                             <small>Mẻ: {recipe.unit}{recipe.outputConversionRate !== 1 ? ` (= ${qty(recipe.outputConversionRate)} ĐVT tồn)` : ""}</small>
+                            {(() => {
+                              const problem = outputConversionRateProblem(recipe.unit, stockUnitByCode.get(recipe.productCode.toUpperCase()), recipe.outputConversionRate);
+                              return problem ? <small className="font-bold text-rose-700">{problem}</small> : null;
+                            })()}
                           </td>
                           <td rowSpan={span} className={groupCell}>{branchScopeCell(branchCodes)}</td>
                           <td rowSpan={span} className={`${groupCell} whitespace-nowrap`}>

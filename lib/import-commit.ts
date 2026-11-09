@@ -45,6 +45,7 @@ import {
 } from "@/lib/bank-statement-voucher-match";
 import { pickRevenueRowsOfDay, revenueDayKey, revenueDayLabel } from "@/lib/revenue-day-summary";
 import { conversionRateForUnit, safeConversionRate } from "@/lib/unit-conversion";
+import { outputConversionRateProblem, resolveOutputConversionRate } from "@/lib/recipe-output-rate";
 import { applyOpeningInventoryChange } from "@/lib/opening-inventory";
 
 /**
@@ -1652,7 +1653,11 @@ export async function commitImport(input: CommitInput) {
         const latest = await tx.recipe.findFirst({ where: { productCode, ...branchScope }, orderBy: { version: "desc" } });
         await tx.recipe.updateMany({ where: { productCode, ...branchScope, status: "ACTIVE" }, data: { status: "INACTIVE" } });
         // Hệ số quy đổi mẻ chuẩn bị về ĐVT tồn kho (sheet Chi tiết cột "He so quy doi ve DVT ton kho").
-        const outputConversionRate = asNumber(first.values.output_conversion_rate) > 0 ? asNumber(first.values.output_conversion_rate) : 1;
+        // Ô hệ số trống thì suy từ ĐVT mẻ dạng "650GR"; mẻ khác ĐVT tồn mà hệ số 1 thì chặn cả file.
+        const batchUnit = asText(first.values.product_unit) || productItem.unit;
+        const outputConversionRate = resolveOutputConversionRate(asNumber(first.values.output_conversion_rate), batchUnit, productItem.unit);
+        const outputRateProblem = outputConversionRateProblem(batchUnit, productItem.unit, outputConversionRate);
+        if (outputRateProblem) throw new Error(`Dong ${first.rowNumber} (${productCode}): ${outputRateProblem}`);
         const recipe = await tx.recipe.create({
           data: {
             // Mã bản riêng có thêm mã cửa hàng để không đụng mã bản chung (code là UNIQUE).
@@ -1660,7 +1665,7 @@ export async function commitImport(input: CommitInput) {
             productCode,
             branchCode: branchCode || null,
             productName: asText(first.values.product_name),
-            unit: asText(first.values.product_unit) || productItem.unit,
+            unit: batchUnit,
             outputConversionRate,
             // BTP không có giá bán theo file mẫu; FINISHED lấy từ cột Gia ban.
             sellingPrice: productItem.itemType === "SEMI_FINISHED" ? 0 : asNumber(first.values.selling_price),

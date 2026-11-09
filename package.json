@@ -126,6 +126,7 @@
     "repair:revenue-combo-placeholder": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/repair-revenue-combo-placeholder.mjs",
     "repair:missing-accrual-journals": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/repost-missing-accrual-journals.mjs",
     "repair:unpost-open-stocktake-batches": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/unpost-open-stocktake-batches.mjs",
+    "repair:recipe-output-rate": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/repair-recipe-output-rate.mjs",
     "test:department-resolve": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-department-resolve.mjs",
     "test:ebitda-depreciation": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-ebitda-depreciation.mjs",
     "audit:deposit-amounts": "node scripts/audit-deposit-amount-sync.cjs",

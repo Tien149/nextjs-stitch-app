@@ -44,6 +44,7 @@ import { isRevenueGroupCategory } from "@/lib/voucher-rules";
 import { loadItemRevenueOptions, loadNonInventoryRevenueGroups, revenueKindFromText, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { normalizeGoodsGroup } from "@/lib/goods-group";
 import { safeConversionRate } from "@/lib/unit-conversion";
+import { outputConversionRateProblem, resolveOutputConversionRate } from "@/lib/recipe-output-rate";
 import { explosionPostingDate } from "@/lib/revenue-date";
 import { assertPurchaseReceiptEditable, syncPurchaseReceiptEdit } from "@/lib/purchase-receipt-edit";
 
@@ -1563,10 +1564,15 @@ export async function POST(request: Request) {
       }
 
       // Hệ số quy đổi mẻ chuẩn bị về ĐVT tồn kho (BTP nấu 1kg = 1000 gr...). Trống = 1.
-      const outputConversionRate = body.outputConversionRate !== undefined && cleanText(body.outputConversionRate) !== ""
+      // Trống thì suy từ ĐVT mẻ dạng "650GR"; mẻ khác ĐVT tồn mà hệ số 1 thì chặn (lib/recipe-output-rate).
+      const declaredOutputRate = body.outputConversionRate !== undefined && cleanText(body.outputConversionRate) !== ""
         ? toNumber(body.outputConversionRate)
-        : 1;
-      if (!(outputConversionRate > 0)) businessError("Hệ số quy đổi về ĐVT tồn kho phải lớn hơn 0");
+        : null;
+      if (declaredOutputRate !== null && !(declaredOutputRate > 0)) businessError("Hệ số quy đổi về ĐVT tồn kho phải lớn hơn 0");
+      const batchUnit = cleanText(body.unit) || productItem.unit;
+      const outputConversionRate = resolveOutputConversionRate(declaredOutputRate, batchUnit, productItem.unit);
+      const outputRateProblem = outputConversionRateProblem(batchUnit, productItem.unit, outputConversionRate);
+      if (outputRateProblem) businessError(outputRateProblem);
       const effectiveFrom = body.effectiveFrom ? toDate(body.effectiveFrom) : new Date();
       // BTP không có giá bán (spec kế toán: cột giá bán bỏ với bán thành phẩm).
       const sellingPrice = productItem.itemType === "SEMI_FINISHED" ? 0 : toNumber(body.sellingPrice);
@@ -3189,9 +3195,19 @@ export async function PATCH(request: Request) {
         if (sellingPrice < 0) businessError("Giá bán không được âm");
         changes.sellingPrice = sellingPrice;
       }
-      if (body.outputConversionRate !== undefined) {
-        const outputConversionRate = cleanText(body.outputConversionRate) === "" ? 1 : toNumber(body.outputConversionRate);
-        if (!(outputConversionRate > 0)) businessError("Hệ số quy đổi về ĐVT tồn kho phải lớn hơn 0");
+      if (body.outputConversionRate !== undefined || body.unit !== undefined) {
+        const declaredOutputRate = body.outputConversionRate === undefined
+          ? targets[0].outputConversionRate
+          : cleanText(body.outputConversionRate) === "" ? null : toNumber(body.outputConversionRate);
+        if (declaredOutputRate !== null && !(declaredOutputRate > 0)) businessError("Hệ số quy đổi về ĐVT tồn kho phải lớn hơn 0");
+        const productItem = await prisma.inventoryItem.findUnique({ where: { code: productCode }, select: { unit: true } });
+        const batchUnit = typeof changes.unit === "string" ? changes.unit : targets[0].unit;
+        // Hệ số 1 của bản cũ khai thiếu ("650GR" hệ số 1) cũng được suy lại như ô để trống.
+        const outputConversionRate = resolveOutputConversionRate(
+          declaredOutputRate === 1 ? null : declaredOutputRate, batchUnit, productItem?.unit,
+        );
+        const outputRateProblem = outputConversionRateProblem(batchUnit, productItem?.unit, outputConversionRate);
+        if (outputRateProblem) businessError(outputRateProblem);
         changes.outputConversionRate = outputConversionRate;
       }
       if (body.effectiveFrom !== undefined) changes.effectiveFrom = toDate(body.effectiveFrom);
