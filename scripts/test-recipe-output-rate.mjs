@@ -29,4 +29,5 @@ test("mẻ khác ĐVT tồn mà hệ số 1 thì báo lỗi", () => {
   assert.equal(outputConversionRateProblem("650GR", "GR", 650), null);
   assert.equal(outputConversionRateProblem("PHAN", "Phần", 1), null);
   assert.equal(outputConversionRateProblem("KG", "GR", 1000), null);
+  assert.equal(outputConversionRateProblem("PHAN", "MON", 1), null);
 });

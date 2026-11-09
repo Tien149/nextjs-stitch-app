@@ -16,6 +16,13 @@ function normalizeUnit(value: string | null | undefined) {
     .toUpperCase();
 }
 
+/** Cùng nghĩa "một phần ăn": món Grab mẻ PHAN tồn MON (GR00046 ASA) hệ số 1 là đúng. */
+const PORTION_UNITS = new Set(["PHAN", "MON", "SUAT"]);
+
+function sameUnit(batch: string, stock: string) {
+  return batch === stock || (PORTION_UNITS.has(batch) && PORTION_UNITS.has(stock));
+}
+
 /** ĐVT mẻ dạng "<số><ĐVT tồn>" (650GR, 10 PHAN, 1,5KG khi tồn là KG) → con số đó; khác thì null. */
 export function inferOutputConversionRate(batchUnit: string | null | undefined, stockUnit: string | null | undefined) {
   const batch = normalizeUnit(batchUnit);
@@ -50,7 +57,7 @@ export function outputConversionRateProblem(
 ) {
   const batch = normalizeUnit(batchUnit);
   const stock = normalizeUnit(stockUnit);
-  if (!batch || !stock || batch === stock) return null;
+  if (!batch || !stock || sameUnit(batch, stock)) return null;
   if (rate && rate > 0 && rate !== 1) return null;
   const suggested = inferOutputConversionRate(batchUnit, stockUnit);
   return `Mẻ "${batchUnit}" khác ĐVT tồn "${stockUnit}" nhưng hệ số quy đổi đang là 1 (1 mẻ = 1 ${stockUnit}). `
