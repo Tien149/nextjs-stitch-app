@@ -11,6 +11,7 @@ import { ADVANCE_SETTLEMENT_CODE_PREFIX, ADVANCE_SETTLEMENT_DEBT_TYPE, ADVANCE_S
 import { normalizeAllocationMonths } from "@/lib/voucher-rules";
 import { loadDebtOverview, parseDateRange } from "@/lib/debt-overview";
 import { createDebtTransfer, deleteDebtTransfer, isDebtTransferDebt } from "@/lib/debt-transfer";
+import { resolveDebtLineTax } from "@/lib/debt-vat";
 
 const debtTypes = ["RECEIVABLE", "PAYABLE"];
 const partnerGroups = ["EXTERNAL", "INTERNAL"];
@@ -21,6 +22,15 @@ export async function GET(request: Request) {
     if (!auth.ok) return auth.response;
 
     const { searchParams } = new URL(request.url);
+    // In chứng từ công nợ (khách 13/11/2026): ?print=<mã phiếu> trả mọi dòng của phiếu.
+    const printCode = searchParams.get("print")?.trim().toUpperCase();
+    if (printCode) {
+      try {
+        return NextResponse.json(await loadDebtPrintDocument(printCode, auth.session));
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : "Không tải được chứng từ" }, { status: 404 });
+      }
+    }
     const partnerCode = searchParams.get("partnerCode")?.trim();
     const branchCode = requestedBranch(auth.session, searchParams.get("branchCode")?.trim() || "ALL");
     const range = parseDateRange(searchParams.get("fromDate"), searchParams.get("toDate"));
@@ -39,11 +49,37 @@ export async function GET(request: Request) {
 }
 
 /**
+ * Chứng từ công nợ để in: mọi dòng cùng mã phiếu (CNPT-202611-0007 và /1, /2...) + tên hạng mục
+ * P&L. Dòng thuộc cửa hàng không được xem thì chặn cả phiếu.
+ */
+async function loadDebtPrintDocument(code: string, session: Parameters<typeof assertBranchAccess>[0]) {
+  const groupCode = stripDebtLineSuffix(code);
+  const records = await prisma.debtRecord.findMany({
+    where: { OR: [{ code: groupCode }, { code: { startsWith: `${groupCode}/` } }] },
+    orderBy: { code: "asc" },
+  });
+  if (records.length === 0) throw new Error(`Không tìm thấy công nợ ${code}`);
+  for (const record of records) assertBranchAccess(session, record.branchCode);
+  const pnlCodes = [...new Set(records.flatMap((row) => [row.pnlItemCode, row.pnlGroupCode]).filter((value): value is string => Boolean(value)))];
+  const pnlNames = pnlCodes.length
+    ? Object.fromEntries((await prisma.masterDataItem.findMany({
+        where: { type: { in: ["PNL_ITEM", "PNL_GROUP"] }, code: { in: pnlCodes } },
+        select: { code: true, name: true },
+      })).map((row) => [row.code, row.name]))
+    : {};
+  return { groupCode, records, pnlNames };
+}
+
+/**
  * Một dòng chi tiết của phiếu công nợ: một số tiền + một mã phân loại P&L.
  * Phải trả khai tới HẠNG MỤC chi phí (`pnlItemCode`); phải thu chỉ khai tới NHÓM hạng mục
  * (`pnlGroupCode`) vì khoản thu về không thuộc một hạng mục chi phí nào.
  */
-type DebtLineInput = { pnlItemCode: string | null; pnlGroupCode: string | null; amount: number; note: string };
+type DebtLineInput = {
+  pnlItemCode: string | null; pnlGroupCode: string | null; amount: number; note: string;
+  /** Tách thuế GTGT (lib/debt-vat): `amount` = sau thuế; null = khai thẳng số sau thuế. */
+  amountBeforeTax: number | null; vatRate: number | null; vatAmount: number | null; taxError?: string;
+};
 
 /**
  * Nhận `lines` (nhiều dòng) hoặc bộ `originalAmount` + `pnlItemCode` cũ (một dòng) — client cũ
@@ -53,11 +89,16 @@ function parseDebtLines(body: Record<string, unknown>): DebtLineInput[] {
   if (Array.isArray(body.lines)) {
     return body.lines.map((line) => {
       const raw = (typeof line === "object" && line !== null ? line : {}) as Record<string, unknown>;
+      const tax = resolveDebtLineTax({ amount: raw.amount, amountBeforeTax: raw.amountBeforeTax, vatRate: raw.vatRate, vatAmount: raw.vatAmount });
       return {
         pnlItemCode: cleanText(raw.pnlItemCode).toUpperCase() || null,
         pnlGroupCode: cleanText(raw.pnlGroupCode).toUpperCase() || null,
-        amount: toNumber(raw.amount),
+        amount: tax.ok ? tax.amount : toNumber(raw.amount),
         note: cleanText(raw.note),
+        amountBeforeTax: tax.ok ? tax.amountBeforeTax : null,
+        vatRate: tax.ok ? tax.vatRate : null,
+        vatAmount: tax.ok ? tax.vatAmount : null,
+        ...(tax.ok ? {} : { taxError: tax.reason }),
       };
     });
   }
@@ -66,6 +107,9 @@ function parseDebtLines(body: Record<string, unknown>): DebtLineInput[] {
     pnlGroupCode: cleanText(body.pnlGroupCode).toUpperCase() || null,
     amount: toNumber(body.originalAmount),
     note: "",
+    amountBeforeTax: null,
+    vatRate: null,
+    vatAmount: null,
   }];
 }
 
@@ -142,6 +186,10 @@ export async function POST(request: Request) {
     }
     if (lines.length === 0) return NextResponse.json({ error: "Phiếu công nợ cần ít nhất một dòng hạng mục" }, { status: 400 });
     if (lines.length > 50) return NextResponse.json({ error: "Một phiếu công nợ tối đa 50 dòng" }, { status: 400 });
+    const taxLine = lines.findIndex((line) => line.taxError);
+    if (taxLine >= 0) {
+      return NextResponse.json({ error: lines.length === 1 ? lines[taxLine].taxError : `Dòng ${taxLine + 1}: ${lines[taxLine].taxError}` }, { status: 400 });
+    }
     const badLine = lines.findIndex((line) => !(line.amount > 0));
     if (badLine >= 0) {
       return NextResponse.json({ error: lines.length === 1 ? "Số tiền công nợ phải lớn hơn 0" : `Dòng ${badLine + 1}: số tiền phải lớn hơn 0` }, { status: 400 });
@@ -231,6 +279,9 @@ export async function POST(request: Request) {
                 pnlGroupCode: line.pnlGroupCode,
                 originalAmount: line.amount,
                 outstandingAmount: line.amount,
+                amountBeforeTax: line.amountBeforeTax,
+                vatRate: line.vatRate,
+                vatAmount: line.vatAmount,
                 // Diễn giải dòng = diễn giải chung + hạng mục/ghi chú riêng để nhìn trên sổ nợ
                 // và trên phiếu chi vẫn biết dòng này là khoản gì.
                 description: multiLine ? [description, [line.pnlItemCode || line.pnlGroupCode, line.note].filter(Boolean).join(" ")].filter(Boolean).join(" · ") : description,
@@ -375,7 +426,17 @@ export async function PATCH(request: Request) {
     const rawPnlGroupCode = body.pnlGroupCode === undefined ? current.pnlGroupCode : cleanText(body.pnlGroupCode).toUpperCase() || null;
     const pnlItemCode = isReceivableDebt ? null : rawPnlItemCode;
     const pnlGroupCode = isReceivableDebt ? rawPnlGroupCode : null;
-    const originalAmount = body.originalAmount === undefined ? current.originalAmount : toNumber(body.originalAmount);
+    // Khai trước thuế thì số sau thuế tính lại từ thuế (lib/debt-vat); sửa thẳng số tiền mà
+    // không gửi phần thuế thì bỏ phần tách thuế cũ — nó không còn khớp số mới.
+    const taxProvided = body.amountBeforeTax !== undefined;
+    const tax = taxProvided
+      ? resolveDebtLineTax({ amount: body.originalAmount, amountBeforeTax: body.amountBeforeTax, vatRate: body.vatRate, vatAmount: body.vatAmount })
+      : null;
+    if (tax && !tax.ok) return NextResponse.json({ error: tax.reason }, { status: 400 });
+    const originalAmount = tax?.ok ? tax.amount : body.originalAmount === undefined ? current.originalAmount : toNumber(body.originalAmount);
+    const taxFields = tax?.ok
+      ? { amountBeforeTax: tax.amountBeforeTax, vatRate: tax.vatRate, vatAmount: tax.vatAmount }
+      : originalAmount !== current.originalAmount ? { amountBeforeTax: null, vatRate: null, vatAmount: null } : {};
     const documentDate = body.documentDate === undefined ? current.documentDate : toDate(body.documentDate, current.documentDate);
     const dueDate = body.dueDate === undefined ? current.dueDate : body.dueDate ? toDate(body.dueDate, current.documentDate) : null;
 
@@ -473,6 +534,7 @@ export async function PATCH(request: Request) {
           originalAmount,
           // Chưa phát sinh thanh toán nên dư nợ luôn bằng số tiền gốc.
           outstandingAmount: originalAmount,
+          ...taxFields,
           description,
           allocationMonths: allocationMonths || null,
           allocationStartPeriod: allocationStartPeriod || null,

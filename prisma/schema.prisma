@@ -480,8 +480,14 @@ model DebtRecord {
   /// Nhóm hạng mục P&L (mã PNL_GROUP) của khoản PHẢI THU: khoản thu về không cần chi tiết tới
   /// từng hạng mục chi phí, chỉ cần biết thuộc nhóm nào trên báo cáo P&L.
   pnlGroupCode          String?
+  /// Số tiền SAU thuế của khoản nợ — báo cáo, sổ nợ, bút toán đều đọc cột này như trước.
   originalAmount        Float
   outstandingAmount     Float
+  /// Tách thuế GTGT khi khai tay (khách 13/11/2026), chỉ để xem / in chứng từ:
+  /// trước thuế + tiền thuế = originalAmount. null = khoản khai thẳng số sau thuế.
+  amountBeforeTax       Float?
+  vatRate               Float?
+  vatAmount             Float?
   allocationMonths      Float?
   allocationStartPeriod String?
   description           String

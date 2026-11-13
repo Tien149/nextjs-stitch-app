@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { formatPeriodCount } from "@/lib/period-count";
 import { ADVANCE_SETTLEMENT_DEBT_TYPE, isAdvanceSettlementDebt } from "@/lib/employee-advance";
 import ExportExcelButton from "@/components/ExportExcelButton";
@@ -20,6 +21,8 @@ import { DocLink } from "@/components/DocLink";
 import { focusRowClass, readDocFocus, scrollToDoc } from "@/lib/doc-focus";
 import { FilterApplyButton } from "@/components/FilterApplyButton";
 import { useAppliedFilters } from "@/lib/use-applied-filters";
+import { resolveDebtLineTax } from "@/lib/debt-vat";
+import { VAT_RATE_CODES, vatRateLabel } from "@/lib/inventory-vat";
 
 /** Nguồn sổ chi tiết mà mã là chứng từ ở màn khác — bấm sang đúng phiếu. */
 const linkedLedgerSources = new Set(["VOUCHER", "DEPOSIT", "BANK_STATEMENT", "PURCHASE_ORDER"]);
@@ -67,6 +70,10 @@ type LedgerRow = {
   allocationMonths?: number | null;
   allocationStartPeriod?: string | null;
   sourceType?: string | null;
+  /** Tách thuế GTGT của khoản khai tay (lib/debt-vat); null = khai thẳng số sau thuế. */
+  amountBeforeTax?: number | null;
+  vatRate?: number | null;
+  vatAmount?: number | null;
 };
 
 type LedgerDetail = {
@@ -117,6 +124,10 @@ const emptyDebtForm = {
   dueDate: "",
   description: "",
   originalAmount: "",
+  /** Tách thuế như popup Thêm công nợ: trước thuế trống = sửa thẳng số sau thuế. */
+  amountBeforeTax: "",
+  vatRate: "KKKNT",
+  vatAmount: "",
   /** Giữ riêng hai tầng như popup Thêm công nợ: phải trả sửa hạng mục, phải thu sửa nhóm hạng mục. */
   pnlItemCode: "",
   pnlGroupCode: "",
@@ -193,8 +204,18 @@ function AllocationFields({ months, startPeriod, amount, defaultPeriod, onChange
 /** Một dòng hạng mục trong popup Thêm công nợ; `key` chỉ để React theo dõi khi thêm/xoá dòng.
  * Phải trả khai tới hạng mục chi phí (`pnlItemCode`); phải thu chỉ khai tới nhóm hạng mục
  * (`pnlGroupCode`) — hai tầng dùng hai ô khác nhau nên giữ riêng hai trường. */
-type CreateLine = { key: number; pnlItemCode: string; pnlGroupCode: string; amount: string; note: string };
-const emptyCreateLine = (key: number): CreateLine => ({ key, pnlItemCode: "", pnlGroupCode: "", amount: "", note: "" });
+/**
+ * Dòng phiếu công nợ. Tách thuế GTGT (khách 13/11/2026): khai trước thuế + thuế suất thì tiền thuế
+ * tự tính (`vatAmount` rỗng = tự tính, gõ = sửa tay theo hoá đơn) và số sau thuế khoá theo; không
+ * khai trước thuế thì gõ thẳng số sau thuế vào `amount` như cũ.
+ */
+type CreateLine = { key: number; pnlItemCode: string; pnlGroupCode: string; amount: string; note: string; amountBeforeTax: string; vatRate: string; vatAmount: string };
+const emptyCreateLine = (key: number): CreateLine => ({ key, pnlItemCode: "", pnlGroupCode: "", amount: "", note: "", amountBeforeTax: "", vatRate: "KKKNT", vatAmount: "" });
+/** Số sau thuế / tiền thuế của dòng đang gõ — cùng công thức máy chủ dùng khi lưu (lib/debt-vat). */
+const createLineTax = (line: CreateLine) => {
+  const tax = resolveDebtLineTax({ amount: line.amount, amountBeforeTax: line.amountBeforeTax, vatRate: line.vatRate, vatAmount: line.vatAmount });
+  return tax.ok ? tax : { ok: true as const, amount: Number(line.amount) || 0, amountBeforeTax: null, vatRate: null, vatAmount: null };
+};
 
 const isReceivableBalance = (balance: number) => balance < 0;
 const isPayableBalance = (balance: number) => balance > 0;
@@ -282,7 +303,9 @@ export default function DebtsPage() {
   // Bảng chi tiết của phiếu: mỗi dòng một hạng mục P&L + số tiền riêng (trích trước cuối tháng
   // cùng NCC nhưng nhiều hạng mục). Một dòng thì tạo khoản đơn như trước.
   const [createLines, setCreateLines] = useState<CreateLine[]>([emptyCreateLine(1)]);
-  const createTotal = createLines.reduce((sum, line) => sum + (Number(line.amount) > 0 ? Number(line.amount) : 0), 0);
+  const createTotal = createLines.reduce((sum, line) => sum + Math.max(0, createLineTax(line).amount), 0);
+  const createTotalBeforeTax = createLines.reduce((sum, line) => sum + (createLineTax(line).amountBeforeTax ?? Math.max(0, createLineTax(line).amount)), 0);
+  const createTotalVat = createLines.reduce((sum, line) => sum + (createLineTax(line).vatAmount ?? 0), 0);
   /** Phải thu phân loại theo NHÓM hạng mục P&L; phải trả theo từng hạng mục chi phí. */
   const createIsReceivable = createForm.debtType === "RECEIVABLE";
   /** Hoàn ứng nhân viên: phải trả cấn thẳng vào tạm ứng — không hạn trả, không phân bổ, không qua quỹ. */
@@ -393,12 +416,15 @@ export default function DebtsPage() {
   const submitCreateDebt = async (event: React.FormEvent) => {
     event.preventDefault();
     if (createSaving) return;
+    // Nút "Tạo & in" (khách 13/11/2026): mở tab in ngay trong cú bấm, kẻo trình duyệt chặn popup.
+    const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
+    const wantsPrint = submitter?.value === "print";
     setCreateError("");
     if (!createForm.partnerCode || !createForm.branchCode || !createForm.description.trim()) {
       setCreateError("Cần chọn đối tác, cửa hàng và diễn giải.");
       return;
     }
-    const badLine = createLines.findIndex((line) => !(Number(line.amount) > 0));
+    const badLine = createLines.findIndex((line) => !(createLineTax(line).amount > 0));
     if (badLine >= 0) {
       setCreateError(createLines.length === 1 ? "Số tiền phải lớn hơn 0." : `Dòng ${badLine + 1}: số tiền phải lớn hơn 0.`);
       return;
@@ -413,6 +439,8 @@ export default function DebtsPage() {
         return;
       }
     }
+    // Còn đồng bộ với cú bấm (chưa có await nào) nên trình duyệt không chặn tab mới.
+    const printWindow = wantsPrint ? window.open("about:blank", "_blank") : null;
     setCreateSaving(true);
     try {
       const response = await fetch("/api/debts", {
@@ -422,14 +450,20 @@ export default function DebtsPage() {
           ...createForm,
           allocationMonths: createIsReceivable || createIsAdvance ? "" : createForm.allocationMonths,
           dueDate: createIsAdvance ? "" : createForm.dueDate,
-          lines: createLines.map((line) => ({ pnlItemCode: line.pnlItemCode, pnlGroupCode: line.pnlGroupCode, amount: line.amount, note: line.note })),
+          lines: createLines.map((line) => ({
+            pnlItemCode: line.pnlItemCode, pnlGroupCode: line.pnlGroupCode, note: line.note,
+            amount: String(createLineTax(line).amount),
+            amountBeforeTax: line.amountBeforeTax, vatRate: line.vatRate, vatAmount: line.vatAmount,
+          })),
         }),
       });
       const payload = await response.json();
       if (!response.ok) {
+        printWindow?.close();
         setCreateError(payload.error || "Không tạo được công nợ.");
         return;
       }
+      if (printWindow) printWindow.location.href = `/debts/print?code=${encodeURIComponent(payload.code)}`;
       setCreateOpen(false);
       setCreateForm((current) => ({ ...current, partnerCode: "", description: "", dueDate: "", allocationMonths: "", allocationStartPeriod: "" }));
       setCreateLines([emptyCreateLine(1)]);
@@ -439,6 +473,7 @@ export default function DebtsPage() {
         : (payload.lineCount > 1 ? `Đã tạo phiếu công nợ ${payload.code} gồm ${payload.lineCount} dòng hạng mục.` : `Đã tạo công nợ ${payload.code}.`) + allocationNote);
       await reloadRowsAndLedger();
     } catch {
+      printWindow?.close();
       setCreateError("Không kết nối được máy chủ. Vui lòng thử lại.");
     } finally {
       setCreateSaving(false);
@@ -529,6 +564,10 @@ export default function DebtsPage() {
     return null;
   };
 
+  const editTax = (() => {
+    const tax = resolveDebtLineTax({ amount: debtForm.originalAmount, amountBeforeTax: debtForm.amountBeforeTax, vatRate: debtForm.vatRate, vatAmount: debtForm.vatAmount });
+    return tax.ok ? tax : { ok: true as const, amount: Number(debtForm.originalAmount) || 0, amountBeforeTax: null, vatRate: null, vatAmount: null };
+  })();
   const startEditDebt = (row: LedgerRow) => {
     setMessage("");
     setEditError(null);
@@ -540,6 +579,9 @@ export default function DebtsPage() {
       // Làm tròn về đồng: ô nhập tiền chỉ nhận chữ số (dấu chấm là phân cách hàng nghìn), số lẻ
       // thập phân lọt vào đây sẽ bị đọc thành hàng nghìn — "1234.56" thành 123.456.
       originalAmount: String(Math.round(Math.abs(row.amount))),
+      amountBeforeTax: row.amountBeforeTax ? String(Math.round(row.amountBeforeTax)) : "",
+      vatRate: row.amountBeforeTax ? vatRateLabel(row.vatRate) : "KKKNT",
+      vatAmount: row.amountBeforeTax && row.vatAmount !== null && row.vatAmount !== undefined ? String(Math.round(row.vatAmount)) : "",
       pnlItemCode: row.pnlItemCode || "",
       pnlGroupCode: row.pnlGroupCode || "",
       allocationMonths: (row.allocationMonths || 0) > 1 ? String(row.allocationMonths) : "",
@@ -568,6 +610,9 @@ export default function DebtsPage() {
           dueDate: debtForm.dueDate,
           description: debtForm.description,
           originalAmount: debtForm.originalAmount,
+          amountBeforeTax: debtForm.amountBeforeTax,
+          vatRate: debtForm.vatRate,
+          vatAmount: debtForm.vatAmount,
           pnlItemCode: debtForm.pnlItemCode,
           pnlGroupCode: debtForm.pnlGroupCode,
           // Chỉ khoản khai tay mới sửa phân bổ ở đây; khoản import giữ lịch sinh lúc nhập file.
@@ -676,39 +721,76 @@ export default function DebtsPage() {
    * nhà hàng, tiêu đề CÔNG NỢ PHẢI THU / PHẢI TRẢ, kỳ, bảng STT · Ngày · Nguồn · Mã · Diễn giải ·
    * Phát sinh tăng · Phát sinh giảm · Số dư sau; thêm dòng đầu kỳ / cộng / cuối kỳ và ô ký xác nhận.
    */
-  const exportStatement = async () => {
-    if (!ledger) return;
-    const XLSX = await import("xlsx");
+  /**
+   * Nội dung đối chiếu dùng chung cho file Excel và bản in / PDF (khách 13/11/2026) — hai bản gửi
+   * đối tác phải ra cùng một con số.
+   */
+  const statementData = (() => {
+    if (!ledger) return null;
     const branch = branchScope !== "ALL" ? branchInfo.find((item) => item.code === branchScope) : null;
-    const restaurantName = branch?.name || brandName || "";
     const sideAmount = (value: number) => Math.round(value * ledgerMovement.direction) || 0;
     const firstDate = ledgerRowsAsc[0]?.date ? new Date(ledgerRowsAsc[0].date).toLocaleDateString("vi-VN") : "";
-    const fromLabel = ledger.fromDate ? dayLabel(ledger.fromDate) : firstDate;
-    const toLabel = ledger.toDate ? dayLabel(ledger.toDate) : new Date().toLocaleDateString("vi-VN");
+    return {
+      restaurantName: branch?.name || brandName || "",
+      address: branch?.address || "",
+      title: ledgerMovement.side === "PAYABLE" ? "CÔNG NỢ PHẢI TRẢ" : "CÔNG NỢ PHẢI THU",
+      partnerLine: `${ledger.partnerName} (${ledger.partnerCode})${ledger.partnerTaxCode ? ` · MST: ${ledger.partnerTaxCode}` : ""}${ledger.partnerAddress ? ` · ${ledger.partnerAddress}` : ""}`,
+      fromLabel: ledger.fromDate ? dayLabel(ledger.fromDate) : firstDate,
+      toLabel: ledger.toDate ? dayLabel(ledger.toDate) : new Date().toLocaleDateString("vi-VN"),
+      opening: sideAmount(ledger.openingBalance),
+      rows: ledgerRowsAsc.map((row, index) => {
+        const signed = row.amount * ledgerMovement.direction;
+        return {
+          key: `${row.code}-${index}`,
+          index: index + 1,
+          date: new Date(row.date).toLocaleDateString("vi-VN"),
+          source: ledgerSourceLabel(row.source, row.sourceType),
+          code: row.code,
+          description: row.description,
+          increase: signed > 0 ? Math.round(Math.abs(row.amount)) : null,
+          decrease: signed < 0 ? Math.round(Math.abs(row.amount)) : null,
+          balance: sideAmount(row.runningBalance || 0),
+        };
+      }),
+      increase: Math.round(ledgerMovement.increase),
+      decrease: Math.round(ledgerMovement.decrease),
+      closing: sideAmount(ledger.balance),
+    };
+  })();
+
+  /**
+   * In / lưu PDF đối chiếu công nợ gửi đối tác (khách 13/11/2026): chỉ in khối #debt-statement-print,
+   * khổ A4 dọc. CSS in gắn lúc bấm và gỡ sau khi in để các trang khác không bị ảnh hưởng.
+   */
+  const printStatement = () => {
+    if (!statementData) return;
+    const style = document.createElement("style");
+    style.textContent = `@media print {
+      @page { size: A4 portrait; margin: 10mm; }
+      body > *:not(#debt-statement-print) { display: none !important; }
+      #debt-statement-print { display: block !important; }
+    }`;
+    document.head.appendChild(style);
+    window.addEventListener("afterprint", () => style.remove(), { once: true });
+    window.print();
+  };
+
+  const exportStatement = async () => {
+    if (!ledger || !statementData) return;
+    const XLSX = await import("xlsx");
+    const { restaurantName, fromLabel, toLabel } = statementData;
     const width = 8;
     const aoa: Array<Array<string | number>> = [
       [restaurantName.toUpperCase()],
-      [`Địa chỉ: ${branch?.address || ""}`],
-      [ledgerMovement.side === "PAYABLE" ? "CÔNG NỢ PHẢI TRẢ" : "CÔNG NỢ PHẢI THU"],
-      [`Đối tác: ${ledger.partnerName} (${ledger.partnerCode})${ledger.partnerTaxCode ? ` · MST: ${ledger.partnerTaxCode}` : ""}${ledger.partnerAddress ? ` · ${ledger.partnerAddress}` : ""}`],
+      [`Địa chỉ: ${statementData.address}`],
+      [statementData.title],
+      [`Đối tác: ${statementData.partnerLine}`],
       [`Từ ngày ${fromLabel || "......."} đến ngày ${toLabel}`],
       ["STT", "Ngày", "Nguồn", "Mã", "Diễn giải", "Phát sinh tăng", "Phát sinh giảm", "Số dư sau"],
-      ["", fromLabel, "", "", "Số dư đầu kỳ", "", "", sideAmount(ledger.openingBalance)],
-      ...ledgerRowsAsc.map((row, index) => {
-        const signed = row.amount * ledgerMovement.direction;
-        return [
-          index + 1,
-          new Date(row.date).toLocaleDateString("vi-VN"),
-          ledgerSourceLabel(row.source, row.sourceType),
-          row.code,
-          row.description,
-          signed > 0 ? Math.round(Math.abs(row.amount)) : "",
-          signed < 0 ? Math.round(Math.abs(row.amount)) : "",
-          sideAmount(row.runningBalance || 0),
-        ];
-      }),
-      ["", "", "", "", "Cộng phát sinh", Math.round(ledgerMovement.increase), Math.round(ledgerMovement.decrease), ""],
-      ["", toLabel, "", "", "Số dư cuối kỳ", "", "", sideAmount(ledger.balance)],
+      ["", fromLabel, "", "", "Số dư đầu kỳ", "", "", statementData.opening],
+      ...statementData.rows.map((row) => [row.index, row.date, row.source, row.code, row.description, row.increase ?? "", row.decrease ?? "", row.balance]),
+      ["", "", "", "", "Cộng phát sinh", statementData.increase, statementData.decrease, ""],
+      ["", toLabel, "", "", "Số dư cuối kỳ", "", "", statementData.closing],
       [],
       ["", "Xác nhận của đối tác", "", "", "", "Người lập", "", "Kế toán"],
     ];
@@ -1017,6 +1099,16 @@ export default function DebtsPage() {
                 <span className="material-symbols-outlined text-[18px]">download</span>
                 Xuất file đối chiếu công nợ
               </button>
+              <button
+                type="button"
+                disabled={!ledger}
+                onClick={printStatement}
+                className="inline-flex h-10 items-center gap-1.5 rounded-lg border border-blue-300 bg-white px-4 text-sm font-bold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                title="In bản đối chiếu, hoặc chọn máy in 'Lưu thành PDF' để gửi file cho đối tác"
+              >
+                <span className="material-symbols-outlined text-[18px]">print</span>
+                In / Lưu PDF
+              </button>
             </div>
             {!ledger && <p className="mt-4 text-sm text-slate-500">Chọn một đối tác (hoặc bấm đối tác ở tab Tổng hợp công nợ) để xem sổ chi tiết.</p>}
           </section>
@@ -1144,6 +1236,19 @@ export default function DebtsPage() {
                         {money((item.runningBalance || 0) * ledgerMovement.direction)}
                       </td>
                       <td className="px-4 py-3 text-right">
+                        <div className="inline-flex items-center gap-1">
+                        {/* In chứng từ công nợ (khách 13/11/2026) — phiếu nhiều dòng in chung một tờ. */}
+                        {item.id && ["PAYABLE", "RECEIVABLE"].includes(item.source) && (
+                          <button
+                            type="button"
+                            onClick={() => window.open(`/debts/print?code=${encodeURIComponent(item.groupCode || item.code)}`, "_blank")}
+                            className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-blue-700"
+                            title="In chứng từ công nợ"
+                            aria-label={`In chứng từ ${item.groupCode || item.code}`}
+                          >
+                            <span className="material-symbols-outlined text-[18px] leading-none">print</span>
+                          </button>
+                        )}
                         <RowActions
                           session={user}
                           module="/debts"
@@ -1156,6 +1261,7 @@ export default function DebtsPage() {
                           editDisabledReason={debtLockReason(item)}
                           deleteDisabledReason={debtLockReason(item)}
                         />
+                        </div>
                       </td>
                     </tr>
                     </Fragment>
@@ -1165,6 +1271,61 @@ export default function DebtsPage() {
               </table>
             </div>
           </section>
+        )}
+        {/* Bản in đối chiếu công nợ (khách 13/11/2026) — ẩn trên màn hình, chỉ hiện khi bấm "In / Lưu PDF". */}
+        {statementData && typeof document !== "undefined" && createPortal(
+          <div id="debt-statement-print" className="hidden bg-white text-slate-950 text-[12px]">
+            <p className="text-lg font-bold uppercase">{statementData.restaurantName}</p>
+            {statementData.address && <p className="text-xs text-slate-600">Địa chỉ: {statementData.address}</p>}
+            <h2 className="mt-5 text-center text-2xl font-bold uppercase tracking-wide">{statementData.title}</h2>
+            <p className="mt-1 text-center text-sm">Từ ngày {statementData.fromLabel || "......."} đến ngày {statementData.toLabel}</p>
+            <p className="mt-4 text-sm"><b>Đối tác:</b> {statementData.partnerLine}</p>
+            <table className="mt-3 w-full border-collapse [&_td]:border [&_td]:border-slate-300 [&_td]:px-1.5 [&_td]:py-1 [&_th]:border [&_th]:border-slate-300 [&_th]:px-1.5 [&_th]:py-1">
+              <thead className="bg-slate-100 text-[11px] uppercase">
+                <tr>
+                  <th className="w-8">STT</th><th>Ngày</th><th>Nguồn</th><th>Mã</th><th>Diễn giải</th>
+                  <th className="text-right">Phát sinh tăng</th><th className="text-right">Phát sinh giảm</th><th className="text-right">Số dư sau</th>
+                </tr>
+              </thead>
+              <tbody className="align-top">
+                <tr className="font-bold">
+                  <td /><td className="whitespace-nowrap">{statementData.fromLabel}</td><td /><td /><td>Số dư đầu kỳ</td><td /><td />
+                  <td className="text-right tabular-nums">{money(statementData.opening)}</td>
+                </tr>
+                {statementData.rows.map((row) => (
+                  <tr key={row.key} className="break-inside-avoid">
+                    <td className="text-center">{row.index}</td>
+                    <td className="whitespace-nowrap">{row.date}</td>
+                    <td>{row.source}</td>
+                    <td className="break-all">{row.code}</td>
+                    <td>{row.description}</td>
+                    <td className="text-right tabular-nums whitespace-nowrap">{row.increase !== null ? money(row.increase) : ""}</td>
+                    <td className="text-right tabular-nums whitespace-nowrap">{row.decrease !== null ? money(row.decrease) : ""}</td>
+                    <td className="text-right tabular-nums whitespace-nowrap">{money(row.balance)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot className="font-bold">
+                <tr>
+                  <td colSpan={5}>Cộng phát sinh</td>
+                  <td className="text-right tabular-nums whitespace-nowrap">{money(statementData.increase)}</td>
+                  <td className="text-right tabular-nums whitespace-nowrap">{money(statementData.decrease)}</td>
+                  <td />
+                </tr>
+                <tr className="text-[13px]">
+                  <td colSpan={5}>Số dư cuối kỳ ({statementData.toLabel})</td>
+                  <td colSpan={3} className="text-right tabular-nums">{money(statementData.closing)} đ</td>
+                </tr>
+              </tfoot>
+            </table>
+            {/* Ô ký để trống cho ký tay / đóng dấu xác nhận. */}
+            <div className="mt-10 grid grid-cols-3 gap-6 text-center text-sm break-inside-avoid">
+              <div><b>Xác nhận của đối tác</b><div className="h-20" /></div>
+              <div><b>Người lập</b><div className="h-20" /></div>
+              <div><b>Kế toán</b><div className="h-20" /></div>
+            </div>
+          </div>,
+          document.body,
         )}
       </main>
 
@@ -1200,17 +1361,56 @@ export default function DebtsPage() {
                 />
               </label>
 
-              <label className="text-xs font-bold text-slate-600 block">
-                Số tiền (đ) *
-                <MoneyInput
-                  value={debtForm.originalAmount}
-                  onChange={(originalAmount) => setDebtForm((value) => ({ ...value, originalAmount }))}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold tabular-nums outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                  placeholder="0"
-                  required
-                  ariaLabel="Số tiền công nợ"
-                />
-              </label>
+              {/* Tách thuế như popup Thêm công nợ: trước thuế trống thì sửa thẳng số sau thuế. */}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <label className="text-xs font-bold text-slate-600 block">
+                  Số tiền trước thuế
+                  <MoneyInput
+                    value={debtForm.amountBeforeTax}
+                    onChange={(amountBeforeTax) => setDebtForm((value) => ({ ...value, amountBeforeTax, vatAmount: "" }))}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm tabular-nums outline-none focus:border-blue-500"
+                    placeholder="Không tách thuế"
+                    ariaLabel="Số tiền trước thuế"
+                  />
+                </label>
+                <label className="text-xs font-bold text-slate-600 block">
+                  Thuế suất GTGT
+                  <select
+                    value={debtForm.vatRate}
+                    onChange={(event) => setDebtForm((value) => ({ ...value, vatRate: event.target.value, vatAmount: "" }))}
+                    disabled={!debtForm.amountBeforeTax}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-2 py-2 text-sm outline-none focus:border-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
+                  >
+                    {VAT_RATE_CODES.map((code) => <option key={code} value={code}>{code}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs font-bold text-slate-600 block">
+                  Tiền thuế GTGT
+                  <MoneyInput
+                    value={debtForm.amountBeforeTax ? (debtForm.vatAmount !== "" ? debtForm.vatAmount : String(editTax.vatAmount ?? 0)) : ""}
+                    onChange={(vatAmount) => setDebtForm((value) => ({ ...value, vatAmount }))}
+                    disabled={!debtForm.amountBeforeTax}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm tabular-nums outline-none focus:border-blue-500 disabled:bg-slate-50"
+                    placeholder="0"
+                    ariaLabel="Tiền thuế GTGT"
+                  />
+                </label>
+                <label className="text-xs font-bold text-slate-600 block">
+                  Số tiền sau thuế (đ) *
+                  {debtForm.amountBeforeTax ? (
+                    <p className="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-right text-sm font-bold tabular-nums">{money(editTax.amount)}</p>
+                  ) : (
+                    <MoneyInput
+                      value={debtForm.originalAmount}
+                      onChange={(originalAmount) => setDebtForm((value) => ({ ...value, originalAmount }))}
+                      className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold tabular-nums outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      placeholder="0"
+                      required
+                      ariaLabel="Số tiền công nợ"
+                    />
+                  )}
+                </label>
+              </div>
 
               {/* Hạng mục P&L phải sửa được ngay ở đây: user tạo phiếu chọn nhầm hạng mục thì
                   khoản chi phí nằm sai dòng trên P&L, mà không có ô này thì chỉ còn cách xoá
@@ -1277,7 +1477,7 @@ export default function DebtsPage() {
 
       {createOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
-          <form onSubmit={submitCreateDebt} className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-xl bg-white shadow-xl">
+          <form onSubmit={submitCreateDebt} className="max-h-[92vh] w-full max-w-6xl overflow-y-auto rounded-xl bg-white shadow-xl">
             <div className="border-b border-slate-200 p-5">
               <h2 className="font-bold text-slate-900">{createIsAdvance ? "Hoàn ứng nhân viên" : "Thêm công nợ"}</h2>
               {createIsAdvance ? (
@@ -1419,8 +1619,13 @@ export default function DebtsPage() {
                       <tr>
                         <th className="w-8 px-3 py-2">#</th>
                         <th className="px-3 py-2">{createPnlLabel}</th>
-                        <th className="w-[190px] px-3 py-2 text-right whitespace-nowrap">Số tiền (đ)</th>
-                        <th className="w-[170px] px-3 py-2">Ghi chú dòng</th>
+                        {/* Ba cột thuế đứng TRƯỚC cột số tiền (khách 13/11/2026); cột số tiền vẫn là
+                            số sau thuế mà báo cáo đọc, nên cách lấy dữ liệu các báo cáo không đổi. */}
+                        <th className="w-[150px] px-2 py-2 text-right whitespace-nowrap">Số tiền trước thuế</th>
+                        <th className="w-[96px] px-2 py-2 whitespace-nowrap">Thuế suất GTGT</th>
+                        <th className="w-[130px] px-2 py-2 text-right whitespace-nowrap">Tiền thuế GTGT</th>
+                        <th className="w-[160px] px-2 py-2 text-right whitespace-nowrap">Số tiền sau thuế (đ)</th>
+                        <th className="w-[150px] px-3 py-2">Ghi chú dòng</th>
                         <th className="w-10 px-3 py-2"></th>
                       </tr>
                     </thead>
@@ -1455,15 +1660,52 @@ export default function DebtsPage() {
                               />
                             )}
                           </td>
-                          <td className="px-3 py-2">
+                          <td className="px-2 py-2">
                             <MoneyInput
-                              value={line.amount}
-                              onChange={(amount) => updateCreateLine(line.key, { amount })}
-                              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-right text-sm font-bold tabular-nums outline-none focus:border-blue-500"
-                              placeholder="0"
-                              required
-                              ariaLabel={`Số tiền dòng ${index + 1}`}
+                              value={line.amountBeforeTax}
+                              onChange={(amountBeforeTax) => updateCreateLine(line.key, { amountBeforeTax, vatAmount: "" })}
+                              className="w-full rounded-lg border border-slate-300 px-2 py-2 text-right text-sm tabular-nums outline-none focus:border-blue-500"
+                              placeholder="Không tách thuế"
+                              ariaLabel={`Số tiền trước thuế dòng ${index + 1}`}
                             />
+                          </td>
+                          <td className="px-2 py-2">
+                            <select
+                              value={line.vatRate}
+                              onChange={(event) => updateCreateLine(line.key, { vatRate: event.target.value, vatAmount: "" })}
+                              disabled={!line.amountBeforeTax}
+                              className="w-full rounded-lg border border-slate-300 px-1.5 py-2 text-sm outline-none focus:border-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
+                              aria-label={`Thuế suất dòng ${index + 1}`}
+                            >
+                              {VAT_RATE_CODES.map((code) => <option key={code} value={code}>{code}</option>)}
+                            </select>
+                          </td>
+                          <td className="px-2 py-2">
+                            {/* Tự tính theo thuế suất; sửa tay được khi hoá đơn lệch vài đồng làm tròn. */}
+                            <MoneyInput
+                              value={line.amountBeforeTax ? (line.vatAmount !== "" ? line.vatAmount : String(createLineTax(line).vatAmount ?? 0)) : ""}
+                              onChange={(vatAmount) => updateCreateLine(line.key, { vatAmount })}
+                              disabled={!line.amountBeforeTax}
+                              className="w-full rounded-lg border border-slate-300 px-2 py-2 text-right text-sm tabular-nums outline-none focus:border-blue-500 disabled:bg-slate-50"
+                              placeholder="0"
+                              ariaLabel={`Tiền thuế dòng ${index + 1}`}
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            {line.amountBeforeTax ? (
+                              <p className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-right text-sm font-bold tabular-nums text-slate-900" title="Trước thuế + tiền thuế">
+                                {money(createLineTax(line).amount)}
+                              </p>
+                            ) : (
+                              <MoneyInput
+                                value={line.amount}
+                                onChange={(amount) => updateCreateLine(line.key, { amount })}
+                                className="w-full rounded-lg border border-slate-300 px-2 py-2 text-right text-sm font-bold tabular-nums outline-none focus:border-blue-500"
+                                placeholder="0"
+                                required
+                                ariaLabel={`Số tiền sau thuế dòng ${index + 1}`}
+                              />
+                            )}
                           </td>
                           <td className="px-3 py-2">
                             <input
@@ -1490,7 +1732,7 @@ export default function DebtsPage() {
                     </tbody>
                     <tfoot>
                       <tr className="border-t border-slate-200">
-                        <td colSpan={5} className="px-3 py-2">
+                        <td colSpan={8} className="px-3 py-2">
                           <button
                             type="button"
                             onClick={addCreateLine}
@@ -1503,7 +1745,10 @@ export default function DebtsPage() {
                       </tr>
                       <tr className="border-t border-slate-200 [&_td]:bg-slate-50 [&_td:first-child]:rounded-bl-lg [&_td:last-child]:rounded-br-lg">
                         <td colSpan={2} className="px-3 py-2 text-xs font-bold text-slate-600">Tổng cộng · {createLines.length} {createLines.length > 1 ? (createIsReceivable ? "nhóm hạng mục" : "hạng mục") : "dòng"}</td>
-                        <td className="px-3 py-2 text-right text-sm font-extrabold tabular-nums text-slate-900">{money(createTotal)}</td>
+                        <td className="px-2 py-2 text-right text-sm font-bold tabular-nums text-slate-700">{money(createTotalBeforeTax)}</td>
+                        <td></td>
+                        <td className="px-2 py-2 text-right text-sm font-bold tabular-nums text-slate-700">{money(createTotalVat)}</td>
+                        <td className="px-2 py-2 text-right text-base font-extrabold tabular-nums text-blue-800">{money(createTotal)}</td>
                         <td colSpan={2}></td>
                       </tr>
                     </tfoot>
@@ -1531,6 +1776,10 @@ export default function DebtsPage() {
             <div className="flex justify-end gap-2 border-t border-slate-200 p-4">
               <button type="button" onClick={() => setCreateOpen(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">
                 Đóng
+              </button>
+              <button type="submit" value="print" disabled={createSaving} className="inline-flex items-center gap-1 rounded-lg border border-blue-300 px-4 py-2 text-sm font-bold text-blue-700 hover:bg-blue-50 disabled:opacity-60" title="Tạo xong mở chứng từ để in">
+                <span className="material-symbols-outlined text-[18px] leading-none">print</span>
+                {createIsAdvance ? "Lập & in" : "Tạo & in"}
               </button>
               <button type="submit" disabled={createSaving} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-60">
                 {createSaving ? "Đang tạo..." : createIsAdvance ? "Lập phiếu hoàn ứng" : "Tạo công nợ"}

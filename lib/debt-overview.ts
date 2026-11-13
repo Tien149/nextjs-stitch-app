@@ -56,6 +56,11 @@ export type LedgerRow = {
   allocationMonths?: number | null;
   allocationStartPeriod?: string | null;
   sourceType?: string | null;
+  /** Tách thuế GTGT của khoản khai tay (lib/debt-vat) — null = khai thẳng số sau thuế. */
+  originalAmount?: number;
+  amountBeforeTax?: number | null;
+  vatRate?: number | null;
+  vatAmount?: number | null;
 };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN").format(Math.round(value));
@@ -348,6 +353,10 @@ export async function loadDebtOverview({ branchCode, range, partnerCode }: { bra
         allocationMonths: item.allocationMonths,
         allocationStartPeriod: item.allocationStartPeriod,
         sourceType: item.sourceType,
+        originalAmount: item.originalAmount,
+        amountBeforeTax: item.amountBeforeTax,
+        vatRate: item.vatRate,
+        vatAmount: item.vatAmount,
       });
     }
 
