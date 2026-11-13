@@ -45,6 +45,7 @@ import { loadItemRevenueOptions, loadNonInventoryRevenueGroups, revenueKindFromT
 import { normalizeGoodsGroup } from "@/lib/goods-group";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { outputConversionRateProblem, resolveOutputConversionRate } from "@/lib/recipe-output-rate";
+import { roundVnd } from "@/lib/round-vnd";
 import { explosionPostingDate } from "@/lib/revenue-date";
 import { assertPurchaseReceiptEditable, syncPurchaseReceiptEdit } from "@/lib/purchase-receipt-edit";
 
@@ -272,8 +273,28 @@ type MovementLineSource = {
   referenceCode: string | null;
   partnerCode: string | null;
   note: string | null;
-  lines: Array<{ quantity: number; unitCost: number; totalCost: number; item: { code: string; name: string; unit: string; itemType: string; goodsGroup: string | null } }>;
+  lines: Array<{
+    quantity: number; unitCost: number; totalCost: number;
+    inputQuantity?: number | null; inputUnitCost?: number | null; vatRate?: number | null; vatAmount?: number; purchaseCostShare?: number; discountAmount?: number;
+    item: { code: string; name: string; unit: string; itemType: string; goodsGroup: string | null };
+  }>;
 };
+
+/**
+ * Các cột tiền của dòng NHẬP MUA theo đúng phiếu nhập (khách 13/11/2026, báo cáo Chi tiết nhập):
+ * trước thuế = SL × đơn giá NCC, chiết khấu, thuế suất, tiền thuế, sau thuế — cùng công thức với
+ * phiếu in (lib/stock-print-rows). Phiếu nhập loại khác không có thuế / chiết khấu: trước thuế =
+ * sau thuế = giá trị nhập.
+ */
+function purchaseLineAmounts(transactionType: string, line: MovementLineSource["lines"][number]) {
+  if (transactionType !== "NHAP_MUA") return null;
+  const discountAmount = line.discountAmount || 0;
+  const vatAmount = line.vatAmount || 0;
+  const grossAmount = line.inputQuantity !== null && line.inputQuantity !== undefined && line.inputUnitCost !== null && line.inputUnitCost !== undefined
+    ? roundVnd(line.inputQuantity * line.inputUnitCost)
+    : line.totalCost - (line.purchaseCostShare || 0) - vatAmount + discountAmount;
+  return { grossAmount, discountAmount, vatRate: line.vatRate ?? null, vatAmount };
+}
 
 /**
  * Nhật ký nhập/xuất từng dòng của tab Tồn kho. Điều chuyển sinh hai dòng: vế xuất ở kho đi và
@@ -287,6 +308,7 @@ function buildStockMovements(transactions: MovementLineSource[], partnerNames: M
     itemCode: string; itemName: string; unit: string; itemType: string; goodsGroup: string | null;
     quantity: number; inboundQuantity: number; outboundQuantity: number; unitCost: number; value: number;
     referenceCode: string | null; partnerCode: string | null; partnerName: string | null; note: string | null;
+    purchase: ReturnType<typeof purchaseLineAmounts>;
   }> = [];
   for (const transaction of transactions) {
     const inbound = transaction.transactionType.startsWith("NHAP_");
@@ -313,6 +335,7 @@ function buildStockMovements(transactions: MovementLineSource[], partnerNames: M
         partnerCode,
         partnerName: partnerCode ? partnerNames.get(partnerCode.toUpperCase()) || null : null,
         note: transaction.note,
+        purchase: purchaseLineAmounts(transaction.transactionType, line),
       };
       rows.push({
         ...base,
@@ -440,7 +463,11 @@ async function loadStockMovements(branchFilter: { branchCode?: string }, searchP
     select: {
       id: true, code: true, transactionType: true, subType: true, transactionDate: true, branchCode: true, warehouseCode: true, toWarehouseCode: true,
       referenceCode: true, partnerCode: true, note: true,
-      lines: { select: { quantity: true, unitCost: true, totalCost: true, item: { select: { code: true, name: true, unit: true, itemType: true, goodsGroup: true } } } },
+      lines: { select: {
+        quantity: true, unitCost: true, totalCost: true,
+        inputQuantity: true, inputUnitCost: true, vatRate: true, vatAmount: true, purchaseCostShare: true, discountAmount: true,
+        item: { select: { code: true, name: true, unit: true, itemType: true, goodsGroup: true } },
+      } },
     },
     orderBy: { transactionDate: "asc" },
   });

@@ -29,7 +29,11 @@ export type StockMovementRow = {
   partnerCode: string | null;
   partnerName: string | null;
   note: string | null;
+  /** Dòng NHẬP MUA: các cột tiền theo phiếu nhập (trước thuế, chiết khấu, thuế suất, tiền thuế). */
+  purchase?: PurchaseAmounts | null;
 };
+
+export type PurchaseAmounts = { grossAmount: number; discountAmount: number; vatRate: number | null; vatAmount: number };
 
 /** Một vế phiếu: điều chuyển có hai vế (kho đi / kho nhận) với kho khác nhau. */
 type PackedDoc = [
@@ -38,8 +42,11 @@ type PackedDoc = [
   referenceCode: string | null, partnerCode: string | null, partnerName: string | null, note: string | null,
 ];
 type PackedItem = [code: string, name: string, unit: string, itemType: string, goodsGroup: string | null];
-/** inbound = 1 thì số lượng là nhập, 0 là xuất. */
-type PackedLine = [doc: number, item: number, quantity: number, unitCost: number, value: number, inbound: 0 | 1];
+/** inbound = 1 thì số lượng là nhập, 0 là xuất. Dòng nhập mua có thêm 4 số tiền theo phiếu nhập. */
+type PackedLine =
+  | [doc: number, item: number, quantity: number, unitCost: number, value: number, inbound: 0 | 1]
+  | [doc: number, item: number, quantity: number, unitCost: number, value: number, inbound: 0 | 1,
+     grossAmount: number, discountAmount: number, vatRate: number | null, vatAmount: number];
 
 export type PackedStockMovements = { docs: PackedDoc[]; items: PackedItem[]; lines: PackedLine[] };
 
@@ -69,13 +76,20 @@ export function packStockMovements(rows: StockMovementRow[]): PackedStockMovemen
       itemIndex.set(row.itemCode, item);
       items.push([row.itemCode, row.itemName, row.unit, row.itemType, row.goodsGroup]);
     }
-    lines.push([doc, item, row.quantity, row.unitCost, row.value, row.inboundQuantity !== 0 ? 1 : 0]);
+    const inbound = row.inboundQuantity !== 0 ? 1 : 0;
+    lines.push(row.purchase
+      ? [doc, item, row.quantity, row.unitCost, row.value, inbound, row.purchase.grossAmount, row.purchase.discountAmount, row.purchase.vatRate, row.purchase.vatAmount]
+      : [doc, item, row.quantity, row.unitCost, row.value, inbound]);
   }
   return { docs, items, lines };
 }
 
 export function unpackStockMovements(packed: PackedStockMovements): Array<StockMovementRow & { transactionDate: string }> {
-  return packed.lines.map(([docIndex, itemIndex, quantity, unitCost, value, inbound]) => {
+  return packed.lines.map((line) => {
+    const [docIndex, itemIndex, quantity, unitCost, value, inbound] = line;
+    const purchase: PurchaseAmounts | null = line.length > 6
+      ? { grossAmount: line[6] as number, discountAmount: line[7] as number, vatRate: line[8] as number | null, vatAmount: line[9] as number }
+      : null;
     const [transactionId, code, transactionType, subType, transactionDate, branchCode, warehouseCode, toWarehouseCode, counterpartWarehouseCode, referenceCode, partnerCode, partnerName, note] = packed.docs[docIndex];
     const [itemCode, itemName, unit, itemType, goodsGroup] = packed.items[itemIndex];
     return {
@@ -83,6 +97,7 @@ export function unpackStockMovements(packed: PackedStockMovements): Array<StockM
       itemCode, itemName, unit, itemType, goodsGroup,
       quantity, inboundQuantity: inbound ? quantity : 0, outboundQuantity: inbound ? 0 : quantity, unitCost, value,
       referenceCode, partnerCode, partnerName, note,
+      ...(purchase ? { purchase } : {}),
     };
   });
 }

@@ -28,3 +28,11 @@ test("bung lại đúng từng dòng; phiếu và mặt hàng chỉ gửi một 
   const back = unpackStockMovements(JSON.parse(JSON.stringify(packed)));
   assert.deepEqual(back, rows.map((row) => ({ ...row, transactionDate: date.toISOString() })));
 });
+
+test("dòng nhập mua mang đủ tiền theo phiếu nhập (trước thuế, chiết khấu, thuế suất, tiền thuế)", () => {
+  const purchase = { grossAmount: 500000, discountAmount: 50000, vatRate: 0.08, vatAmount: 36000 };
+  const withPurchase = [{ ...rows[2], purchase }, rows[0]];
+  const back = unpackStockMovements(JSON.parse(JSON.stringify(packStockMovements(withPurchase))));
+  assert.deepEqual(back[0].purchase, purchase);
+  assert.equal("purchase" in back[1], false);
+});

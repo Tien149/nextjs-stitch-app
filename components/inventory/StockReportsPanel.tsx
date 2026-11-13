@@ -9,6 +9,7 @@ import CopyableText from "@/components/CopyableText";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
+import { vatRateLabel } from "@/lib/inventory-vat";
 import {
   IN_CATEGORIES, IN_TYPES, OUT_CATEGORIES, OUT_TYPES,
   aggregateNxtByStore, foldSearchText, isEmptyNxtRow, movementDirection, sortNxtRows, summarizeMovements, toNxtRow,
@@ -341,6 +342,10 @@ export default function StockReportsPanel(props: Props) {
     return row.partnerCode ? `${row.partnerCode}${row.partnerName ? ` - ${row.partnerName}` : ""}` : "";
   };
   const dateText = (value: string) => new Date(value).toLocaleDateString("vi-VN");
+  const inboundGross = (row: MovementInput) => (row.purchase ? row.purchase.grossAmount : row.value);
+  const inboundAfterTax = (row: MovementInput) => (row.purchase
+    ? row.purchase.grossAmount - row.purchase.discountAmount + row.purchase.vatAmount
+    : row.value);
 
   const detailColumns: Column<MovementInput>[] = [
     { path: ["STT"], format: "int", value: (_, index) => index + 1 },
@@ -359,8 +364,21 @@ export default function StockReportsPanel(props: Props) {
           { path: ["SL xuất"], format: "qty" as const, value: (row: MovementInput) => row.outboundQuantity },
         ]
       : [{ path: ["Số lượng"], format: "qty" as const, value: (row: MovementInput) => row.inboundQuantity || row.outboundQuantity }]),
-    { path: ["Đơn giá"], format: "price", value: (row) => row.unitCost ?? ((row.inboundQuantity || row.outboundQuantity) ? row.value / (row.inboundQuantity || row.outboundQuantity) : 0) },
-    { path: ["Thành tiền"], format: "money", value: (row) => row.value, total: true },
+    ...(direction === "IN"
+      // Chi tiết nhập (khách 13/11/2026): tiền theo phiếu nhập — trước thuế, chiết khấu, thuế suất,
+      // tiền thuế, sau thuế. Phiếu nhập không phải mua hàng: không thuế / chiết khấu, trước = sau thuế.
+      ? [
+          { path: ["Đơn giá"], format: "price" as const, value: (row: MovementInput) => (row.inboundQuantity ? inboundGross(row) / row.inboundQuantity : 0) },
+          { path: ["Thành tiền trước thuế"], format: "money" as const, value: inboundGross, total: true },
+          { path: ["Tiền chiết khấu"], format: "money" as const, value: (row: MovementInput) => row.purchase?.discountAmount || 0, total: true },
+          { path: ["Thuế suất"], format: "text" as const, value: (row: MovementInput) => (row.purchase ? vatRateLabel(row.purchase.vatRate) : "") },
+          { path: ["Tiền thuế"], format: "money" as const, value: (row: MovementInput) => row.purchase?.vatAmount || 0, total: true },
+          { path: ["Thành tiền sau thuế"], format: "money" as const, value: inboundAfterTax, total: true },
+        ]
+      : [
+          { path: ["Đơn giá"], format: "price" as const, value: (row: MovementInput) => row.unitCost ?? ((row.inboundQuantity || row.outboundQuantity) ? row.value / (row.inboundQuantity || row.outboundQuantity) : 0) },
+          { path: ["Thành tiền"], format: "money" as const, value: (row: MovementInput) => row.value, total: true },
+        ]),
     { path: ["Tham chiếu / diễn giải"], format: "text", value: (row) => [row.referenceCode, row.note].filter(Boolean).join(" · "), wide: true },
   ];
 

@@ -28,6 +28,8 @@ export type MovementInput = {
   itemCode: string; itemName: string; unit: string; itemType?: string; goodsGroup?: string | null;
   inboundQuantity: number; outboundQuantity: number; unitCost?: number; value: number;
   referenceCode: string | null; partnerCode?: string | null; partnerName?: string | null; note?: string | null;
+  /** Dòng nhập mua: tiền theo phiếu nhập (lib/stock-movement-pack). */
+  purchase?: { grossAmount: number; discountAmount: number; vatRate: number | null; vatAmount: number } | null;
 };
 
 export type Direction = "IN" | "OUT";
