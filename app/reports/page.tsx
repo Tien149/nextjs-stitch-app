@@ -29,6 +29,8 @@ import { DocLink } from "@/components/DocLink";
 import { ShowMoreRows, useRowLimit } from "@/components/ShowMoreRows";
 import { matchesSearch } from "@/lib/search-text";
 import { revenueExplosionKind, revenueExplosionRun, revenueSkipReason } from "@/lib/revenue-explosion-status";
+import { CashSourceCheckPanel } from "@/components/reports/CashSourceCheckPanel";
+import type { CashSourceCheck } from "@/lib/cash-source-check";
 
 type Pnl = {
   revenue: number;
@@ -158,6 +160,8 @@ type CashSourceData = {
   internalTransfer: { total: number; count: number };
   sources: CashSourceFlow[];
   deposits: Array<{ code: string; name: string; opening: number; increase: number; used: number; closing: number }>;
+  /** Đối chiếu Sổ quỹ – Nguồn tiền theo từng nguồn; chỉ có khi xem theo tháng. */
+  cashbookCheck?: CashSourceCheck | null;
 };
 type RevenueSettlementRow = {
   date: string;
@@ -1295,6 +1299,7 @@ export default function ReportsPage() {
           </section>
 
           <CashSourceFlowTable cashSource={cashSource} />
+          {cashSource.cashbookCheck && <CashSourceCheckPanel check={cashSource.cashbookCheck} showBranch={cashSource.branchCode === "ALL"} />}
         </div>
       )}
 

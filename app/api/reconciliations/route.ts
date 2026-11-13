@@ -29,6 +29,7 @@ import { effectiveMoneyTransferDate } from "@/lib/money-transfer-date";
 import { computeWalletGrossByDay } from "@/lib/wallet-settlement-by-day";
 import { assertWalletCardFeeCategory, repostWalletSettlementJournal, walletFeeFields } from "@/lib/wallet-settlement-fee";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
+import { BankLineDeleteError, deleteBankLineWithSettlements } from "@/lib/bank-line-delete";
 import type { DemoSession } from "@/lib/auth-demo";
 
 function cleanText(value: unknown) {
@@ -1730,6 +1731,23 @@ export async function DELETE(request: Request) {
         assertBranchAccess(auth.session, bank.branchCode);
       } catch (error) {
         return NextResponse.json({ error: error instanceof Error ? error.message : "Không có quyền chi nhánh" }, { status: 403 });
+      }
+    }
+
+    // Dòng chỉ nối với phiếu quyết toán ví máy tự sinh (QTVI): xoá kèm phiếu trong một lượt —
+    // phiếu QTVI đã duyệt không có nút xoá ở đâu khác (dòng nạp trùng 13/11/2026).
+    if (bank.matches.length > 0 && bank.matches.every((match) => match.targetType === "WALLET_SETTLEMENT")) {
+      if (searchParams.get("withSettlement") !== "1") {
+        return NextResponse.json({
+          error: `Giao dịch ${bank.transactionCode} còn nối với phiếu quyết toán ví ${[...new Set(bank.matches.map((match) => match.targetCode))].join(", ")}. Xác nhận xoá kèm phiếu đó.`,
+        }, { status: 409 });
+      }
+      try {
+        const result = await deleteBankLineWithSettlements({ bankId: bank.id, session: auth.session, reason });
+        return NextResponse.json({ ok: true, ...result });
+      } catch (error) {
+        if (error instanceof BankLineDeleteError) return NextResponse.json({ error: error.message }, { status: error.status });
+        throw error;
       }
     }
 

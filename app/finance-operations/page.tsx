@@ -17,6 +17,8 @@ import { transferBranches } from "@/lib/internal-transfer";
 import { checkWalletFeeRate } from "@/lib/wallet-settlement-allocation";
 import { walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import type { ExpenseSummary } from "@/lib/expense-summary";
+import type { CashSourceCheck } from "@/lib/cash-source-check";
+import { CashSourceCheckPanel } from "@/components/reports/CashSourceCheckPanel";
 
 import Link from "next/link";
 import { ActionIcon } from "@/components/ActionIcon";
@@ -516,6 +518,63 @@ export default function FinanceOperationsPage() {
       setData({ ...payload, expenseSummary: payload.expenseSummary?.bySource ? payload.expenseSummary : emptyExpenseSummary });
     }
   }, [branchCode, period, cashbookStartDate, cashbookEndDate, cashbookSource]);
+
+  /**
+   * Tab Khóa sổ: đối chiếu Sổ quỹ – Nguồn tiền + nguồn âm cuối kỳ (khách 13/11/2026). Tải riêng
+   * khi mở tab vì báo cáo nguồn tiền mất vài giây — không làm chậm sổ quỹ.
+   */
+  const [cashCheckState, setCashCheckState] = useState<{ key: string; check: (CashSourceCheck & { warnings: string[] }) | null } | null>(null);
+  const [cashCheckRefreshing, setCashCheckRefreshing] = useState(false);
+  const cashCheckKey = `${period}|${branchCode}`;
+  const cashCheck = cashCheckState?.key === cashCheckKey ? cashCheckState.check : null;
+  const cashCheckLoading = cashCheckRefreshing || cashCheckState?.key !== cashCheckKey;
+  const cashCheckSeq = useRef(0);
+  const loadCashCheck = useCallback(async () => {
+    const seq = ++cashCheckSeq.current;
+    const key = `${period}|${branchCode}`;
+    const response = await fetch(`/api/finance-operations?${new URLSearchParams({ view: "cash-check", period, branchCode }).toString()}`);
+    if (seq !== cashCheckSeq.current) return;
+    const check = response.ok ? await response.json() : null;
+    if (seq === cashCheckSeq.current) setCashCheckState({ key, check });
+  }, [period, branchCode]);
+  useEffect(() => {
+    if (active === "closing") void loadCashCheck();
+  }, [active, loadCashCheck]);
+
+  /** Khóa kỳ: máy chủ trả 409 kèm cảnh báo nguồn tiền âm / lệch — hỏi lại rồi mới khóa. */
+  const closePeriod = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    setMessage("");
+    let warnings: string[] = [];
+    try {
+      const response = await fetch("/api/finance-operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "CLOSE_PERIOD", period, branchCode }),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string; cashWarnings?: string[] };
+      if (response.ok) {
+        setMessage("Đã khóa kỳ kế toán.");
+        await loadData();
+        return;
+      }
+      if (response.status !== 409 || !payload.cashWarnings?.length) {
+        setMessage(payload.error || "Không thực hiện được thao tác");
+        return;
+      }
+      warnings = payload.cashWarnings;
+    } catch {
+      setMessage("Lỗi kết nối máy chủ.");
+      return;
+    } finally {
+      setSubmitting(false);
+    }
+    const shown = warnings.slice(0, 15).map((line) => `• ${line}`).join("\n");
+    const more = warnings.length > 15 ? `\n… và ${warnings.length - 15} cảnh báo khác` : "";
+    if (!window.confirm(`Cảnh báo nguồn tiền kỳ ${period}:\n\n${shown}${more}\n\nXem bảng Đối chiếu Sổ quỹ – Nguồn tiền bên dưới để soát lại. Vẫn khóa kỳ?`)) return;
+    await send({ action: "CLOSE_PERIOD", period, branchCode, acknowledgeCashWarnings: true }, "Đã khóa kỳ kế toán (đã xác nhận cảnh báo nguồn tiền).");
+  };
 
   const loadMoneySources = useCallback(async () => {
     void fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE")
@@ -2680,7 +2739,7 @@ export default function FinanceOperationsPage() {
                 data.accountingPeriod.status !== "CLOSED" ? (
                   <button
                     disabled={data.checklist.some((item) => !item.passed) || submitting}
-                    onClick={() => void send({ action: "CLOSE_PERIOD", period, branchCode }, "Đã khóa kỳ kế toán.")}
+                    onClick={() => void closePeriod()}
                     className="w-full bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-700 hover:to-rose-800 disabled:from-slate-100 disabled:to-slate-100 disabled:text-slate-400 disabled:shadow-none disabled:border-slate-200 text-white rounded-xl py-3 text-sm font-bold shadow-md hover:shadow-lg transition-all active:scale-98 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                   >
                     <span className="material-symbols-outlined text-lg">lock</span>
@@ -2704,6 +2763,27 @@ export default function FinanceOperationsPage() {
                 </p>
               )}
             </aside>
+          </div>
+        )}
+
+        {/* Cảnh báo nguồn tiền âm / lệch trước khi khóa (khách 13/11/2026) — không chặn khóa. */}
+        {active === "closing" && (
+          <div className="mt-6 space-y-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <h3 className="font-bold text-slate-900">Kiểm tra nguồn tiền trước khi khóa sổ {period}</h3>
+              <button type="button" className="secondary-button !min-h-8 !py-1" disabled={cashCheckLoading} onClick={() => {
+                setCashCheckRefreshing(true);
+                void loadCashCheck().finally(() => setCashCheckRefreshing(false));
+              }}>
+                <span className="material-symbols-outlined text-[16px]">refresh</span>
+                {cashCheckLoading ? "Đang kiểm tra…" : "Kiểm tra lại"}
+              </button>
+              {cashCheck && cashCheck.warnings.length > 0 && (
+                <span className="text-xs font-bold text-amber-700">{cashCheck.warnings.length} cảnh báo — vẫn khóa được, hệ thống sẽ hỏi xác nhận.</span>
+              )}
+            </div>
+            {cashCheckLoading && !cashCheck && <p className="text-sm text-slate-500">Đang đối chiếu Sổ quỹ với báo cáo Nguồn tiền…</p>}
+            {cashCheck && <CashSourceCheckPanel check={cashCheck} showBranch={branchCode === "ALL"} />}
           </div>
         )}
       </main>

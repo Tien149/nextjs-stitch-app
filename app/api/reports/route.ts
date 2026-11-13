@@ -6,6 +6,7 @@ import { assertBranchAccess, ensureRevenueComponentCategories, postJournalEntry,
 import { prisma } from "@/lib/prisma";
 import { cashSourceAnchorPeriod, createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueDayImportRows, getRevenueExplosionCheck, getRevenueImportExport, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
 import { deleteRevenueImportRows } from "@/lib/import-commit";
+import { cashSourceCheck } from "@/lib/cash-source-check";
 import { getPayrollBudgetReport, getPnlHistoryEditor, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
 import { headcountToStored, isPnlHistoryChannelMetric, isPnlHistoryHeadcountMetric, isPnlHistoryPeriod, PNL_HISTORY_HEADCOUNT_PREFIX, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX } from "@/lib/pnl-history";
 import { getPnlNotes, savePnlNote, toPnlNoteKind } from "@/lib/pnl-note";
@@ -1289,7 +1290,11 @@ export async function GET(request: Request) {
       const months = view === "year"
         ? (anchor && anchor.startsWith(`${year}-`) ? yearMonths.filter((month) => month >= anchor) : yearMonths)
         : [period];
-      return NextResponse.json({ period, view, year, ...(await getCashSourceReport(months, branchCode)) });
+      const report = await getCashSourceReport(months, branchCode);
+      // Đối chiếu với Sổ quỹ theo từng nguồn (khách 13/11/2026) — chỉ khi xem một tháng, dùng lại
+      // bảng nguồn tiền vừa tính để khỏi chạy báo cáo lần hai.
+      const cashbookCheck = view === "month" ? await cashSourceCheck(period, branchCode, report.sources) : null;
+      return NextResponse.json({ period, view, year, ...report, cashbookCheck });
     }
     if (type === "revenue-settlement") return NextResponse.json(await getRevenueSettlementReport(period, branchCode));
     if (type === "revenue-ledger") {

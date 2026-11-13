@@ -14,6 +14,9 @@ import { cashDepositRoundingExpense, cashDepositUnit, roundCashDepositAmount } f
 import { roundVnd } from "@/lib/money-rounding";
 import { completePendingReconciliation, releasePendingReconciliation } from "@/lib/reconciliation-links";
 import { cashOpeningBalance } from "@/lib/cash-opening-balance";
+import { buildCashbookEntries } from "@/lib/cashbook-entries";
+import { cashCloseWarnings, cashSourceCheck } from "@/lib/cash-source-check";
+import { getCashSourceReport } from "@/lib/reports";
 import { parseImportDate } from "@/lib/import-parser";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import {
@@ -31,7 +34,6 @@ import {
   internalTransferDebtCodes,
   internalTransferDebtDescriptions,
   transferBranches,
-  transferLegsForBranch,
 } from "@/lib/internal-transfer";
 import { ensureInternalPartner } from "@/lib/internal-partner";
 import type { DemoSession } from "@/lib/auth-demo";
@@ -74,6 +76,13 @@ function normalizeCashDepositShift(value: unknown) {
 function normalizeCashDepositTarget(value: unknown) {
   const target = cleanText(value).toUpperCase();
   return target === "CO" ? "CO" : "PKT";
+}
+
+/** Đối chiếu Sổ quỹ – Nguồn tiền của kỳ + danh sách cảnh báo (nguồn âm cuối kỳ, nguồn lệch). */
+async function closeCashCheck(period: string, branchCode: string) {
+  const report = await getCashSourceReport([period], branchCode);
+  const check = await cashSourceCheck(period, branchCode, report.sources);
+  return { ...check, warnings: cashCloseWarnings(check.rows) };
 }
 
 async function closingChecklist(period: string, branchCode: string) {
@@ -120,6 +129,13 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const period = normalizePeriod(searchParams.get("period")) || new Date().toISOString().slice(0, 7);
     const branchCode = requestedBranch(auth.session, cleanText(searchParams.get("branchCode")) || "ALL");
+    // Tab Khóa sổ: kiểm tra nguồn tiền âm / lệch Sổ quỹ – Nguồn tiền trước khi khóa (khách
+    // 13/11/2026). Gọi riêng vì báo cáo nguồn tiền mất vài giây — không gắn vào lượt tải sổ quỹ.
+    if (searchParams.get("view") === "cash-check") {
+      // Thu ngân chỉ được thấy quỹ của mình — bảng này liệt kê mọi nguồn tiền.
+      if (isCashierRoleName(auth.session.role)) return NextResponse.json({ error: "Không có quyền xem đối chiếu nguồn tiền" }, { status: 403 });
+      return NextResponse.json(await closeCashCheck(period, branchCode));
+    }
     const { start, end } = periodBounds(period);
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
     // Bộ lọc chi tiết cho sổ quỹ. Kỳ kế toán vẫn là gốc (số dư đầu kỳ, khóa sổ, checklist)
@@ -185,21 +201,8 @@ export async function GET(request: Request) {
     ]);
 
     const openingAmount = opening.total;
-    const entries = [
-      ...vouchers.map((row) => ({ id: row.id, date: row.voucherDate, createdAt: row.createdAt, code: row.code, type: row.voucherType, branchCode: row.branchCode, moneySourceCode: row.moneySourceCode, description: row.description, receipt: row.voucherType === "RECEIPT" ? row.amount : 0, payment: row.voucherType === "PAYMENT" ? row.amount : 0 })),
-      // pnlItemCode đi kèm để hộp thoại Sửa phiếu điều chỉnh hiện đúng hạng mục P&L đang khai.
-      ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, createdAt: row.createdAt, code: row.code, type: "ADJUSTMENT", branchCode: row.branchCode, moneySourceCode: row.moneySourceCode, description: row.description, pnlItemCode: row.pnlItemCode, receipt: entryTypeToReceipt(row.entryType, row.amount), payment: entryTypeToPayment(row.entryType, row.amount) })),
-      // Quyết toán ví: tiền rời ví = số về ngân hàng + phí, nên số dư ví mới về đúng 0.
-      // Phiếu liên nhà hàng chỉ góp một vế cho mỗi cửa hàng: bên chuyển thấy tiền ra, bên
-      // nhận thấy tiền vào. Lấy cả hai vế sẽ cộng nhầm nguồn tiền của cửa hàng kia vào sổ.
-      ...moneyTransfers.filter((row) => row.status === "APPROVED").flatMap((row) => {
-        const legs = transferLegsForBranch(row, branchCode);
-        return [
-          ...(legs.out ? [{ id: `${row.id}-out`, date: effectiveMoneyTransferDate(row), createdAt: row.createdAt, code: row.code, type: "TRANSFER_OUT", branchCode: row.branchCode, moneySourceCode: row.fromMoneySourceCode, description: row.description, receipt: 0, payment: row.amount + row.feeAmount }] : []),
-          ...(legs.in ? [{ id: `${row.id}-in`, date: effectiveMoneyTransferDate(row), createdAt: row.createdAt, code: row.code, type: "TRANSFER_IN", branchCode: row.branchCode, moneySourceCode: row.toMoneySourceCode, description: row.description, receipt: row.amount, payment: 0 }] : []),
-        ];
-      }),
-    ]
+    // Luật dựng dòng sổ quỹ dùng chung với báo cáo đối chiếu Sổ quỹ – Nguồn tiền (lib/cashbook-entries.ts).
+    const entries = buildCashbookEntries({ vouchers, adjustments, transfers: moneyTransfers, branchCode })
       .filter((entry) => !limitSources || scopedSources.includes(entry.moneySourceCode))
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
         || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -271,14 +274,6 @@ async function resolveAdjustmentCategory(entryType: string, categoryCode: string
     }
   }
   return { categoryCode: categoryCode || null, pnlItemCode: pnlItemCode || null };
-}
-
-function entryTypeToReceipt(entryType: string, amount: number) {
-  return entryType === "RECEIPT" ? amount : 0;
-}
-
-function entryTypeToPayment(entryType: string, amount: number) {
-  return entryType === "PAYMENT" ? amount : 0;
 }
 
 /**
@@ -1540,12 +1535,18 @@ export async function POST(request: Request) {
       if (action === "CLOSE_PERIOD") {
         const checklist = await closingChecklist(period, branchCode);
         if (checklist.some((item) => !item.passed)) businessError("Chưa thể khóa kỳ vì checklist còn mục chưa hoàn tất");
+        // Nguồn tiền âm / lệch Sổ quỹ – Nguồn tiền chỉ CẢNH BÁO (khách 13/11/2026): trả 409 kèm
+        // danh sách, người khóa xác nhận đã xem thì gửi lại với acknowledgeCashWarnings.
+        const cashCheck = await closeCashCheck(period, branchCode);
+        if (cashCheck.warnings.length > 0 && body.acknowledgeCashWarnings !== true) {
+          return NextResponse.json({ error: "Nguồn tiền còn âm hoặc lệch giữa Sổ quỹ và Nguồn tiền", cashWarnings: cashCheck.warnings }, { status: 409 });
+        }
         const result = await prisma.accountingPeriod.upsert({
           where: { period_branchCode: { period, branchCode } },
           create: { period, branchCode, status: "CLOSED", closedBy: auth.session.name, closedAt: new Date() },
           update: { status: "CLOSED", closedBy: auth.session.name, closedAt: new Date(), reopenedBy: null, reopenedAt: null, reason: null },
         });
-        await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "CLOSE_PERIOD", entityType: "AccountingPeriod", entityId: result.id, entityCode: `${period}-${branchCode}`, branchCode, metadata: { checklist } });
+        await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "CLOSE_PERIOD", entityType: "AccountingPeriod", entityId: result.id, entityCode: `${period}-${branchCode}`, branchCode, metadata: { checklist, cashWarnings: cashCheck.warnings } });
         return NextResponse.json(result);
       }
       const reason = cleanText(body.reason);

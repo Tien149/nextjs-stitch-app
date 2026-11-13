@@ -327,6 +327,17 @@ export default function BankStatementLedgerPage() {
    * Chứng từ ngân hàng KHÔNG gỡ được dòng thừa — nó chỉ cắt liên kết đối soát, còn "Tiền đã vô"
    * của báo cáo Tiền về đủ chưa đọc thẳng sổ sao kê nên vẫn cộng dòng đó.
    */
+  /**
+   * Mã phiếu quyết toán ví (QTVI) nối với dòng khi MỌI chứng từ của dòng đều là quyết toán ví —
+   * khi đó nút xoá gỡ luôn phiếu (dòng nạp trùng sinh phiếu thừa, khách 13/11/2026). Dòng có phiếu
+   * thu/chi thì trả rỗng: vẫn phải xoá chứng từ ở Chứng từ ngân hàng trước.
+   */
+  const settlementCodesOf = (row: BankRow) => {
+    const matches = row.currentMatch ? [row.currentMatch, ...(row.otherMatches || [])] : [];
+    if (matches.length === 0 || matches.some((match) => match.targetType !== "WALLET_SETTLEMENT")) return [];
+    return [...new Set(matches.map((match) => match.targetCode))];
+  };
+
   const confirmDeleteRow = async (reason: string) => {
     if (!deletingRow) return;
     setDeleting(true);
@@ -334,6 +345,7 @@ export default function BankStatementLedgerPage() {
     try {
       const query = new URLSearchParams({ id: deletingRow.id });
       if (reason) query.set("reason", reason);
+      if (settlementCodesOf(deletingRow).length > 0) query.set("withSettlement", "1");
       const response = await fetch(`/api/reconciliations?${query.toString()}`, { method: "DELETE" });
       const payload = await response.json();
       if (!response.ok) {
@@ -590,8 +602,10 @@ export default function BankStatementLedgerPage() {
               <button
                 type="button"
                 onClick={() => { setDeleteError(null); setDeletingRow(row); }}
-                disabled={Boolean(row.currentMatch)}
-                title={row.currentMatch
+                disabled={Boolean(row.currentMatch) && settlementCodesOf(row).length === 0}
+                title={settlementCodesOf(row).length > 0
+                  ? `Xoá dòng sao kê kèm phiếu quyết toán ví ${settlementCodesOf(row).join(", ")} (dùng khi dòng bị nạp trùng)`
+                  : row.currentMatch
                   ? `Còn liên kết với ${row.currentMatch.targetCode}. Xoá chứng từ đó trước rồi mới xoá được dòng sao kê.`
                   : "Xoá dòng sao kê khỏi sổ (chuyển vào Thùng rác)"}
                 className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-500"
@@ -784,7 +798,7 @@ export default function BankStatementLedgerPage() {
       open={Boolean(deletingRow)}
       title={`Xoá dòng sao kê ${deletingRow?.transactionCode || ""}?`}
       description={deletingRow
-        ? `${dateText(deletingRow.transactionDate)} · ${storeLabel(deletingRow.branchCode)} · ${deletingRow.creditAmount ? "Ghi có" : "Ghi nợ"} ${money(deletingRow.creditAmount || deletingRow.debitAmount)} đ. Số tiền này sẽ không còn tính vào cột "Tiền đã vô" của báo cáo Tiền về đủ chưa.`
+        ? `${dateText(deletingRow.transactionDate)} · ${storeLabel(deletingRow.branchCode)} · ${deletingRow.creditAmount ? "Ghi có" : "Ghi nợ"} ${money(deletingRow.creditAmount || deletingRow.debitAmount)} đ. Số tiền này sẽ không còn tính vào cột "Tiền đã vô" của báo cáo Tiền về đủ chưa.${settlementCodesOf(deletingRow).length > 0 ? ` Phiếu quyết toán ví ${settlementCodesOf(deletingRow).join(", ")} và bút toán của phiếu cũng bị xoá theo — chỉ dùng khi dòng này bị nạp trùng. Phiếu quyết toán còn lại của cùng ví, cùng ngày nên bấm Chạy lại quyết toán ở Sổ quỹ để tính lại phí.` : ""}`
         : undefined}
       submitting={deleting}
       error={deleteError}
