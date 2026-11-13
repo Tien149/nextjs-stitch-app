@@ -555,7 +555,18 @@ export default function SettingsPage() {
   // rộng quá khung khiến phải kéo ngang.
   const showBranchColumn = items.some((item) => Boolean(item.branch));
   const showDetailColumn = items.some(hasDetailContent);
-  const tableColumnCount = 3 + (showBranchColumn ? 1 : 0) + (showDetailColumn ? 1 : 0) + (canManageSettings ? 1 : 0);
+  // Đối tác: Mã và Tên tách hai cột, Phân loại đứng đầu, dòng xếp theo Phân loại rồi Mã (khách 13/11/2026).
+  const isPartnerTable = activeType === "PARTNER";
+  const tableItems = useMemo(() => {
+    if (!isPartnerTable) return items;
+    const order = groupOptions.PARTNER.map((option) => option.value);
+    const rank = (item: MasterDataItem) => {
+      const index = order.indexOf(normalizeGroupValue("PARTNER", item.partnerType || item.group || ""));
+      return index < 0 ? order.length : index;
+    };
+    return [...items].sort((a, b) => rank(a) - rank(b) || a.code.localeCompare(b.code, "vi", { numeric: true }));
+  }, [items, isPartnerTable]);
+  const tableColumnCount = 3 + (isPartnerTable ? 1 : 0) + (showBranchColumn ? 1 : 0) + (showDetailColumn ? 1 : 0) + (canManageSettings ? 1 : 0);
 
   const resetForm = (type = activeType) => {
     setCreatingSummaryName(false);
@@ -856,7 +867,7 @@ export default function SettingsPage() {
       return;
     }
     await exportRowsToExcel(
-      items.map((item) => ({
+      tableItems.map((item) => ({
         "Mã danh mục": item.code,
         "Tên hiển thị": item.name,
         "Phân loại/Nhóm": item.type === "PARTNER"
@@ -1199,8 +1210,18 @@ export default function SettingsPage() {
                 <table className="w-full text-left text-sm">
                   <thead className="sticky top-0 z-10 bg-slate-50 text-xs font-bold uppercase tracking-wide text-slate-500 shadow-[inset_0_-1px_0_#e2e8f0] [&_th]:whitespace-nowrap">
                     <tr>
-                      <th className="px-4 py-3">Mã / Tên</th>
-                      <th className="px-4 py-3">Phân loại</th>
+                      {isPartnerTable ? (
+                        <>
+                          <th className="px-4 py-3">Phân loại</th>
+                          <th className="px-4 py-3">Mã đối tác</th>
+                          <th className="px-4 py-3">Tên đối tác</th>
+                        </>
+                      ) : (
+                        <>
+                          <th className="px-4 py-3">Mã / Tên</th>
+                          <th className="px-4 py-3">Phân loại</th>
+                        </>
+                      )}
                       {showBranchColumn && <th className="px-4 py-3">Cửa hàng</th>}
                       {showDetailColumn && <th className="px-4 py-3">Chi tiết / Ghi chú</th>}
                       <th className="px-4 py-3">Trạng thái</th>
@@ -1221,12 +1242,21 @@ export default function SettingsPage() {
                         </td>
                       </tr>
                     ) : (
-                      items.map((item) => (
-                        <tr key={item.id} className="align-middle transition hover:bg-slate-50 [&>td]:py-3.5">
+                      tableItems.map((item) => {
+                        const codeNameCells = isPartnerTable ? (
+                          <>
+                            <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-900"><CopyableText value={item.code} /></td>
+                            <td className="px-4 py-3 text-slate-800">{item.name}</td>
+                          </>
+                        ) : (
                           <td className="px-4 py-3">
                             <p className="break-words font-bold text-slate-900"><CopyableText value={item.code} /></p>
                             <p className="mt-0.5 text-xs text-slate-500">{item.name}</p>
                           </td>
+                        );
+                        return (
+                        <tr key={item.id} className="align-middle transition hover:bg-slate-50 [&>td]:py-3.5">
+                          {!isPartnerTable && codeNameCells}
                           <td className="px-4 py-3">
                             {/* Thu/Chi cho ra viên màu đọc phát biết, thay vì chip xám "1 - Thu" —
                                 số thứ tự chỉ có nghĩa trong ô chọn của form. Nhóm doanh thu là một
@@ -1286,6 +1316,7 @@ export default function SettingsPage() {
                               <p className="text-[10px] text-slate-500 mt-0.5 font-bold uppercase">{item.partnerGroup || "EXTERNAL"}</p>
                             )}
                           </td>
+                          {isPartnerTable && codeNameCells}
                           {showBranchColumn && (
                             <td className="whitespace-nowrap px-4 py-3 font-medium">{storeLabel(item.branch)}</td>
                           )}
@@ -1360,7 +1391,8 @@ export default function SettingsPage() {
                             </td>
                           )}
                         </tr>
-                      ))
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
