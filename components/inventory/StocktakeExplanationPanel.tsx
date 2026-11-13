@@ -31,7 +31,7 @@ type Source = {
   varianceRows: number;
   explanation: { id: string; status: string; needsRefresh: boolean } | null;
 };
-type Orphan = { id: string; sourceCode: string; warehouseCode: string; status: string; periodTo: string };
+type Orphan = { id: string; sourceCode: string; warehouseCode: string; status: string; periodTo: string; replacedBy: string | null };
 type Line = {
   itemId: string; itemCode: string; itemName: string; goodsGroup: string | null; unit: string;
   opening: number; inPurchase: number; inTransfer: number; inOther: number; inProduction: number; inTotal: number;
@@ -199,6 +199,26 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
     return Boolean(payload);
   };
 
+  /** Xoá bản giải trình cũ đã có đợt duyệt lại thay thế (khách 13/11/2026) — ghi chú đã mang sang bản mới. */
+  const deleteOrphan = async (orphan: Orphan) => {
+    if (!window.confirm(`Xoá bản giải trình cũ của đợt ${orphan.sourceCode} (${orphan.warehouseCode})?\n\nĐợt này đã mở lại và được thay bằng ${orphan.replacedBy}; ghi chú giải trình đã mang sang bản mới. Bản cũ chưa chốt nên xoá không ảnh hưởng tồn kho hay giá vốn.`)) return;
+    setBusy(true);
+    try {
+      const response = await fetch("/api/inventory", { method: "POST", headers: { "Content-Type": "application/json", ...headers() }, body: JSON.stringify({ action: "DELETE_STOCKTAKE_EXPLANATION", id: orphan.id }) });
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) {
+        window.alert(payload.error || "Không xoá được bản giải trình");
+        return;
+      }
+      if (detail?.explanation.id === orphan.id) setDetail(null);
+      await loadSources();
+    } catch {
+      window.alert("Mất kết nối tới máy chủ. Vui lòng thử lại.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runAction = async (action: string, success: string, extra: object = {}) => {
     if (!explanation) return;
     setRunning(action);
@@ -360,13 +380,18 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
               ))}
               {orphans.map((orphan) => (
                 <tr key={orphan.id} className="border-t border-slate-100 bg-amber-50/50">
-                  <td className="cell whitespace-nowrap"><b>{orphan.sourceCode}</b><small className="block text-amber-700">Đợt đã mở lại — chờ gắn sang đợt duyệt lại</small></td>
+                  <td className="cell whitespace-nowrap"><b>{orphan.sourceCode}</b><small className="block text-amber-700">{orphan.replacedBy ? <>Đợt đã mở lại — đã thay bằng <b>{orphan.replacedBy}</b></> : "Đợt đã mở lại — chờ gắn sang đợt duyệt lại"}</small></td>
                   <td className="cell" />
                   <td className="cell whitespace-nowrap">{orphan.warehouseCode}</td>
                   <td className="cell whitespace-nowrap">{dateTime(orphan.periodTo)}</td>
                   <td className="cell" /><td className="cell" />
-                  <td className="cell">{orphan.status === "LOCKED" ? <span className="status bg-emerald-100 text-emerald-800">Đã chốt</span> : <span className="status bg-amber-100 text-amber-800">Chờ gắn đợt mới</span>}</td>
-                  <td className="cell text-right"><button type="button" className="secondary-button !min-h-8 !py-1" onClick={() => void openExplanation(orphan.id)}>Mở</button></td>
+                  <td className="cell">{orphan.status === "LOCKED" ? <span className="status bg-emerald-100 text-emerald-800">Đã chốt</span> : orphan.replacedBy ? <span className="status bg-slate-100 text-slate-600">Bản cũ — đã thay</span> : <span className="status bg-amber-100 text-amber-800">Chờ gắn đợt mới</span>}</td>
+                  <td className="cell text-right whitespace-nowrap">
+                    <button type="button" className="secondary-button !min-h-8 !py-1" onClick={() => void openExplanation(orphan.id)}>Mở</button>
+                    {canApprove && orphan.replacedBy && orphan.status !== "LOCKED" && (
+                      <button type="button" className="ml-2 secondary-button !min-h-8 !py-1 !text-rose-700" disabled={busy} onClick={() => void deleteOrphan(orphan)} title={`Xoá bản giải trình cũ — đã thay bằng ${orphan.replacedBy}`}>Xoá bản cũ</button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -456,7 +481,9 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
           {sourceReopened && (
             <div className="mx-5 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
               <span>Đợt <b>{explanation.sourceCode}</b> đã bị mở lại để sửa số đếm. Duyệt lại xong thì gắn giải trình sang đợt mới:</span>
-              {detail.relinkCandidates.length === 0 ? (
+              {orphans.find((orphan) => orphan.id === explanation.id)?.replacedBy ? (
+                <span className="font-bold">đã có đợt duyệt lại {orphans.find((orphan) => orphan.id === explanation.id)?.replacedBy} với giải trình riêng (ghi chú đã mang sang) — bản này là bản cũ, xoá được ở danh sách phía trên.</span>
+              ) : detail.relinkCandidates.length === 0 ? (
                 <span className="font-bold">chưa có đợt duyệt lại nào của kho này.</span>
               ) : canApprove && !locked ? (
                 <>

@@ -458,3 +458,36 @@ export async function snapshotExplanation(db: TxClient, sourceType: StocktakeSou
     lines: buildExplanationLines(allLines, movements, previousNotes),
   };
 }
+
+type ExplanationHead = { id: string; sourceType: string; sourceId: string; sourceCode: string; warehouseCode: string; status: string; periodFrom: Date | null; periodTo: Date; createdAt: Date };
+
+/**
+ * Bản giải trình MỒ CÔI: đợt nguồn đã mở lại (không còn duyệt). Khách 13/11/2026: mở lại → duyệt lại
+ * sinh đợt mới (KKT-0017/0018) có giải trình riêng (đã mang ghi chú sang), nhưng bản cũ cứ nằm
+ * "Chờ gắn đợt mới" mãi — và bảng còn xếp nhầm đợt VẪN DUYỆT nhưng ngoài khoảng lọc (KK-2026-0004
+ * tháng 9 hiện ở bộ lọc tháng 10) vào nhóm này.
+ *
+ * `replacedBy` = bản giải trình lập SAU của cùng kho, cùng kỳ (periodFrom — đúng luật mang ghi chú
+ * sang ở inheritedExplanationNotes) mà đợt nguồn còn duyệt: bản cũ đã được thay, xoá được.
+ */
+export async function orphanExplanations<T extends ExplanationHead>(db: TxClient, explanations: T[]) {
+  const ids = (type: string) => explanations.filter((row) => row.sourceType === type).map((row) => row.sourceId);
+  const [batches, sessions] = await Promise.all([
+    db.stocktakeBatch.findMany({ where: { id: { in: ids("BATCH") } }, select: { id: true, status: true } }),
+    db.stocktakeSession.findMany({ where: { id: { in: ids("SESSION") } }, select: { id: true, status: true } }),
+  ]);
+  const approved = new Set([
+    ...batches.filter((row) => row.status === "APPROVED").map((row) => `BATCH|${row.id}`),
+    ...sessions.filter((row) => row.status === STOCKTAKE_APPROVED).map((row) => `SESSION|${row.id}`),
+  ]);
+  const isApproved = (row: ExplanationHead) => approved.has(`${row.sourceType}|${row.sourceId}`);
+  const samePeriod = (a: ExplanationHead, b: ExplanationHead) => a.warehouseCode === b.warehouseCode && (a.periodFrom?.getTime() ?? null) === (b.periodFrom?.getTime() ?? null);
+  return explanations
+    .filter((row) => !isApproved(row))
+    .map((row) => {
+      const replacement = explanations
+        .filter((other) => other.id !== row.id && isApproved(other) && samePeriod(other, row) && other.createdAt > row.createdAt)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+      return { ...row, replacedBy: replacement ? replacement.sourceCode : null };
+    });
+}

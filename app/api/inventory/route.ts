@@ -23,7 +23,7 @@ import { loadMissingRecipeReport } from "@/lib/missing-recipes";
 import { buildMonthlyCostSummary } from "@/lib/recipe-cost-summary";
 import { netMovementsAfter } from "@/lib/stocktake-batch";
 import { buildStockSummary, type MovementTotalRow, type OpeningInventoryTotal } from "@/lib/stock-summary";
-import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, inheritedExplanationNotes, listStocktakeSources, loadStocktakeSource, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
+import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, inheritedExplanationNotes, listStocktakeSources, loadStocktakeSource, orphanExplanations, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
 import { postStocktakeAdjustments, resyncOpenStocktakes, resyncStocktake, resyncStocktakeBatch, unpostStocktakeAdjustments } from "@/lib/stocktake-resync";
 import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, dispatchTransferRequest, TRANSFER_APPROVED, TRANSFER_DISPATCH_REFERENCE, TRANSFER_PENDING, TRANSFER_RETURNED, undoTransferDispatch } from "@/lib/inventory-transfer-request";
@@ -858,7 +858,7 @@ export async function GET(request: Request) {
       });
       const explanations = await prisma.stocktakeExplanation.findMany({
         where: { OR: [{ sourceId: { in: sources.map((source) => source.sourceId) } }, { warehouseCode: { in: [...new Set(sources.map((source) => source.warehouseCode))] } }] },
-        select: { id: true, sourceType: true, sourceId: true, sourceCode: true, warehouseCode: true, status: true, sourceApprovedAt: true, periodTo: true, updatedAt: true },
+        select: { id: true, sourceType: true, sourceId: true, sourceCode: true, warehouseCode: true, status: true, sourceApprovedAt: true, periodFrom: true, periodTo: true, createdAt: true, updatedAt: true },
       });
       const bySource = new Map(explanations.map((row) => [`${row.sourceType}|${row.sourceId}`, row]));
       const sourceKeys = new Set(sources.map((source) => `${source.sourceType}|${source.sourceId}`));
@@ -874,8 +874,12 @@ export async function GET(request: Request) {
             } : null,
           };
         }),
-        // Giải trình của đợt đã mở lại (nguồn không còn duyệt): chờ gắn sang đợt duyệt lại.
-        orphans: explanations.filter((row) => !sourceKeys.has(`${row.sourceType}|${row.sourceId}`)),
+        // Giải trình của đợt đã mở lại (nguồn không còn duyệt): chờ gắn sang đợt duyệt lại, hoặc đã có
+        // đợt duyệt lại thay thế (replacedBy) thì xoá được. Đợt còn duyệt mà nằm ngoài khoảng lọc
+        // không phải mồ côi (KK-2026-0004 tháng 9 từng hiện ở bộ lọc tháng 10).
+        orphans: (await orphanExplanations(prisma as unknown as TxClient, explanations))
+          .filter((row) => !sourceKeys.has(`${row.sourceType}|${row.sourceId}`))
+          .filter((row) => (!from || row.periodTo >= from) && (!to || row.periodTo < to)),
       });
     }
 
@@ -1503,7 +1507,7 @@ export async function POST(request: Request) {
     const auth = requireMenuAction(
       request,
       menuHref,
-      ["APPROVE_STOCKTAKE", "RETURN_STOCKTAKE", "REOPEN_STOCKTAKE", "LOCK_STOCKTAKE_EXPLANATION", "UNLOCK_STOCKTAKE_EXPLANATION", "REFRESH_STOCKTAKE_EXPLANATION"].includes(action) ? "approve" : ["REVERT_PRODUCTION", "BULK_SET_WASTE_SUBTYPE"].includes(action) ? "edit" : "create",
+      ["APPROVE_STOCKTAKE", "RETURN_STOCKTAKE", "REOPEN_STOCKTAKE", "LOCK_STOCKTAKE_EXPLANATION", "UNLOCK_STOCKTAKE_EXPLANATION", "REFRESH_STOCKTAKE_EXPLANATION", "DELETE_STOCKTAKE_EXPLANATION"].includes(action) ? "approve" : ["REVERT_PRODUCTION", "BULK_SET_WASTE_SUBTYPE"].includes(action) ? "edit" : "create",
     );
     if (!auth.ok) return auth.response;
 
@@ -1888,6 +1892,30 @@ export async function POST(request: Request) {
      * của đợt; ghi giải trình khi còn nháp; kế toán Chốt thì khoá; Cập nhật số liệu chỉ khi đợt đã
      * duyệt lại (hoặc gắn sang đợt duyệt lại sau khi mở lại), giữ giải trình theo mã hàng.
      */
+    /**
+     * Xoá bản giải trình CŨ của đợt đã mở lại mà đã có đợt duyệt lại thay thế (khách 13/11/2026) —
+     * ghi chú đã mang sang bản mới lúc lập. Bản nháp chưa chốt nên không có phiếu chênh lệch nào
+     * để gỡ. Xoá hẳn (không xoá mềm): khoá (sourceType, sourceId) để lại bản xoá mềm thì phiếu kiểm
+     * cả kho duyệt lại cùng mã sẽ không lập lại được giải trình.
+     */
+    if (action === "DELETE_STOCKTAKE_EXPLANATION") {
+      const record = await prisma.stocktakeExplanation.findFirst({ where: { id: cleanText(body.id) } });
+      if (!record) businessError("Không tìm thấy bản giải trình kiểm kê");
+      assertBranchAccess(auth.session, record!.branchCode);
+      assertWarehouseAccess(auth.session, record!.warehouseCode);
+      if (record!.status === EXPLANATION_LOCKED) businessError(`Giải trình ${record!.sourceCode} đã chốt — không xoá được.`);
+      const siblings = await prisma.stocktakeExplanation.findMany({ where: { warehouseCode: record!.warehouseCode } });
+      const orphan = (await orphanExplanations(prisma as unknown as TxClient, siblings)).find((row) => row.id === record!.id);
+      if (!orphan) businessError(`Đợt ${record!.sourceCode} vẫn đang duyệt — giải trình của đợt còn hiệu lực không xoá được.`);
+      if (!orphan!.replacedBy) businessError(`Đợt ${record!.sourceCode} chưa có đợt duyệt lại nào thay thế — duyệt lại rồi gắn giải trình sang đợt mới thay vì xoá.`);
+      await prismaRaw.stocktakeExplanation.delete({ where: { id: record!.id } });
+      await writeAuditLog({
+        session: auth.session, module: menuHref, action, entityType: "StocktakeExplanation", entityId: record!.id, entityCode: record!.sourceCode, branchCode: record!.branchCode,
+        metadata: { warehouseCode: record!.warehouseCode, replacedBy: orphan!.replacedBy, lineCount: Array.isArray(record!.lines) ? record!.lines.length : 0 },
+      });
+      return NextResponse.json({ ok: true, sourceCode: record!.sourceCode, replacedBy: orphan!.replacedBy });
+    }
+
     if (["CREATE_STOCKTAKE_EXPLANATION", "SAVE_STOCKTAKE_EXPLANATION", "LOCK_STOCKTAKE_EXPLANATION", "UNLOCK_STOCKTAKE_EXPLANATION", "REFRESH_STOCKTAKE_EXPLANATION"].includes(action)) {
       const assertScope = (record: { branchCode: string; warehouseCode: string }) => {
         assertBranchAccess(auth.session, record.branchCode);
