@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { MoneyInput } from "@/components/MoneyInput";
+import { PriceInput } from "@/components/PriceInput";
 import { QuantityInput } from "@/components/QuantityInput";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
@@ -10,8 +11,15 @@ import { purchaseLineFigures, resolveDiscount, type PurchaseLineFigures } from "
 
 /** Ô nhập của một dòng nhận hàng — chuỗi thô như người dùng gõ. */
 export type ReceiveLineValue = { quantity: string; price: string; discountRate: string; discountAmount: string; vatRate: string };
-/** `isExtra`: dòng THÊM lúc nhận (NCC giao thêm chung phiếu, khách 26/10/2026) — không có "còn phải nhận". */
-export type ReceiveLineInfo = { id: string; name: string; unit: string; remaining: number; hint: string; badge?: ReactNode; extra?: ReactNode; isExtra?: boolean };
+/**
+ * `isExtra`: dòng THÊM lúc nhận (NCC giao thêm chung phiếu, khách 26/10/2026) — không có "còn phải nhận".
+ * `unitControl`: ô chọn ĐVT, đứng ngay cạnh tên hàng; `onRemove`: nút bỏ dòng ở cuối dòng.
+ */
+export type ReceiveLineInfo = {
+  id: string; name: string; unit: string; remaining: number; hint: string;
+  badge?: ReactNode; extra?: ReactNode; isExtra?: boolean;
+  unitControl?: ReactNode; onRemove?: () => void;
+};
 
 export const emptyReceiveTerms = { discountRate: "", discountAmount: "", vatRate: "KKKNT" };
 
@@ -66,14 +74,14 @@ export function PurchaseReceiveLines({ lines, values, onChange, purchaseCost, ca
   const quantityInput = (line: ReceiveLineInfo) => (
     <QuantityInput className="control !mt-0 w-full text-right" value={valueOf(line.id).quantity} onChange={(quantity) => onChange(line.id, { quantity })} ariaLabel={`Số lượng nhận ${line.name}`} />
   );
+  // Đơn giá hiện phân cách hàng nghìn "16.000" (khách 13/11/2026), số lẻ gõ bằng dấu phẩy.
   const priceInput = (line: ReceiveLineInfo) => (
-    <input
-      type="number" min="0" step="any" inputMode="decimal"
+    <PriceInput
       className={`control !mt-0 w-full text-right ${!(Number(valueOf(line.id).price) > 0) ? "border-amber-400 bg-amber-50" : ""}`}
       placeholder="Giá thực"
       value={valueOf(line.id).price}
-      onChange={(e) => onChange(line.id, { price: e.target.value })}
-      aria-label={`Đơn giá nhận ${line.name}`}
+      onChange={(price) => onChange(line.id, { price })}
+      ariaLabel={`Đơn giá nhận ${line.name}`}
     />
   );
   // Gõ % thì xoá số tiền và ngược lại — dòng chỉ theo một cách khai.
@@ -100,14 +108,25 @@ export function PurchaseReceiveLines({ lines, values, onChange, purchaseCost, ca
     </select>
   );
 
+  const removeButton = (line: ReceiveLineInfo) => line.onRemove ? (
+    <button type="button" onClick={line.onRemove} title="Bỏ dòng" aria-label={`Bỏ dòng ${line.name}`}
+      className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-rose-600 hover:bg-rose-50">
+      <span className="material-symbols-outlined text-[18px]">close</span>
+    </button>
+  ) : null;
+
   const cards = (
-    <div className={`space-y-3 ${cardsOnly ? "" : "lg:hidden"}`}>
+    <div className={`space-y-3 ${cardsOnly ? "@2xl:hidden" : "lg:hidden"}`}>
       {lines.map((line, index) => {
         const figures = rows[index];
         return (
           <div key={line.id} className="space-y-2 rounded-xl border border-slate-200 p-3">
             <div className="min-w-0">
-              <p className="font-bold text-sm leading-snug">{line.name} {line.badge}</p>
+              <div className="flex items-start gap-2">
+                <p className="min-w-0 flex-1 font-bold text-sm leading-snug">{line.name} {line.badge}</p>
+                {line.unitControl}
+                {removeButton(line)}
+              </div>
               <p className="text-xs text-slate-500">{line.isExtra ? line.hint : <>Còn phải nhận: <b>{qty(line.remaining)} {line.unit}</b> · {line.hint}</>}</p>
             </div>
             <div className="grid grid-cols-2 gap-2 text-[11px] font-bold text-slate-500">
@@ -136,7 +155,62 @@ export function PurchaseReceiveLines({ lines, values, onChange, purchaseCost, ca
       <SearchableSelect value="" onChange={(itemId) => { if (itemId) onAdd(itemId); }} options={addOptions} placeholder="+ Thêm mặt hàng NCC giao thêm..." />
     </div>
   ) : null;
-  if (cardsOnly) return <>{cards}{addPicker}</>;
+  /**
+   * Form Nhập kho (khách 13/11/2026): khung đủ rộng thì mỗi mặt hàng MỘT dòng, ĐVT ngay cạnh tên;
+   * khung hẹp (điện thoại) vẫn là thẻ. Đo theo bề rộng khung (@container) chứ không theo màn hình,
+   * vì form nằm ở nửa phải hộp thoại.
+   */
+  const lineGrid = "grid grid-cols-[minmax(0,1fr)_4.5rem_6.5rem_3.5rem_6rem_5rem_7rem_1.75rem] items-start gap-1.5";
+  const compactRows = (
+    <div className="hidden @2xl:block rounded-xl border border-slate-200">
+      <div className={`${lineGrid} border-b border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] font-bold uppercase text-slate-500 [&>span:not(:first-child)]:text-right`}>
+        <span>Mặt hàng</span><span>SL</span><span>Đơn giá</span><span>CK %</span><span>Tiền CK</span><span>Thuế</span><span>Thành tiền</span><span />
+      </div>
+      {lines.map((line, index) => {
+        const figures = rows[index];
+        return (
+          <div key={line.id} className={`${lineGrid} border-b border-slate-100 px-2 py-2 last:border-b-0`}>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <p className="text-sm font-bold leading-snug text-slate-800">{line.name} {line.badge}</p>
+                {line.unitControl || <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-bold text-slate-600">{line.unit}</span>}
+              </div>
+              <p className="text-[11px] text-slate-500">{line.isExtra ? line.hint : <>Còn {qty(line.remaining)} {line.unit}{line.hint ? ` · ${line.hint}` : ""}</>}</p>
+              {line.extra}
+            </div>
+            {quantityInput(line)}
+            {priceInput(line)}
+            {discountRateInput(line)}
+            {discountAmountInput(line, figures)}
+            {vatInput(line)}
+            <p className="pt-2 text-right text-sm font-bold tabular-nums text-slate-800"
+              title={`Trước thuế ${money(figures.gross)} · Thuế ${money(figures.vatAmount)} · CP mua phân bổ ${money(figures.costShare)} · Trị giá mua hàng ${money(figures.purchaseValue)}`}>
+              {money(figures.afterTax)}
+            </p>
+            {removeButton(line) || <span />}
+          </div>
+        );
+      })}
+    </div>
+  );
+  // Dòng tổng cả phiếu — chữ to, nổi màu để đối chiếu nhanh với chứng từ giấy.
+  const totalQuantity = lines.reduce((sum, line) => sum + (Number(valueOf(line.id).quantity) || 0), 0);
+  const totalUnits = [...new Set(lines.map((line) => line.unit))];
+  const totals = lines.length > 0 ? (
+    <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-blue-900">
+      <p className="text-sm font-semibold">
+        Tổng số lượng: <b className="text-lg tabular-nums">{qty(totalQuantity)}</b>
+        {totalUnits.length === 1 ? ` ${totalUnits[0]}` : ""} <span className="text-xs font-normal">({lines.length} dòng)</span>
+      </p>
+      <p className="text-sm font-semibold">
+        Tổng tiền (sau thuế): <b className="text-xl tabular-nums">{money(total.afterTax)} đ</b>
+      </p>
+      {total.costShare > 0 && (
+        <p className="w-full text-right text-xs">Trị giá mua hàng (gồm chi phí mua {money(total.costShare)} đ): <b className="tabular-nums">{money(total.purchaseValue)} đ</b></p>
+      )}
+    </div>
+  ) : null;
+  if (cardsOnly) return <div className="@container space-y-3">{cards}{compactRows}{totals}{addPicker}</div>;
 
   const head = ["Mặt hàng", "SL nhận", "Đơn giá", "Thành tiền trước thuế", "CK %", "Tiền CK", "Thuế suất", "Tiền thuế", "Thành tiền sau thuế", "CP mua phân bổ", "Trị giá mua hàng"];
   return (
@@ -171,21 +245,25 @@ export function PurchaseReceiveLines({ lines, values, onChange, purchaseCost, ca
               );
             })}
           </tbody>
-          <tfoot className="border-t-2 border-slate-200 bg-slate-50 font-bold">
+          {/* Dòng Cộng chữ to + màu, để đối chiếu nhanh với chứng từ giấy (khách 13/11/2026). */}
+          <tfoot className="border-t-2 border-blue-200 bg-blue-50 text-sm font-bold text-blue-900">
             <tr>
-              <td className="px-2 py-2" colSpan={3}>Cộng</td>
+              <td className="px-2 py-2.5 text-base">Cộng <span className="text-xs font-semibold">({lines.length} dòng)</span></td>
+              <td className="px-2 py-2.5 text-right tabular-nums text-base">{qty(totalQuantity)}{totalUnits.length === 1 ? ` ${totalUnits[0]}` : ""}</td>
+              <td />
               <td className="px-2 py-2 text-right tabular-nums">{money(total.gross)}</td>
               <td />
               <td className="px-2 py-2 text-right tabular-nums">{money(total.discountAmount)}</td>
               <td />
               <td className="px-2 py-2 text-right tabular-nums">{money(total.vatAmount)}</td>
-              <td className="px-2 py-2 text-right tabular-nums">{money(total.afterTax)}</td>
+              <td className="px-2 py-2.5 text-right tabular-nums text-base">{money(total.afterTax)}</td>
               <td className="px-2 py-2 text-right tabular-nums">{money(total.costShare)}</td>
-              <td className="px-2 py-2 text-right tabular-nums">{money(total.purchaseValue)}</td>
+              <td className="px-2 py-2.5 text-right tabular-nums text-base">{money(total.purchaseValue)}</td>
             </tr>
           </tfoot>
         </table>
       </div>
+      {totals && <div className="lg:hidden">{totals}</div>}
       {addPicker}
     </>
   );

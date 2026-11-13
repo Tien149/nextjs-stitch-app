@@ -1084,7 +1084,8 @@ export default function ProcurementPage() {
     if (Object.keys(terms).length > 0) setReceiveTerms((current) => ({ ...current, [lineId]: { ...(current[lineId] || emptyReceiveTerms), ...terms } }));
   };
 
-  const submitReceive = async () => {
+  /** `print`: nhận xong mở luôn phiếu nhập kho để in (khách 13/11/2026). */
+  const submitReceive = async (print = false) => {
     if (!receivingOrder) return;
     // Gửi ĐỦ mọi dòng kèm lineId, kể cả dòng để 0: bỏ dòng 0 ra khỏi danh sách thì máy chủ hiểu
     // là "không khai" và nhận trọn phần còn lại của dòng đó — hàng chưa về mà vẫn vào kho.
@@ -1122,6 +1123,8 @@ export default function ProcurementPage() {
       setReceiveError(lineErrors.join(" · "));
       return;
     }
+    // Mở cửa sổ in NGAY trong cú bấm: mở sau khi chờ máy chủ thì trình duyệt chặn popup.
+    const printWindow = print ? window.open("about:blank", "_blank") : null;
     setReceiving(true);
     setMessage("");
     try {
@@ -1132,8 +1135,14 @@ export default function ProcurementPage() {
       });
       const payload = await response.json();
       if (!response.ok) {
+        printWindow?.close();
         setReceiveError(payload.error || "Không nhận được hàng từ PO");
         return;
+      }
+      if (printWindow) {
+        // Toàn dòng Tài sản/CCDC thì không có phiếu nhập kho để in.
+        if (payload.stockTransaction?.id) printWindow.location.href = `/inventory/${payload.stockTransaction.id}/print`;
+        else printWindow.close();
       }
       const parts: string[] = [];
       if (payload.receiptCode) parts.push(`phiếu nhập kho ${payload.receiptCode} vào ${receivingOrder.warehouseCode}`);
@@ -1141,6 +1150,9 @@ export default function ProcurementPage() {
       setMessage(`Đã nhận hàng từ ${receivingOrder.code}: ${parts.join(" · ") || "cập nhật thành công"}.`);
       setReceivingOrder(null);
       await loadData();
+    } catch (error) {
+      printWindow?.close();
+      throw error;
     } finally {
       setReceiving(false);
     }
@@ -2460,13 +2472,17 @@ export default function ProcurementPage() {
                 // Công nợ NCC tăng thêm lần nhận này = Σ thành tiền sau thuế (đã trừ chiết khấu) + chi phí mua hàng.
                 const { total } = receiveFigures([...receiveLineInfos(receivingOrder), ...receiveExtraInfos()], receiveLineValues(receivingOrder), Number(receivePurchaseCost || 0) || 0);
                 return (
-                  <p className="text-xs text-slate-600 text-right">
-                    Sau thuế <b>{money(total.afterTax)} đ</b>{total.costShare > 0 ? <> + chi phí <b>{money(total.costShare)} đ</b></> : null} = công nợ NCC <b className="text-slate-900">{money(total.purchaseValue)} đ</b>
+                  <p className="text-right text-sm font-semibold text-blue-900">
+                    Sau thuế <b className="text-base">{money(total.afterTax)} đ</b>{total.costShare > 0 ? <> + chi phí <b className="text-base">{money(total.costShare)} đ</b></> : null} = công nợ NCC <b className="text-lg">{money(total.purchaseValue)} đ</b>
                   </p>
                 );
               })()}
               <div className="flex gap-2">
               <button type="button" onClick={() => setReceivingOrder(null)} className="secondary-button">Huỷ</button>
+              <button type="button" disabled={receiving} onClick={() => void submitReceive(true)} className="secondary-button !min-h-12" title="Nhận hàng rồi mở phiếu nhập kho để in">
+                <span className="material-symbols-outlined text-lg">print</span>
+                <span className="hidden sm:inline">Nhận &amp; in phiếu nhập kho</span>
+              </button>
               <button type="button" disabled={receiving} onClick={() => void submitReceive()} className="primary-button flex-1 !min-h-12">
                 <span className="material-symbols-outlined text-lg">inventory</span>
                 {receiving ? "Đang nhận hàng..." : "Xác nhận nhận hàng"}

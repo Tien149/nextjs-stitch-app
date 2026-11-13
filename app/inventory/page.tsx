@@ -90,7 +90,7 @@ type Warehouse = { id: string; code: string; name: string; branch: string | null
 type Partner = { code: string; name: string; group: string | null; status: string };
 type MovementByType = Record<string, { inbound: number; outbound: number; inboundValue?: number; outboundValue?: number }>;
 type StockSummary = { item: Item; warehouseCode: string; openingQuantity: number; openingValue?: number; inboundQuantity: number; inboundValue?: number; outboundQuantity: number; outboundValue?: number; closingQuantity: number; averageCost: number; closingValue: number; movementByType?: MovementByType };
-type StockMovement = { transactionId: string; code: string; transactionType: string; subType?: string | null; transactionDate: string; branchCode?: string; warehouseCode: string; toWarehouseCode: string | null; counterpartWarehouseCode?: string | null; itemCode: string; itemName: string; unit: string; itemType?: string; goodsGroup?: string | null; quantity: number; inboundQuantity: number; outboundQuantity: number; unitCost?: number; value: number; referenceCode: string | null; partnerCode?: string | null; partnerName?: string | null; note?: string | null };
+type StockMovement = { transactionId: string; code: string; transactionType: string; subType?: string | null; transactionDate: string; branchCode?: string; warehouseCode: string; toWarehouseCode: string | null; counterpartWarehouseCode?: string | null; itemCode: string; itemName: string; unit: string; itemType?: string; goodsGroup?: string | null; quantity: number; inboundQuantity: number; outboundQuantity: number; unitCost?: number; value: number; referenceCode: string | null; partnerCode?: string | null; partnerName?: string | null; note?: string | null; purchase?: { grossAmount: number; discountAmount: number; vatRate: number | null; vatAmount: number } | null };
 type Stocktake = {
   /** Đã từng mở lại sau khi duyệt → duyệt lại mặc định tính lại sổ sách. */
   reopened?: boolean;
@@ -1549,7 +1549,7 @@ export default function InventoryPage() {
     const unit = purchaseLineUnit(line);
     return [{
       id: line.id, name: line.item.name, unit: receiveUnit.unitCode, remaining, badge: grpoBadge(order.code), hint: poPriceHint(line.unitCost > 0 ? toPurchasePrice(line.unitCost, line) : 0, unit, grpoPriceSource[line.id]),
-      extra: unitOptions.length > 1 ? <div className="mt-1"><ReceiveUnitSelect name={line.item.name} value={receiveUnit.unitCode} options={unitOptions} onChange={(unitCode) => changeGrpoUnit(line, unitCode)} /></div> : undefined,
+      unitControl: unitOptions.length > 1 ? <ReceiveUnitSelect name={line.item.name} value={receiveUnit.unitCode} options={unitOptions} onChange={(unitCode) => changeGrpoUnit(line, unitCode)} /> : undefined,
     }];
   }));
   const grpoExtraInfos = (): ReceiveLineInfo[] => grpoExtras.flatMap((extra) => {
@@ -1558,21 +1558,19 @@ export default function InventoryPage() {
     if (!item || !order) return [];
     return [{
       id: extra.key, name: item.name, unit: extra.unitCode, remaining: 0, isExtra: true, badge: grpoBadge(order.code), hint: `Thêm lúc nhận — vào chung PO ${order.code}`,
-      extra: (
-        <div className="mt-1 flex flex-wrap items-center gap-2">
-          <select className="control !mt-0 !h-8 !py-0 w-auto text-xs" value={extra.unitCode} aria-label={`ĐVT ${item.name}`}
-            onChange={(e) => { const unitCode = e.target.value; setGrpoExtras((current) => current.map((row) => row.key === extra.key ? { ...row, unitCode } : row)); }}>
-            {purchaseUnitOptions(item.unit, item.unitConversions).map((option) => <option key={option.unitCode} value={option.unitCode}>{option.label}</option>)}
-          </select>
-          {grpoOrders.length > 1 && (
-            <select className="control !mt-0 !h-8 !py-0 w-auto text-xs" value={order.id} aria-label={`PO nhận ${item.name}`}
-              onChange={(e) => { const orderId = e.target.value; setGrpoExtras((current) => current.map((row) => row.key === extra.key ? { ...row, orderId } : row)); }}>
-              {grpoOrders.map((candidate) => <option key={candidate.id} value={candidate.id}>Vào {candidate.code}</option>)}
-            </select>
-          )}
-          <button type="button" className="text-xs font-bold text-rose-600 hover:underline" onClick={() => setGrpoExtras((current) => current.filter((row) => row.key !== extra.key))}>Bỏ dòng</button>
-        </div>
+      unitControl: (
+        <select className="control !mt-0 !h-7 !py-0 w-auto text-xs font-bold" value={extra.unitCode} aria-label={`ĐVT ${item.name}`}
+          onChange={(e) => { const unitCode = e.target.value; setGrpoExtras((current) => current.map((row) => row.key === extra.key ? { ...row, unitCode } : row)); }}>
+          {purchaseUnitOptions(item.unit, item.unitConversions).map((option) => <option key={option.unitCode} value={option.unitCode}>{option.label}</option>)}
+        </select>
       ),
+      onRemove: () => setGrpoExtras((current) => current.filter((row) => row.key !== extra.key)),
+      extra: grpoOrders.length > 1 ? (
+        <select className="control !mt-1 !h-7 !py-0 w-auto text-xs" value={order.id} aria-label={`PO nhận ${item.name}`}
+          onChange={(e) => { const orderId = e.target.value; setGrpoExtras((current) => current.map((row) => row.key === extra.key ? { ...row, orderId } : row)); }}>
+          {grpoOrders.map((candidate) => <option key={candidate.id} value={candidate.id}>Vào {candidate.code}</option>)}
+        </select>
+      ) : undefined,
     }];
   });
   const addGrpoExtra = (itemId: string) => {
@@ -1633,26 +1631,23 @@ export default function InventoryPage() {
       hint: price
         ? `Bảng giá ${price.priceListCode}: ${unitPrice(price.stockUnitPrice * unit.conversionRate)} đ/${unit.unitCode}${deviation && !deviation.matched ? ` — đơn giá nhập lệch ${deviation.diff > 0 ? "+" : ""}${unitPrice(deviation.diff * unit.conversionRate)} đ, kiểm tra hoá đơn` : ""}`
         : "",
+      // ĐVT đứng ngay cạnh tên hàng, bỏ dòng ở cuối dòng (khách 13/11/2026).
+      unitControl: options.length > 1 ? (
+        <select className="control !mt-0 !h-7 !py-0 w-auto text-xs font-bold" value={unit.unitCode} aria-label={`ĐVT ${item.name}`}
+          onChange={(e) => {
+            const next = options.find((option) => option.unitCode === e.target.value);
+            if (!next) return;
+            const converted = convertReceiveValue(manualValues[line.key] || { quantity: "", price: "" }, unit.conversionRate, next.conversionRate);
+            setManualValues((current) => ({ ...current, [line.key]: { ...(current[line.key] || { ...emptyReceiveTerms, quantity: "", price: "" }), ...converted } }));
+            setManualLines((current) => current.map((row) => (row.key === line.key ? { ...row, unitCode: next.unitCode } : row)));
+          }}>
+          {options.map((option) => <option key={option.unitCode} value={option.unitCode}>{option.label}</option>)}
+        </select>
+      ) : undefined,
+      onRemove: () => setManualLines((current) => current.filter((row) => row.key !== line.key)),
       extra: (
-        <div className="mt-1 space-y-1.5">
-          <div className="flex flex-wrap items-center gap-2">
-            {options.length > 1 && (
-              <select className="control !mt-0 !h-8 !py-0 w-auto text-xs" value={unit.unitCode} aria-label={`ĐVT ${item.name}`}
-                onChange={(e) => {
-                  const next = options.find((option) => option.unitCode === e.target.value);
-                  if (!next) return;
-                  const converted = convertReceiveValue(manualValues[line.key] || { quantity: "", price: "" }, unit.conversionRate, next.conversionRate);
-                  setManualValues((current) => ({ ...current, [line.key]: { ...(current[line.key] || { ...emptyReceiveTerms, quantity: "", price: "" }), ...converted } }));
-                  setManualLines((current) => current.map((row) => (row.key === line.key ? { ...row, unitCode: next.unitCode } : row)));
-                }}>
-                {options.map((option) => <option key={option.unitCode} value={option.unitCode}>{option.label}</option>)}
-              </select>
-            )}
-            <button type="button" className="text-xs font-bold text-rose-600 hover:underline" onClick={() => setManualLines((current) => current.filter((row) => row.key !== line.key))}>Bỏ dòng</button>
-          </div>
-          <input className="control !mt-0 !h-8 text-xs" placeholder="Ghi chú mặt hàng (không bắt buộc)" value={line.note} aria-label={`Ghi chú ${item.name}`}
-            onChange={(e) => { const note = e.target.value; setManualLines((current) => current.map((row) => (row.key === line.key ? { ...row, note } : row))); }} />
-        </div>
+        <input className="control !mt-1 !h-7 text-xs" placeholder="Ghi chú mặt hàng (không bắt buộc)" value={line.note} aria-label={`Ghi chú ${item.name}`}
+          onChange={(e) => { const note = e.target.value; setManualLines((current) => current.map((row) => (row.key === line.key ? { ...row, note } : row))); }} />
       ),
     }];
   });
