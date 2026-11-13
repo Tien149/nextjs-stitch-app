@@ -2622,7 +2622,7 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, canDelete
         ))}
       </div>
 
-      {mode === "rows" && <RevenueImportRowsSection data={data} branchCode={branchCode} canDelete={canDelete} onDeleted={onSaved} />}
+      {mode === "rows" && <RevenueImportRowsSection data={data} branchCode={branchCode} moneySources={moneySources} canEdit={canEdit} canDelete={canDelete} onDeleted={onSaved} />}
 
       {mode === "explosion" && <RevenueExplosionCheckSection dateFrom={data.dateFrom} dateTo={data.dateTo} branchCode={branchCode} />}
 
@@ -2934,9 +2934,11 @@ function RevenueExplosionCheckSection({ dateFrom, dateTo, branchCode }: { dateFr
  * cần tổng mỗi ngày và xoá thẳng dòng sai tại đây, không phải vào Import). Bấm một ngày để xoè đủ
  * dòng theo thứ tự import; tick dòng (hoặc cả ngày) rồi Xoá. Dòng đã rã nguyên liệu thì máy chủ chặn.
  */
-function RevenueImportRowsSection({ data, branchCode, canDelete, onDeleted }: {
+function RevenueImportRowsSection({ data, branchCode, moneySources, canEdit, canDelete, onDeleted }: {
   data: RevenueLedgerData;
   branchCode: string;
+  moneySources: MoneySourceOption[];
+  canEdit: boolean;
   canDelete: boolean;
   onDeleted: () => void;
 }) {
@@ -3019,6 +3021,33 @@ function RevenueImportRowsSection({ data, branchCode, canDelete, onDeleted }: {
       onDeleted();
     } finally {
       setBusy(false);
+    }
+  };
+
+  /**
+   * Sửa Nguồn tiền / Ghi chú ngay trên dòng import (khách 13/11/2026 — trước chỉ sửa được ở chế
+   * độ "Gộp theo kênh bán"). Cùng API UPDATE_REVENUE_ROW: đổi nguồn tiền thì bút toán của dòng
+   * ghi lại theo nguồn mới, nên tải lại số tổng sau khi lưu.
+   */
+  const [savingRowId, setSavingRowId] = useState<string | null>(null);
+  const saveRow = async (date: string, row: RevenueDayImportRow, patch: { paymentMethod?: string; note?: string }) => {
+    setSavingRowId(row.id);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "UPDATE_REVENUE_ROW", id: row.id, ...patch }),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) {
+        setNotice({ tone: "error", text: payload.error || "Không sửa được dòng doanh thu" });
+        return;
+      }
+      setRowsByDay((current) => ({ ...current, [date]: (current[date] || []).map((item) => (item.id === row.id ? { ...item, ...patch } : item)) }));
+      if (patch.paymentMethod !== undefined) onDeleted();
+    } finally {
+      setSavingRowId(null);
     }
   };
 
@@ -3116,7 +3145,7 @@ function RevenueImportRowsSection({ data, branchCode, canDelete, onDeleted }: {
                                   <input type="checkbox" checked={allChecked} onChange={(e) => setSelected(e.target.checked ? rows.map((row) => row.id) : [])} aria-label="Chọn cả ngày" />
                                 </th>
                               )}
-                              {["#", "Giờ", "Mã hoá đơn", "Kênh", "Nguồn DT", "Nguồn tiền", "Mã món", "SL", "Gộp", "Giảm giá", "VAT", "SVC", "Thuần", "Rã BOM", "File import"].map((label) => (
+                              {["#", "Giờ", "Mã hoá đơn", "Kênh", "Nguồn DT", "Nguồn tiền", "Mã món", "SL", "Gộp", "Giảm giá", "VAT", "SVC", "Thuần", "Ghi chú", "Rã BOM", "File import"].map((label) => (
                                 <th key={label} className={`px-2 py-2 ${["SL", "Gộp", "Giảm giá", "VAT", "SVC", "Thuần"].includes(label) ? "text-right" : "text-left"}`}>{label}</th>
                               ))}
                             </tr>
@@ -3134,7 +3163,24 @@ function RevenueImportRowsSection({ data, branchCode, canDelete, onDeleted }: {
                                 <td className="px-2 py-1.5 whitespace-nowrap font-semibold">{row.externalRef}</td>
                                 <td className="px-2 py-1.5 whitespace-nowrap">{row.channel}</td>
                                 <td className="px-2 py-1.5 whitespace-nowrap">{row.revenueSource}</td>
-                                <td className="px-2 py-1.5 whitespace-nowrap">{row.paymentMethod}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">
+                                  {canEdit ? (
+                                    <select
+                                      className="rounded border border-slate-300 bg-white px-1.5 py-1 text-xs disabled:opacity-50"
+                                      value={row.paymentMethod}
+                                      disabled={savingRowId === row.id}
+                                      onChange={(event) => void saveRow(day.date, row, { paymentMethod: event.target.value })}
+                                      title="Chọn lại nguồn tiền nếu file import khai nhầm"
+                                    >
+                                      {!filterMoneySources(moneySources, row.branchCode).some((item) => item.code === row.paymentMethod) && (
+                                        <option value={row.paymentMethod}>{row.paymentMethod} (ngoài danh mục)</option>
+                                      )}
+                                      {filterMoneySources(moneySources, row.branchCode).map((item) => (
+                                        <option key={item.id} value={item.code}>{item.code}</option>
+                                      ))}
+                                    </select>
+                                  ) : row.paymentMethod}
+                                </td>
                                 <td className="px-2 py-1.5 whitespace-nowrap">{row.productCode || ""}</td>
                                 <td className="px-2 py-1.5 text-right tabular-nums">{row.productQuantity ?? ""}</td>
                                 <td className="px-2 py-1.5 text-right tabular-nums">{money(row.grossAmount)}</td>
@@ -3142,11 +3188,16 @@ function RevenueImportRowsSection({ data, branchCode, canDelete, onDeleted }: {
                                 <td className="px-2 py-1.5 text-right tabular-nums">{row.vatAmount ? money(row.vatAmount) : ""}</td>
                                 <td className="px-2 py-1.5 text-right tabular-nums">{row.serviceAmount ? money(row.serviceAmount) : ""}</td>
                                 <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-emerald-700">{money(row.netAmount)}</td>
+                                <td className="px-2 py-1.5 min-w-[140px]">
+                                  {canEdit ? (
+                                    <NoteInput value={row.note || ""} disabled={savingRowId === row.id} onCommit={(note) => void saveRow(day.date, row, { note })} />
+                                  ) : (row.note || "")}
+                                </td>
                                 <td className="px-2 py-1.5 whitespace-nowrap"><RevenueExplosionBadge row={row} /></td>
                                 <td className="px-2 py-1.5 max-w-[220px] truncate text-slate-500" title={row.fileName || ""}>{row.fileName || ""}</td>
                               </tr>
                             ))}
-                            {rows.length === 0 && <tr><td colSpan={16} className="px-2 py-3 text-center text-slate-400">Không còn dòng doanh thu nào.</td></tr>}
+                            {rows.length === 0 && <tr><td colSpan={17} className="px-2 py-3 text-center text-slate-400">Không còn dòng doanh thu nào.</td></tr>}
                           </tbody>
                         </table>
                       </div>
