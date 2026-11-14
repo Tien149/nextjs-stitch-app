@@ -19,7 +19,7 @@ import { docHref } from "@/components/DocLink";
 import { ShowMoreRows, useRowLimit } from "@/components/ShowMoreRows";
 
 /** Loại bút toán có sourceCode là mã chứng từ mở được bằng /open/<mã> (xem app/api/doc-link). */
-const DOC_LINK_SOURCE_TYPES = new Set(["VOUCHER", "VOUCHER_COUNTERPART", "MONEY_TRANSFER", "MONEY_TRANSFER_COUNTERPART", "MONEY_TRANSFER_FEE", "ASSET_ACQUISITION", "DEPRECIATION", "SUPPLIER_PAYABLE", "INVENTORY_ISSUE", "ACCRUAL", "DEBT_PAYABLE", "DEBT_RECEIVABLE", "BANK_STATEMENT"]);
+const DOC_LINK_SOURCE_TYPES = new Set(["VOUCHER", "VOUCHER_COUNTERPART", "MONEY_TRANSFER", "MONEY_TRANSFER_COUNTERPART", "MONEY_TRANSFER_FEE", "ASSET_ACQUISITION", "DEPRECIATION", "SUPPLIER_PAYABLE", "INVENTORY_ISSUE", "ACCRUAL", "DEBT_PAYABLE", "DEBT_RECEIVABLE", "PROFIT_DISTRIBUTION", "BANK_STATEMENT"]);
 
 type Account = { id: string; code: string; name: string; accountType: string; reportGroup: string };
 type Line = { id: string; debit: number; credit: number; departmentCode: string | null; account: Account; categoryCode: string | null; partnerCode: string | null };

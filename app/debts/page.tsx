@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { formatPeriodCount } from "@/lib/period-count";
 import { ADVANCE_SETTLEMENT_DEBT_TYPE, isAdvanceSettlementDebt } from "@/lib/employee-advance";
+import { PROFIT_DISTRIBUTION_DEBT_TYPE, isProfitDistributionDebt } from "@/lib/profit-distribution";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
@@ -117,7 +118,7 @@ const ledgerSourceLabels: Record<string, string> = {
   PAYABLE: "Công nợ phải trả",
 };
 const ledgerSourceLabel = (source: string, sourceType?: string | null) =>
-  isAdvanceSettlementDebt(sourceType) ? "Hoàn ứng" : ledgerSourceLabels[source] || source;
+  isAdvanceSettlementDebt(sourceType) ? "Hoàn ứng" : isProfitDistributionDebt(sourceType) ? "Chia lợi nhuận" : ledgerSourceLabels[source] || source;
 
 const emptyDebtForm = {
   documentDate: new Date().toISOString().slice(0, 10),
@@ -310,11 +311,13 @@ export default function DebtsPage() {
   const createIsReceivable = createForm.debtType === "RECEIVABLE";
   /** Hoàn ứng nhân viên: phải trả cấn thẳng vào tạm ứng — không hạn trả, không phân bổ, không qua quỹ. */
   const createIsAdvance = createForm.debtType === ADVANCE_SETTLEMENT_DEBT_TYPE;
+  /** Chia lợi nhuận cho BOD: Nợ 421 / Có 331 — không hạng mục P&L, không phân bổ, không chi phí. */
+  const createIsDistribution = createForm.debtType === PROFIT_DISTRIBUTION_DEBT_TYPE;
   /** Số nhân viên đang giữ tạm ứng (số dư phải thu trên bảng tổng hợp) — để đối chiếu trước khi lập. */
   const createAdvanceBalance = createIsAdvance && createForm.partnerCode
     ? -(rows.find((row) => row.partnerCode === createForm.partnerCode)?.balance || 0)
     : null;
-  const createPnlLabel = createIsReceivable ? "Nhóm hạng mục P&L" : "Hạng mục P&L";
+  const createPnlLabel = createIsDistribution ? "Tài khoản đối ứng" : createIsReceivable ? "Nhóm hạng mục P&L" : "Hạng mục P&L";
   /** Popup Sửa công nợ: cùng luật hai tầng như popup Thêm, nhưng loại lấy từ chính khoản đang sửa. */
   const editIsReceivable = editingDebt?.source === "RECEIVABLE";
   const editPnlCode = editIsReceivable ? debtForm.pnlGroupCode : debtForm.pnlItemCode;
@@ -429,7 +432,7 @@ export default function DebtsPage() {
       setCreateError(createLines.length === 1 ? "Số tiền phải lớn hơn 0." : `Dòng ${badLine + 1}: số tiền phải lớn hơn 0.`);
       return;
     }
-    if (!createIsReceivable && !createIsAdvance && createForm.allocationMonths !== "") {
+    if (!createIsReceivable && !createIsAdvance && !createIsDistribution && createForm.allocationMonths !== "") {
       if (!(Number(createForm.allocationMonths) > 1)) {
         setCreateError("Số kỳ phân bổ phải lớn hơn 1, được ghi số lẻ 2 chữ số (vd 10,37) — bỏ tick nếu ghi chi phí một lần.");
         return;
@@ -448,7 +451,7 @@ export default function DebtsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...createForm,
-          allocationMonths: createIsReceivable || createIsAdvance ? "" : createForm.allocationMonths,
+          allocationMonths: createIsReceivable || createIsAdvance || createIsDistribution ? "" : createForm.allocationMonths,
           dueDate: createIsAdvance ? "" : createForm.dueDate,
           lines: createLines.map((line) => ({
             pnlItemCode: line.pnlItemCode, pnlGroupCode: line.pnlGroupCode, note: line.note,
@@ -470,7 +473,9 @@ export default function DebtsPage() {
       const allocationNote = Number(payload.allocationMonths) > 1 ? ` Chi phí phân bổ ${formatPeriodCount(Number(payload.allocationMonths))} kỳ từ ${payload.allocationStartPeriod} (lịch PB-${payload.lineCount > 1 ? `${payload.code}/n` : payload.code}).` : "";
       setMessage(createIsAdvance
         ? `Đã lập phiếu hoàn ứng ${payload.code} (${money(payload.totalAmount)} đ) — đã trừ vào tạm ứng của nhân viên; chi phí lên P&L sau khi Đồng bộ ghi sổ.`
-        : (payload.lineCount > 1 ? `Đã tạo phiếu công nợ ${payload.code} gồm ${payload.lineCount} dòng hạng mục.` : `Đã tạo công nợ ${payload.code}.`) + allocationNote);
+        : createIsDistribution
+          ? `Đã lập phiếu chia lợi nhuận ${payload.code} (${money(payload.totalAmount)} đ) — giảm lợi nhuận chưa phân phối 421, tăng phải trả đối tác sau khi Đồng bộ ghi sổ.`
+          : (payload.lineCount > 1 ? `Đã tạo phiếu công nợ ${payload.code} gồm ${payload.lineCount} dòng hạng mục.` : `Đã tạo công nợ ${payload.code}.`) + allocationNote);
       await reloadRowsAndLedger();
     } catch {
       printWindow?.close();
@@ -1421,6 +1426,9 @@ export default function DebtsPage() {
               {/* Hạng mục P&L phải sửa được ngay ở đây: user tạo phiếu chọn nhầm hạng mục thì
                   khoản chi phí nằm sai dòng trên P&L, mà không có ô này thì chỉ còn cách xoá
                   phiếu tạo lại. Phải trả sửa hạng mục chi phí, phải thu sửa nhóm hạng mục. */}
+              {isProfitDistributionDebt(editingDebt?.sourceType) ? (
+                <p className="text-xs text-slate-500">Khoản chia lợi nhuận: Nợ 421 / Có 331, không có hạng mục P&amp;L.</p>
+              ) : (
               <div className="text-xs font-bold text-slate-600">
                 {editIsReceivable ? "Nhóm hạng mục P&L" : "Hạng mục P&L"}
                 <SearchableSelect
@@ -1436,6 +1444,7 @@ export default function DebtsPage() {
                     : "Hạng mục quyết định khoản chi phí này nằm ở dòng nào trên P&L."}
                 </p>
               </div>
+              )}
 
               {editCanAllocate && (
                 <AllocationFields
@@ -1485,8 +1494,16 @@ export default function DebtsPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
           <form onSubmit={submitCreateDebt} className="max-h-[92vh] w-full max-w-6xl overflow-y-auto rounded-xl bg-white shadow-xl">
             <div className="border-b border-slate-200 p-5">
-              <h2 className="font-bold text-slate-900">{createIsAdvance ? "Hoàn ứng nhân viên" : "Thêm công nợ"}</h2>
-              {createIsAdvance ? (
+              <h2 className="font-bold text-slate-900">{createIsAdvance ? "Hoàn ứng nhân viên" : createIsDistribution ? "Chia lợi nhuận" : "Thêm công nợ"}</h2>
+              {createIsDistribution ? (
+                <p className="mt-1 text-xs text-slate-500">
+                  Chia lãi cho BOD / thành viên góp vốn: giảm Lợi nhuận sau thuế chưa phân phối (Nợ 421), tăng phải trả đối tác (Có 331).
+                  Không phải chi phí nên không lên P&amp;L; bảng cân đối hiện dòng &ldquo;Đã chia lợi nhuận&rdquo; trong 421.
+                  <span className="mt-1 block font-medium text-amber-700">
+                    Lúc chuyển tiền cho BOD, phiếu chi chọn &ldquo;Thanh toán công nợ&rdquo; và gạch mã CLN này.
+                  </span>
+                </p>
+              ) : createIsAdvance ? (
                 <p className="mt-1 text-xs text-slate-500">
                   Nhân viên đã nhận tiền tạm ứng (phiếu chi khoản mục tạm ứng) và mua hàng về nộp chứng từ. Phiếu hoàn ứng
                   KHÔNG qua quỹ nào: chỉ trừ vào số tiền nhân viên đang tạm ứng và đưa từng khoản vào đúng hạng mục chi phí.
@@ -1522,6 +1539,7 @@ export default function DebtsPage() {
                   <option value="PAYABLE">Phải trả</option>
                   <option value="RECEIVABLE">Phải thu</option>
                   <option value={ADVANCE_SETTLEMENT_DEBT_TYPE}>Hoàn ứng nhân viên (không qua quỹ)</option>
+                  <option value={PROFIT_DISTRIBUTION_DEBT_TYPE}>Chia lợi nhuận (giảm LN chưa phân phối 421)</option>
                 </select>
               </label>
               {createIsAdvance ? (
@@ -1604,7 +1622,7 @@ export default function DebtsPage() {
                 <input
                   value={createForm.description}
                   onChange={(event) => setCreateForm((value) => ({ ...value, description: event.target.value }))}
-                  placeholder={createIsAdvance ? "VD: Hoàn ứng tiền mua đồ trang trí team MKT theo PCHI-2610-NME-00002" : "VD: Trích trước chi phí tháng 9 / Tiền hàng tháng 8 chưa thanh toán / B trả A khoản chi hộ..."}
+                  placeholder={createIsDistribution ? "VD: Chia lợi nhuận quý 3/2026 cho BOD Cô Thoa" : createIsAdvance ? "VD: Hoàn ứng tiền mua đồ trang trí team MKT theo PCHI-2610-NME-00002" : "VD: Trích trước chi phí tháng 9 / Tiền hàng tháng 8 chưa thanh toán / B trả A khoản chi hộ..."}
                   className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
                   required
                 />
@@ -1642,7 +1660,9 @@ export default function DebtsPage() {
                           <td className="px-3 py-2">
                             {/* Phải thu: chọn NHÓM hạng mục P&L (khoản thu về không thuộc hạng mục chi
                                 phí nào). Phải trả: chọn hạng mục chi phí OPEX/COGS như trước. */}
-                            {createIsReceivable ? (
+                            {createIsDistribution ? (
+                              <span className="block rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">421 · Lợi nhuận chưa phân phối</span>
+                            ) : createIsReceivable ? (
                               <SearchableSelect
                                 value={line.pnlGroupCode}
                                 onChange={(pnlGroupCode) => updateCreateLine(line.key, { pnlGroupCode })}
@@ -1761,7 +1781,7 @@ export default function DebtsPage() {
                   </table>
                 </div>
               </div>
-              {!createIsReceivable && !createIsAdvance && (
+              {!createIsReceivable && !createIsAdvance && !createIsDistribution && (
                 <div className="col-span-2">
                   <AllocationFields
                     months={createForm.allocationMonths}
@@ -1788,7 +1808,7 @@ export default function DebtsPage() {
                 {createIsAdvance ? "Lập & in" : "Tạo & in"}
               </button>
               <button type="submit" disabled={createSaving} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-60">
-                {createSaving ? "Đang tạo..." : createIsAdvance ? "Lập phiếu hoàn ứng" : "Tạo công nợ"}
+                {createSaving ? "Đang tạo..." : createIsAdvance ? "Lập phiếu hoàn ứng" : createIsDistribution ? "Lập phiếu chia lợi nhuận" : "Tạo công nợ"}
               </button>
             </div>
           </form>

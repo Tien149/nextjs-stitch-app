@@ -8,6 +8,7 @@ import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { stripDebtLineSuffix } from "@/lib/debt-group";
 import { ADVANCE_SETTLEMENT_CODE_PREFIX, ADVANCE_SETTLEMENT_DEBT_TYPE, ADVANCE_SETTLEMENT_SOURCE, isAdvanceSettlementDebt } from "@/lib/employee-advance";
+import { PROFIT_DISTRIBUTION_CODE_PREFIX, PROFIT_DISTRIBUTION_DEBT_TYPE, PROFIT_DISTRIBUTION_SOURCE, isProfitDistributionDebt } from "@/lib/profit-distribution";
 import { normalizeAllocationMonths } from "@/lib/voucher-rules";
 import { loadDebtOverview, parseDateRange } from "@/lib/debt-overview";
 import { createDebtTransfer, deleteDebtTransfer, isDebtTransferDebt } from "@/lib/debt-transfer";
@@ -164,7 +165,9 @@ export async function POST(request: Request) {
     // Hoàn ứng nhân viên: khoản PHẢI TRẢ đặc biệt — chi phí cấn thẳng vào tạm ứng (Có 141), không
     // hạn trả, không phân bổ, không ai trả tiền cho nó (lib/employee-advance.ts).
     const isAdvanceSettlement = cleanText(body.debtType).toUpperCase() === ADVANCE_SETTLEMENT_DEBT_TYPE;
-    const debtType = isAdvanceSettlement ? "PAYABLE" : cleanText(body.debtType).toUpperCase() || "PAYABLE";
+    // Chia lợi nhuận cho BOD: phải trả đối ứng Nợ 421, không phải chi phí (lib/profit-distribution.ts).
+    const isProfitDistribution = cleanText(body.debtType).toUpperCase() === PROFIT_DISTRIBUTION_DEBT_TYPE;
+    const debtType = isAdvanceSettlement || isProfitDistribution ? "PAYABLE" : cleanText(body.debtType).toUpperCase() || "PAYABLE";
     const partnerGroup = isAdvanceSettlement ? "EXTERNAL" : cleanText(body.partnerGroup).toUpperCase() || "EXTERNAL";
     const partnerCode = cleanText(body.partnerCode).toUpperCase();
     const branchCode = cleanText(body.branchCode).toUpperCase();
@@ -176,7 +179,7 @@ export async function POST(request: Request) {
     // Phân bổ theo kỳ: khoản phải trả là chi phí dùng cho nhiều kỳ (thuê mặt bằng trả sau cả
     // năm, bảo trì theo hợp đồng...). Chi phí không vào P&L một lần ở ngày chứng từ mà chia đều
     // theo lịch PB-<mã công nợ>, cùng cơ chế với phiếu chi trả trước.
-    const allocationMonths = debtType === "PAYABLE" && !isAdvanceSettlement ? normalizeAllocationMonths(body.allocationMonths) : 0;
+    const allocationMonths = debtType === "PAYABLE" && !isAdvanceSettlement && !isProfitDistribution ? normalizeAllocationMonths(body.allocationMonths) : 0;
     const allocationStartPeriod = allocationMonths > 0 ? normalizePeriod(body.allocationStartPeriod) : "";
 
     if (!debtTypes.includes(debtType)) return NextResponse.json({ error: "Loại công nợ chỉ nhận RECEIVABLE hoặc PAYABLE" }, { status: 400 });
@@ -219,7 +222,7 @@ export async function POST(request: Request) {
     const isReceivable = debtType === "RECEIVABLE";
     const classifiedLines = lines.map((line) => ({
       ...line,
-      pnlItemCode: isReceivable ? null : line.pnlItemCode,
+      pnlItemCode: isReceivable || isProfitDistribution ? null : line.pnlItemCode,
       pnlGroupCode: isReceivable ? line.pnlGroupCode : null,
     }));
     const pnlCodes = Array.from(new Set(
@@ -246,7 +249,7 @@ export async function POST(request: Request) {
     // ở vài luồng (xoá phiếu phân bổ, rollback import) nên COUNT tụt và cấp trúng mã đang sống.
     // Vẫn giữ retry cho trường hợp hai người tạo cùng lúc lấy trúng một số. Phiếu nhiều dòng
     // cấp MỘT số phiếu rồi gắn "/1", "/2"... và ghi cả cụm trong một transaction.
-    const prefix = `${isAdvanceSettlement ? ADVANCE_SETTLEMENT_CODE_PREFIX : debtType === "PAYABLE" ? "CNPT" : "CNTHU"}-${documentDate.toISOString().slice(0, 7).replace("-", "")}-`;
+    const prefix = `${isAdvanceSettlement ? ADVANCE_SETTLEMENT_CODE_PREFIX : isProfitDistribution ? PROFIT_DISTRIBUTION_CODE_PREFIX : debtType === "PAYABLE" ? "CNPT" : "CNTHU"}-${documentDate.toISOString().slice(0, 7).replace("-", "")}-`;
     const multiLine = lines.length > 1;
     let created: Awaited<ReturnType<typeof prisma.debtRecord.create>>[] | null = null;
     let groupCode = "";
@@ -285,13 +288,14 @@ export async function POST(request: Request) {
                 // Diễn giải dòng = diễn giải chung + hạng mục/ghi chú riêng để nhìn trên sổ nợ
                 // và trên phiếu chi vẫn biết dòng này là khoản gì.
                 description: multiLine ? [description, [line.pnlItemCode || line.pnlGroupCode, line.note].filter(Boolean).join(" ")].filter(Boolean).join(" · ") : description,
-                sourceType: isAdvanceSettlement ? ADVANCE_SETTLEMENT_SOURCE : "MANUAL",
+                sourceType: isAdvanceSettlement ? ADVANCE_SETTLEMENT_SOURCE : isProfitDistribution ? PROFIT_DISTRIBUTION_SOURCE : "MANUAL",
                 allocationMonths: allocationMonths || null,
                 allocationStartPeriod: allocationStartPeriod || null,
                 // Khai tay = chi phí phát sinh trong kỳ, ghi sổ ngay (số dư đầu kỳ đi đường
                 // import và mặc định không ghi chi phí — xem lib/accounting.ts). Khoản có lịch
                 // phân bổ thì chi phí đi theo lịch; bật cờ nữa là tính chi phí hai lần.
-                recognizeExpense: debtType === "PAYABLE" && allocationMonths === 0,
+                // Chia lợi nhuận không phải chi phí: bút toán riêng Nợ 421 / Có 331 (lib/accounting.ts).
+                recognizeExpense: debtType === "PAYABLE" && allocationMonths === 0 && !isProfitDistribution,
                 status: "OPEN",
               },
             });
@@ -412,7 +416,7 @@ export async function PATCH(request: Request) {
     }
 
     // Hoàn ứng luôn là vế phải trả cấn vào tạm ứng; đổi sang phải thu là đổi hẳn nghiệp vụ.
-    const debtType = body.debtType === undefined || isAdvanceSettlementDebt(current.sourceType) ? current.debtType : cleanText(body.debtType);
+    const debtType = body.debtType === undefined || isAdvanceSettlementDebt(current.sourceType) || isProfitDistributionDebt(current.sourceType) ? current.debtType : cleanText(body.debtType);
     const partnerGroup = body.partnerGroup === undefined ? current.partnerGroup : cleanText(body.partnerGroup);
     const partnerCode = body.partnerCode === undefined ? current.partnerCode : cleanText(body.partnerCode);
     const partnerName = body.partnerName === undefined ? current.partnerName : cleanText(body.partnerName);
@@ -424,7 +428,7 @@ export async function PATCH(request: Request) {
     const isReceivableDebt = debtType === "RECEIVABLE";
     const rawPnlItemCode = body.pnlItemCode === undefined ? current.pnlItemCode : cleanText(body.pnlItemCode).toUpperCase() || null;
     const rawPnlGroupCode = body.pnlGroupCode === undefined ? current.pnlGroupCode : cleanText(body.pnlGroupCode).toUpperCase() || null;
-    const pnlItemCode = isReceivableDebt ? null : rawPnlItemCode;
+    const pnlItemCode = isReceivableDebt || isProfitDistributionDebt(current.sourceType) ? null : rawPnlItemCode;
     const pnlGroupCode = isReceivableDebt ? rawPnlGroupCode : null;
     // Khai trước thuế thì số sau thuế tính lại từ thuế (lib/debt-vat); sửa thẳng số tiền mà
     // không gửi phần thuế thì bỏ phần tách thuế cũ — nó không còn khớp số mới.
@@ -689,7 +693,7 @@ export async function DELETE(request: Request) {
       // Xoá khoản nợ mà để bút toán lại thì chi phí vẫn nằm trên P&L, không cách nào gỡ.
       // Phải thu nhóm Thu nhập khác cũng đã ghi Nợ 131 / Có 711 — gỡ theo, nếu không thu nhập
       // còn nằm trên P&L sau khi khoản nợ đã xoá.
-      await prisma.journalEntry.deleteMany({ where: { sourceType: { in: ["DEBT_PAYABLE", "DEBT_RECEIVABLE"] }, sourceId: current.id } });
+      await prisma.journalEntry.deleteMany({ where: { sourceType: { in: ["DEBT_PAYABLE", "DEBT_RECEIVABLE", PROFIT_DISTRIBUTION_SOURCE] }, sourceId: current.id } });
       // Lịch phân bổ PB-<mã> (chưa ghi nhận kỳ nào — đã chặn ở trên) xoá mềm theo khoản nợ qua
       // cascade của Thùng rác (lib/soft-delete.ts), khôi phục cũng đi cùng nhau.
     }

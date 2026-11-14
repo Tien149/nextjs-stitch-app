@@ -57,3 +57,18 @@ test("4199 còn số thì hiện dòng cảnh báo", () => {
   assert.equal(sheet.openingDifference, 100);
   assert.equal(sheet.balanced, true);
 });
+
+test("chia lợi nhuận: Nợ 421 tách dòng riêng, không lẫn vào số dư đầu kỳ khai", () => {
+  // Đầu kỳ khai 400; chia BOD 150 (Nợ 421 / Có 331); lãi năm nay 200.
+  const sheet = buildBalanceSheet([
+    { ...acct("421", "EQUITY", "CREDIT", 150, 400), profitDistributed: 150 },
+    acct("331", "LIABILITY", "CREDIT", 0, 150),
+    acct("511", "REVENUE", "CREDIT", 0, 200),
+  ], "2026");
+  const retained = sheet.rows.find((row) => row.code === "421");
+  assert.equal(retained.amount, 400 + 200 - 150);
+  assert.deepEqual(retained.detail.map((part) => [part.label, part.amount]), [
+    ["Số dư đầu kỳ khai", 400], ["Lợi nhuận trước năm 2026", 0], ["Lợi nhuận năm 2026 (lũy kế tới kỳ)", 200], ["Đã chia lợi nhuận", -150],
+  ]);
+  assert.equal(sheet.liabilities, 150);
+});

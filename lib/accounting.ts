@@ -11,6 +11,7 @@ import { isCrossBranchTransfer, planMoneyTransferJournals } from "@/lib/internal
 import { internalPartnerCode } from "@/lib/cost-reallocation";
 import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
 import { EMPLOYEE_ADVANCE_ACCOUNT, isAdvanceSettlementDebt } from "@/lib/employee-advance";
+import { PROFIT_DISTRIBUTION_SOURCE } from "@/lib/profit-distribution";
 import { equityOpeningJournalLines, isEquityOpeningType, OPENING_DIFFERENCE_ACCOUNT } from "@/lib/balance-sheet";
 import { REVENUE_CHANNEL_PNL_ITEMS, revenuePosFees, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { ensureRevenueCategories, type CategoryLookupClient } from "@/lib/revenue-source";
@@ -882,6 +883,27 @@ async function runSyncAccountingPeriod(period: string, branchCode: string, actor
         payableDebtDebitLine(row, debtGroup),
         // Hoàn ứng: chi phí cấn thẳng vào khoản tạm ứng nhân viên đang treo 141, không phải nợ NCC.
         { accountCode: isAdvanceSettlementDebt(row.sourceType) ? EMPLOYEE_ADVANCE_ACCOUNT : "331", credit: row.originalAmount, partnerCode: row.partnerCode },
+      ],
+    }));
+  }
+
+  // Chia lợi nhuận cho BOD (lib/profit-distribution.ts, khách 14/11/2026): giảm lợi nhuận chưa
+  // phân phối, tăng phải trả đối tác — Nợ 421 / Có 331. Không qua P&L.
+  const profitDistributions = await prisma.debtRecord.findMany({
+    where: { ...branchFilter, debtType: "PAYABLE", sourceType: PROFIT_DISTRIBUTION_SOURCE, documentDate: { gte: start, lt: end } },
+  });
+  for (const row of profitDistributions) {
+    results.push(await postJournalEntry({
+      entryDate: row.documentDate,
+      branchCode: row.branchCode,
+      sourceType: PROFIT_DISTRIBUTION_SOURCE,
+      sourceId: row.id,
+      sourceCode: row.code,
+      description: row.description,
+      createdBy: actor,
+      lines: [
+        { accountCode: "421", debit: row.originalAmount, partnerCode: row.partnerCode },
+        { accountCode: "331", credit: row.originalAmount, partnerCode: row.partnerCode },
       ],
     }));
   }

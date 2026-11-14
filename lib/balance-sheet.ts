@@ -65,6 +65,8 @@ export type BalanceAccountTotal = {
   credit: number;
   debitBeforeYear: number;
   creditBeforeYear: number;
+  /** Số đã chia lợi nhuận (Nợ 421 từ phiếu CLN-*, lib/profit-distribution.ts) — chỉ khác 0 ở 421. */
+  profitDistributed?: number;
 };
 
 export type BalanceSheetRow = {
@@ -83,6 +85,7 @@ export function buildBalanceSheet(totals: BalanceAccountTotal[], year: string) {
   let profitPriorYears = 0;
   let profitCurrentYear = 0;
   let retainedOpening = 0;
+  let distributed = 0;
   const rows: BalanceSheetRow[] = [];
   for (const account of totals) {
     if (PROFIT_ACCOUNT_TYPES.has(account.accountType)) {
@@ -95,7 +98,11 @@ export function buildBalanceSheet(totals: BalanceAccountTotal[], year: string) {
     if (!section) continue;
     const natural = account.normalBalance === "DEBIT" ? account.debit - account.credit : account.credit - account.debit;
     if (account.code === RETAINED_EARNINGS_ACCOUNT) {
-      retainedOpening += natural;
+      // Tách phần chia lợi nhuận ra khỏi số dư đầu kỳ khai: cùng tài khoản 421 nhưng là hai dòng
+      // giải trình khác nhau trên bảng.
+      const paidOut = Number(account.profitDistributed) || 0;
+      distributed += paidOut;
+      retainedOpening += natural + paidOut;
       continue;
     }
     // Hao mòn lũy kế nằm trong khối tài sản nhưng có số dư bên Có: hiện số âm cho cộng thẳng.
@@ -113,8 +120,8 @@ export function buildBalanceSheet(totals: BalanceAccountTotal[], year: string) {
         : {}),
     });
   }
-  const retainedEarnings = retainedOpening + profitPriorYears + profitCurrentYear;
-  if (Math.abs(retainedOpening) > 0.5 || Math.abs(profitPriorYears) > 0.5 || Math.abs(profitCurrentYear) > 0.5) {
+  const retainedEarnings = retainedOpening + profitPriorYears + profitCurrentYear - distributed;
+  if (Math.abs(retainedOpening) > 0.5 || Math.abs(profitPriorYears) > 0.5 || Math.abs(profitCurrentYear) > 0.5 || Math.abs(distributed) > 0.5) {
     rows.push({
       code: RETAINED_EARNINGS_ACCOUNT,
       name: "Lợi nhuận sau thuế chưa phân phối",
@@ -126,6 +133,7 @@ export function buildBalanceSheet(totals: BalanceAccountTotal[], year: string) {
         { label: "Số dư đầu kỳ khai", amount: retainedOpening },
         { label: `Lợi nhuận trước năm ${year}`, amount: profitPriorYears },
         { label: `Lợi nhuận năm ${year} (lũy kế tới kỳ)`, amount: profitCurrentYear },
+        ...(Math.abs(distributed) > 0.5 ? [{ label: "Đã chia lợi nhuận", amount: -distributed }] : []),
       ],
     });
   }

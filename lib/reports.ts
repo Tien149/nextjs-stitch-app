@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/custom-client";
 import { debtCashProjection } from "@/lib/debt-overview";
 import { buildBalanceSheet, type BalanceAccountTotal } from "@/lib/balance-sheet";
+import { PROFIT_DISTRIBUTION_SOURCE } from "@/lib/profit-distribution";
 import { prisma } from "@/lib/prisma";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
 import { addPeriod, periodFromDate } from "@/lib/phase3";
@@ -1100,7 +1101,8 @@ export async function getBalanceSheet(period: string, branchCode: string) {
     SELECT a."code", a."name", a."accountType", a."reportGroup", a."normalBalance",
            SUM(l."debit")::float8 AS debit, SUM(l."credit")::float8 AS credit,
            COALESCE(SUM(l."debit") FILTER (WHERE e."entryDate" < ${yearStart}), 0)::float8 AS "debitBeforeYear",
-           COALESCE(SUM(l."credit") FILTER (WHERE e."entryDate" < ${yearStart}), 0)::float8 AS "creditBeforeYear"
+           COALESCE(SUM(l."credit") FILTER (WHERE e."entryDate" < ${yearStart}), 0)::float8 AS "creditBeforeYear",
+           COALESCE(SUM(l."debit" - l."credit") FILTER (WHERE e."sourceType" = ${PROFIT_DISTRIBUTION_SOURCE}), 0)::float8 AS "profitDistributed"
     FROM "JournalLine" l
     JOIN "JournalEntry" e ON e."id" = l."entryId"
     JOIN "AccountingAccount" a ON a."id" = l."accountId"

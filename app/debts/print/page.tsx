@@ -1,5 +1,6 @@
 "use client";
 
+import { isProfitDistributionDebt } from "@/lib/profit-distribution";
 import { useEffect, useState } from "react";
 import { storeLabel } from "@/lib/branch-labels";
 import { money } from "@/lib/format-number";
@@ -30,6 +31,7 @@ type DebtRecord = {
   description: string;
   allocationMonths: number | null;
   allocationStartPeriod: string | null;
+  sourceType?: string | null;
 };
 type Payload = { groupCode: string; records: DebtRecord[]; pnlNames: Record<string, string> };
 type BranchOption = { code: string; name: string };
@@ -60,6 +62,7 @@ export default function DebtPrintPage() {
   const { groupCode, records, pnlNames } = payload;
   const head = records[0];
   const isPayable = head.debtType === "PAYABLE";
+  const isDistribution = isProfitDistributionDebt(head.sourceType);
   const branchName = branches.find((branch) => branch.code === head.branchCode)?.name || storeLabel(head.branchCode);
   const hasTax = records.some((row) => row.amountBeforeTax !== null);
   // Diễn giải chung = phần trước " · " của dòng đầu (các dòng nhiều hạng mục nối thêm mã/ghi chú).
@@ -81,7 +84,7 @@ export default function DebtPrintPage() {
         </div>
 
         <section className="text-center py-8">
-          <h2 className="text-3xl font-bold uppercase tracking-wide">{isPayable ? "Chứng từ công nợ phải trả" : "Chứng từ công nợ phải thu"}</h2>
+          <h2 className="text-3xl font-bold uppercase tracking-wide">{isDistribution ? "Phiếu chia lợi nhuận" : isPayable ? "Chứng từ công nợ phải trả" : "Chứng từ công nợ phải thu"}</h2>
           <p className="mt-2 text-sm uppercase tracking-widest text-slate-500">{groupCode}</p>
           <p className="text-sm text-slate-500 mt-2">Ngày {dateText(head.documentDate)}</p>
         </section>
@@ -99,7 +102,7 @@ export default function DebtPrintPage() {
           <thead>
             <tr className="border-y-2 border-slate-300 text-left text-xs uppercase text-slate-500">
               <th className="py-2 pr-2">STT</th>
-              <th className="py-2 pr-2">{isPayable ? "Hạng mục P&L" : "Nhóm hạng mục P&L"}</th>
+              <th className="py-2 pr-2">{isDistribution ? "Tài khoản đối ứng" : isPayable ? "Hạng mục P&L" : "Nhóm hạng mục P&L"}</th>
               {hasTax && <th className="py-2 pr-2 text-right">Số tiền trước thuế</th>}
               {hasTax && <th className="py-2 pr-2 text-right">Thuế suất</th>}
               {hasTax && <th className="py-2 pr-2 text-right">Tiền thuế GTGT</th>}
@@ -111,7 +114,7 @@ export default function DebtPrintPage() {
               <tr key={row.id} className="border-b border-slate-100 align-top">
                 <td className="py-2 pr-2">{index + 1}</td>
                 <td className="py-2 pr-2">
-                  {pnlCode(row) ? `${pnlNames[pnlCode(row)] || pnlCode(row)}` : "Chưa phân loại P&L"}
+                  {isDistribution ? "421 · Lợi nhuận chưa phân phối" : pnlCode(row) ? `${pnlNames[pnlCode(row)] || pnlCode(row)}` : "Chưa phân loại P&L"}
                   {lineNote(row) && <small className="block text-slate-500 italic">{lineNote(row)}</small>}
                 </td>
                 {hasTax && <td className="py-2 pr-2 text-right tabular-nums">{money(beforeTaxOf(row))}</td>}
