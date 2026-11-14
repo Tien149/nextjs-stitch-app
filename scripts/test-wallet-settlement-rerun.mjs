@@ -103,3 +103,14 @@ test("ngay chua co doanh thu (vua xoa, chua nap lai) thi bao nap file truoc", ()
 test("khong co phieu nao thi tu choi go gang", () => {
   assert.equal(planWalletSettlementRerun({ vouchers: [], currentRevenue: 100 }).ok, false);
 });
+
+test("ví Grab: toàn bộ phí là chi phí Grab, không chặn khi phí mới nhỏ hơn hoa hồng cũ", () => {
+  const result = planWalletSettlementRerun({
+    vouchers: [{ id: "a", code: "QTVI-A", amount: 800, feeAmount: 300, grabExpenseAmount: 250 }],
+    currentRevenue: 1000,
+    wholeFeeIsGrab: true,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.plan.grabTotal, 0);
+  assert.deepEqual(result.plan.changes.map((change) => change.feeAfter), [200]);
+});

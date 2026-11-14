@@ -8,7 +8,7 @@ import { addPeriod, apiError, buildAllocationSchedules, businessError, cleanText
 import { requestedBranch, assertBranchAccess, branchFilterForSession, postAccrualScheduleJournals } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
-import { filterCashierCashSources, isCashierRoleName, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, parseMoneySourceCodes } from "@/lib/money-sources";
+import { filterCashierCashSources, isCashierRoleName, isGrabMoneySource, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, parseMoneySourceCodes } from "@/lib/money-sources";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { cashDepositRoundingExpense, cashDepositUnit, roundCashDepositAmount } from "@/lib/cash-deposit";
@@ -473,8 +473,10 @@ async function rerunWalletSettlementTransfer(
     });
   }
 
-  if (!transfer.sourceReportDate) businessError("Phiếu này không ghi Ngày doanh thu và chưa nối dòng sao kê nào, nên không biết lấy doanh thu ngày nào để tính lại. Cần sửa tay theo sao kê.");
-  const reportDay = revenueDayKey(transfer.sourceReportDate);
+  // Ngày doanh thu thật là ngày của dòng phân bổ sao kê đã nối; Ngày doanh thu ghi trên phiếu có
+  // khi lệch (QTVI-2609-NME-00018 ghi 10/09, sao kê là doanh thu 09/09 — khách báo 15/11/2026).
+  if (linkedDays.size !== 1 && !transfer.sourceReportDate) businessError("Phiếu này không ghi Ngày doanh thu và chưa nối dòng sao kê nào, nên không biết lấy doanh thu ngày nào để tính lại. Cần sửa tay theo sao kê.");
+  const reportDay = linkedDays.size === 1 ? [...linkedDays][0] : revenueDayKey(transfer.sourceReportDate as Date);
   const dayRange = {
     gte: new Date(`${reportDay}T00:00:00.000Z`),
     lt: new Date(new Date(`${reportDay}T00:00:00.000Z`).getTime() + 2 * 86_400_000),
@@ -489,7 +491,8 @@ async function rerunWalletSettlementTransfer(
         deletedAt: null,
         branchCode: transfer.branchCode,
         fromMoneySourceCode: transfer.fromMoneySourceCode,
-        sourceReportDate: { gte: new Date(dayRange.gte.getTime() - 86_400_000), lt: dayRange.lt },
+        // Quét rộng ±3 ngày: nhóm chốt lại theo ngày của dòng sao kê bên dưới, không theo ô ngày trên phiếu.
+        sourceReportDate: { gte: new Date(dayRange.gte.getTime() - 3 * 86_400_000), lt: new Date(dayRange.lt.getTime() + 2 * 86_400_000) },
       },
       orderBy: { code: "asc" },
     }),
@@ -503,7 +506,31 @@ async function rerunWalletSettlementTransfer(
       select: { saleDate: true, branchCode: true, netAmount: true },
     }),
   ]);
-  const group = groupRows.filter((row) => row.sourceReportDate && revenueDayKey(row.sourceReportDate) === reportDay);
+  /**
+   * Nhóm = các phiếu cùng ví có doanh thu đúng ngày này. Ngày của mỗi phiếu lấy theo dòng phân bổ
+   * sao kê đã nối (một ngày), không có mới dùng Ngày doanh thu trên phiếu; phiếu nối dòng gộp
+   * nhiều ngày bị loại — nó đi nhánh theo từng ngày, phần của nó đã trừ qua "claimedElsewhere".
+   * Trước đây gom theo ô ngày trên phiếu nên QTVI-2610-NME-00014 (Momo 09–11/10, ghi ngày 12/10)
+   * lọt vào nhóm 12/10 → tiền về 71,4tr > doanh thu 19tr, phiếu 00013 không chạy lại được.
+   */
+  const candidateMatches = await prisma.reconciliationMatch.findMany({
+    where: { targetType: "WALLET_SETTLEMENT", targetId: { in: groupRows.map((row) => row.id) }, deletedAt: null, bankTransaction: { deletedAt: null } },
+    select: { targetId: true, bankTransaction: { select: { allocations: { select: { revenueDate: true, creditAmount: true, operationType: true } } } } },
+  });
+  const linkedDaysOf = new Map<string, Set<string>>();
+  for (const match of candidateMatches) {
+    const days = linkedDaysOf.get(match.targetId) || new Set<string>();
+    for (const line of match.bankTransaction.allocations) {
+      if (line.creditAmount > 0 && line.revenueDate && line.operationType !== "OTHER_RECEIPT") days.add(revenueDayKey(line.revenueDate));
+    }
+    linkedDaysOf.set(match.targetId, days);
+  }
+  const group = groupRows.filter((row) => {
+    const days = linkedDaysOf.get(row.id);
+    if (days && days.size > 0) return days.size === 1 && days.has(reportDay);
+    return Boolean(row.sourceReportDate) && revenueDayKey(row.sourceReportDate as Date) === reportDay;
+  });
+  if (!group.some((row) => row.id === transfer.id)) group.push(transfer as (typeof groupRows)[number]);
   const dayRevenue = pickRevenueRowsOfDay(revenueRows, reportDay, transfer.branchCode)
     .reduce((sum, row) => sum + row.netAmount, 0);
   /**
@@ -540,9 +567,13 @@ async function rerunWalletSettlementTransfer(
     where: { type: "MONEY_SOURCE", code: transfer.fromMoneySourceCode },
   });
   const walletLabel = walletSource ? moneySourceDisplayName(walletSource) : transfer.fromMoneySourceCode;
-  const planned = planWalletSettlementRerun({ vouchers: group, currentRevenue, walletLabel });
+  const isGrabWallet = isGrabMoneySource(transfer.fromMoneySourceCode, walletSource?.name);
+  const planned = planWalletSettlementRerun({ vouchers: group, currentRevenue, walletLabel, wholeFeeIsGrab: isGrabWallet });
   if (!planned.ok) businessError(planned.reason);
-  const plan = planned.ok ? planned.plan : null;
+  // Ví Grab còn phần phí đang nằm ở quẹt thẻ thì vẫn là "có thay đổi" dù tổng phí giữ nguyên.
+  const plan = planned.ok
+    ? { ...planned.plan, changed: planned.plan.changed || (isGrabWallet && group.some((row) => Math.round(row.grabExpenseAmount || 0) !== Math.round(row.feeAmount))) }
+    : null;
   if (!plan) businessError("Không dựng được phương án chạy lại.");
 
   // Phí vượt trần: cùng luật với form lập phiếu — vẫn cho ghi nhưng người dùng phải nhìn
@@ -582,7 +613,7 @@ async function rerunWalletSettlementTransfer(
   // khoản mục chuẩn, thiếu khoản mục này trong danh mục thì báo để khai trước.
   const needsFeeCategory = plan.changes.some((change) => {
     const row = group.find((item) => item.id === change.id);
-    return change.feeAfter > (row?.grabExpenseAmount || 0) && !row?.feeCategoryCode;
+    return !isGrabWallet && change.feeAfter > (row?.grabExpenseAmount || 0) && !row?.feeCategoryCode;
   });
   if (needsFeeCategory && !(await assertWalletCardFeeCategory())) {
     businessError(`Thiếu khoản mục ${WALLET_CARD_FEE_CATEGORY_CODE} trong danh mục Thu/Chi, khai trước rồi chạy lại quyết toán.`);
@@ -592,10 +623,13 @@ async function rerunWalletSettlementTransfer(
   const journalStatuses: Record<string, string> = {};
   for (const change of plan.changes) {
     const row = group.find((item) => item.id === change.id);
-    if (!row || change.feeAfter === change.feeBefore) continue;
+    // Ví Grab: phiếu cũ để phần chênh ngoài hoa hồng thành phí quẹt thẻ (QTVI-2609-NME-00033) —
+    // chạy lại thì chuyển hết sang Grab dù tổng phí không đổi.
+    const grabAfter = isGrabWallet ? change.feeAfter : row?.grabExpenseAmount || 0;
+    if (!row || (change.feeAfter === change.feeBefore && Math.round(row.grabExpenseAmount || 0) === Math.round(Math.min(grabAfter, change.feeAfter)))) continue;
     const updated = await prisma.moneyTransfer.update({
       where: { id: row.id },
-      data: walletFeeFields(row, change.feeAfter, row.grabExpenseAmount || 0),
+      data: walletFeeFields(row, change.feeAfter, grabAfter),
     });
     updatedRows.push(updated);
     // Dòng phân bổ của sao kê nối với phiếu (một dòng ngày doanh thu) mang gross/phí mới: phiếu gộp
@@ -607,7 +641,7 @@ async function rerunWalletSettlementTransfer(
     const ownLines = (match?.bankTransaction.allocations || [])
       .filter((line) => line.creditAmount > 0 && line.revenueDate && line.operationType !== "OTHER_RECEIPT");
     if (ownLines.length === 1) {
-      const grab = Math.round(row.grabExpenseAmount || 0);
+      const grab = Math.round(updated.grabExpenseAmount || 0);
       await prisma.bankStatementAllocation.update({
         where: { id: ownLines[0].id },
         data: { grossAmount: Math.round(ownLines[0].creditAmount) + change.feeAfter, grabExpenseAmount: grab, cardFeeAmount: change.feeAfter - grab },

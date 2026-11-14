@@ -77,6 +77,11 @@ export function planWalletSettlementRerun(input: {
   currentRevenue: number;
   /** Tên ví để câu báo lỗi đọc được; không có thì dùng mã. */
   walletLabel?: string;
+  /**
+   * Ví Grab: TOÀN BỘ phí là Chi phí bán hàng Grab (cùng luật bảng Tiền về đủ chưa, khách 15/11/2026)
+   * — không giữ "hoa hồng theo sao kê + phần chênh là phí quẹt thẻ" nữa. Nơi gọi ghi grab = feeAfter.
+   */
+  wholeFeeIsGrab?: boolean;
 }): WalletSettlementRerunResult {
   const vouchers = input.vouchers.map((voucher) => ({
     ...voucher,
@@ -91,7 +96,7 @@ export function planWalletSettlementRerun(input: {
   const wallet = input.walletLabel || "ví này";
   const totalAmount = vouchers.reduce((sum, voucher) => sum + voucher.amount, 0);
   const currentFee = vouchers.reduce((sum, voucher) => sum + voucher.feeAmount, 0);
-  const grabTotal = vouchers.reduce((sum, voucher) => sum + voucher.grabExpenseAmount, 0);
+  const grabTotal = input.wholeFeeIsGrab ? 0 : vouchers.reduce((sum, voucher) => sum + voucher.grabExpenseAmount, 0);
   const nextGross = Math.round(input.currentRevenue);
   const nextFee = nextGross - totalAmount;
 
@@ -121,7 +126,7 @@ export function planWalletSettlementRerun(input: {
     id: voucher.id,
     code: voucher.code,
     feeBefore: voucher.feeAmount,
-    feeAfter: voucher.grabExpenseAmount + cardFees[index],
+    feeAfter: (input.wholeFeeIsGrab ? 0 : voucher.grabExpenseAmount) + cardFees[index],
   }));
 
   return {
