@@ -209,6 +209,78 @@ export async function POST(request: Request) {
     }
 
     /**
+     * XOÁ MÃ TẠO NHẦM LÚC KIỂM KÊ (khách 14/11/2026): nhà hàng bấm "Tạo mã mới" cho món không cần
+     * theo dõi, tới bước duyệt kế toán muốn bỏ dòng VÀ xoá luôn mã khỏi danh mục. Trước đây không
+     * làm được: form không có nút bỏ dòng, danh mục chặn xoá mã còn hồ sơ, còn xoá hồ sơ ở màn Tài
+     * sản thì phiên kiểm vẫn trỏ tới hồ sơ đã xoá -> Lưu/Duyệt báo "Không tìm thấy tài sản".
+     *
+     * Chỉ nhận mã RỖNG: mọi đợt còn sống đều 0 cái, 0 đ, chưa khấu hao, không công nợ, chưa thanh lý
+     * và chưa nằm trong phiên kiểm kê đã duyệt. Gỡ dòng khỏi mọi phiên chưa duyệt, đưa hồ sơ + dòng
+     * danh mục vào Thùng rác. Mã đã có số lượng / tiền thì vẫn xoá ở màn Tài sản như cũ.
+     */
+    if (action === "DELETE_STOCKTAKE_ASSET") {
+      const assetId = cleanText(body.assetId);
+      if (!assetId) businessError("Thiếu mã tài sản cần xoá");
+      const picked = await prisma.assetRecord.findUnique({ where: { id: assetId } });
+      if (!picked) businessError("Không tìm thấy tài sản cần xoá (có thể đã bị xoá trước đó)");
+      const lots = await prisma.assetRecord.findMany({ where: { code: picked.code } });
+      const lotIds = lots.map((lot) => lot.id);
+      for (const lot of lots) {
+        assertBranchAccess(auth.session, lot.branchCode);
+        assertDepartmentAccess(auth.session, lot.departmentCode, `Tài sản ${lot.code}`);
+        if (Math.abs(lot.quantity || 0) > 0.000001 || Math.abs(lot.originalCost || 0) > 0.5) {
+          businessError(`Mã ${lot.code} (đợt ${lot.lotNo}, ${lot.branchCode}) đang có ${lot.quantity} cái / ${Math.round(lot.originalCost || 0).toLocaleString("vi-VN")} đ trên sổ — chỉ xoá được ở màn Tài sản.`);
+        }
+        if (lot.status === "DISPOSED") businessError(`Mã ${lot.code} đã thanh lý, không xoá ở đây được.`);
+        await assertPeriodOpen({ date: lot.purchaseDate, branchCode: lot.branchCode }, "xoá mã tài sản");
+      }
+      const [depreciations, debts, approvedLines] = await Promise.all([
+        prisma.assetDepreciation.count({ where: { assetId: { in: lotIds } } }),
+        prisma.debtRecord.count({ where: { sourceType: "ASSET", sourceId: { in: lotIds } } }),
+        prisma.assetStocktakeLine.findMany({
+          where: { assetId: { in: lotIds }, session: { deletedAt: null, status: STOCKTAKE_APPROVED } },
+          select: { session: { select: { code: true } } },
+        }),
+      ]);
+      if (depreciations > 0) businessError(`Mã ${picked.code} đã trích khấu hao/phân bổ, chỉ xoá được ở màn Tài sản.`);
+      if (debts > 0) businessError(`Mã ${picked.code} có công nợ NCC, chỉ xoá được ở màn Tài sản.`);
+      if (approvedLines.length > 0) {
+        const codes = [...new Set(approvedLines.map((line) => line.session.code))].join(", ");
+        businessError(`Mã ${picked.code} nằm trong phiên kiểm kê đã duyệt ${codes}. Mở lại phiên đó trước rồi mới xoá mã.`);
+      }
+
+      const deletedAt = new Date();
+      const deletedBy = auth.session.name || auth.session.email || null;
+      const result = await prisma.$transaction(async (tx) => {
+        // Phiên chưa duyệt (kể cả phiên đã xoá mềm) đang có dòng của mã: gỡ dòng — không thì khôi
+        // phục / lưu lại phiên sẽ vấp hồ sơ đã xoá.
+        const lines = await tx.assetStocktakeLine.findMany({
+          where: { assetId: { in: lotIds }, session: { status: { not: STOCKTAKE_APPROVED } } },
+          select: { id: true, session: { select: { code: true } } },
+        });
+        await tx.assetStocktakeLine.deleteMany({ where: { id: { in: lines.map((line) => line.id) } } });
+        await tx.assetMaintenance.updateMany({ where: { assetId: { in: lotIds }, deletedAt: null }, data: { deletedAt, deletedBy } });
+        await tx.assetDamageReport.updateMany({ where: { assetId: { in: lotIds }, deletedAt: null }, data: { deletedAt, deletedBy } });
+        await tx.assetRecord.updateMany({ where: { id: { in: lotIds }, deletedAt: null }, data: { deletedAt, deletedBy } });
+        // Mã không cấp lại cho tài sản khác (nextAssetCode quét cả bản đã xoá) — khôi phục ở Thùng rác được.
+        await tx.assetCatalogItem.updateMany({ where: { code: picked.code, deletedAt: null }, data: { deletedAt, deletedBy } });
+        return { sessions: [...new Set(lines.map((line) => line.session.code))] };
+      });
+      await writeAuditLog({
+        session: auth.session,
+        module: menuHref,
+        action: "DELETE_STOCKTAKE_ASSET",
+        entityType: "AssetRecord",
+        entityId: picked.id,
+        entityCode: picked.code,
+        branchCode: picked.branchCode,
+        message: cleanText(body.reason) || null,
+        metadata: { name: picked.name, lots: lotIds.length, removedFromSessions: result.sessions },
+      });
+      return NextResponse.json({ ok: true, code: picked.code, name: picked.name, sessions: result.sessions });
+    }
+
+    /**
      * Kiểm kê CCDC & tài sản HAI BƯỚC (khách yêu cầu 28/09/2026): nhà hàng đếm xong bấm "Gửi duyệt"
      * — phiên nằm ở Chờ duyệt, CHƯA đổi số lượng tài sản; nhà hàng mở lại sửa / bổ sung được tới khi
      * kế toán duyệt (bị trả lại cũng sửa rồi gửi lại). Kế toán (quyền "Duyệt") bấm Duyệt mới cập

@@ -393,6 +393,25 @@ export default function AssetOperationsPage() {
   };
 
   /**
+   * Mã tạo nhầm lúc kiểm (khách 14/11/2026): dòng một đợt, sổ sách 0, nguyên giá 0 thì hiện nút
+   * "Xoá mã" — máy chủ kiểm lại đủ điều kiện (DELETE_STOCKTAKE_ASSET), gỡ dòng khỏi mọi phiên chưa
+   * duyệt và đưa hồ sơ + mã danh mục vào Thùng rác.
+   */
+  const canDeleteStocktakeAsset = (row: StocktakeDraftRow) => {
+    if (row.lots.length !== 1 || Math.abs(row.systemQuantity) > 0.000001) return false;
+    const asset = data.assets.find((candidate) => candidate.id === row.assetId);
+    return Boolean(row.isNew || (asset && Math.abs(asset.quantity || 0) <= 0.000001 && Math.abs(asset.originalCost || 0) <= 0.5));
+  };
+  const deleteStocktakeAsset = async (row: StocktakeDraftRow) => {
+    if (!window.confirm(`Xoá mã ${row.code} "${row.name}"?\n\nDòng này bị gỡ khỏi phiên kiểm kê đang soạn và mọi phiên chưa duyệt, hồ sơ và mã trong Danh mục mã CCDC vào Thùng rác (khôi phục được).`)) return;
+    const ok = await send({ action: "DELETE_STOCKTAKE_ASSET", assetId: row.assetId }, (payload) => {
+      const sessions = Array.isArray(payload.sessions) ? payload.sessions as string[] : [];
+      return `Đã xoá mã ${row.code}${sessions.length ? ` và gỡ khỏi phiên ${sessions.join(", ")}` : ""}.`;
+    });
+    if (ok) setStocktakeRows((rows) => rows.filter((candidate) => candidate.assetId !== row.assetId));
+  };
+
+  /**
    * Nạp phiên chưa duyệt / bị trả lại vào form để nhà hàng sửa, bổ sung rồi gửi lại. Mỗi đợt giữ số
    * sổ sách chốt lúc đếm (để chia số đếm theo đợt đúng như lần gửi đầu); ảnh cũ không tải về mà
    * đánh dấu savedImage — chưa chụp lại thì máy chủ giữ ảnh đã lưu.
@@ -742,6 +761,9 @@ export default function AssetOperationsPage() {
                           {row.code}{row.departmentCode ? ` · ${row.departmentCode}` : ""}
                           {row.isNew && <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">MỚI</span>}
                           {row.lots.length > 1 && <span className="ml-1 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700" title="Đếm chung cho cả mã; thừa ghi vào đợt mới nhất, thiếu trừ từ đợt mới nhất">{row.lots.length} đợt</span>}
+                          {canDeleteStocktakeAsset(row) && (
+                            <button type="button" className="ml-2 text-[11px] font-bold text-rose-700 hover:underline" onClick={() => void deleteStocktakeAsset(row)}>Xoá mã</button>
+                          )}
                         </p>
                       </div>
                       <div className="flex items-end gap-2">
@@ -790,6 +812,9 @@ export default function AssetOperationsPage() {
                               {row.code}{row.departmentCode ? ` · ${row.departmentCode}` : ""}
                               {row.isNew && <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">MỚI</span>}
                               {row.lots.length > 1 && <span className="ml-1 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700" title="Đếm chung cho cả mã; thừa ghi vào đợt mới nhất, thiếu trừ từ đợt mới nhất">{row.lots.length} đợt</span>}
+                              {canDeleteStocktakeAsset(row) && (
+                                <button type="button" className="ml-2 text-[11px] font-bold text-rose-700 hover:underline" title="Mã tạo nhầm lúc kiểm: gỡ khỏi phiên và xoá khỏi Danh mục mã CCDC" onClick={() => void deleteStocktakeAsset(row)}>Xoá mã</button>
+                              )}
                             </small>
                           </td>
                           <td className="px-3 py-2 text-right">{money(row.systemQuantity)}</td>
