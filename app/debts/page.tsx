@@ -1297,7 +1297,8 @@ export default function DebtsPage() {
                     <td className="text-center">{row.index}</td>
                     <td className="whitespace-nowrap">{row.date}</td>
                     <td>{row.source}</td>
-                    <td className="break-all">{row.code}</td>
+                    {/* Mã chứng từ in một dòng (khách 13/11: mã bị bẻ 5 dòng); Diễn giải tự xuống dòng ăn phần còn lại. */}
+                    <td className="whitespace-nowrap">{row.code}</td>
                     <td>{row.description}</td>
                     <td className="text-right tabular-nums whitespace-nowrap">{row.increase !== null ? money(row.increase) : ""}</td>
                     <td className="text-right tabular-nums whitespace-nowrap">{row.decrease !== null ? money(row.decrease) : ""}</td>
