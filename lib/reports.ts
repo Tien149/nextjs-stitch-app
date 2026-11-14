@@ -3046,6 +3046,12 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
       // cũng không được tính, ra một con số vô nghĩa, có khi âm.
       fee: rows.filter((row) => row.group === "WALLET" && row.remaining > 0 && row.received > 0)
         .reduce((sum, row) => sum + row.remaining, 0),
+      // Tách phí thu hộ theo hai khoản chi phí (khách 14/11/2026): ví Grab → Chi phí bán hàng Grab,
+      // ví/thẻ còn lại → Chi phí quẹt thẻ. Cùng luật feeCategoryCode của từng dòng.
+      feeGrab: rows.filter((row) => row.feeCategoryCode === WALLET_GRAB_EXPENSE_CATEGORY_CODE && row.received > 0)
+        .reduce((sum, row) => sum + row.remaining, 0),
+      feeCard: rows.filter((row) => row.feeCategoryCode === WALLET_CARD_FEE_CATEGORY_CODE && row.received > 0)
+        .reduce((sum, row) => sum + row.remaining, 0),
       over: rows.filter((row) => row.status === "OVER").reduce((sum, row) => sum - row.remaining, 0),
     },
   };

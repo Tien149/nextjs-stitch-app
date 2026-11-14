@@ -1,3 +1,4 @@
+import { claimedGrossOf } from "@/lib/wallet-claimed-gross";
 import { NextResponse } from "next/server";
 import { isAdmin, requireCashDepositCreate, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { getExpenseSummary } from "@/lib/expense-summary";
@@ -519,16 +520,18 @@ async function rerunWalletSettlementTransfer(
     where: {
       revenueDate: { gte: new Date(dayRange.gte.getTime() - 86_400_000), lt: dayRange.lt },
       decreaseMoneySourceCode: transfer.fromMoneySourceCode,
-      grossAmount: { gt: 0 },
       OR: [{ operationType: null }, { operationType: { not: "OTHER_RECEIPT" } }],
       bankTransactionId: { notIn: groupMatches.map((match) => match.bankTransactionId) },
       bankTransaction: { deletedAt: null, branchCode: transfer.branchCode },
     },
-    select: { revenueDate: true, grossAmount: true },
+    select: { revenueDate: true, grossAmount: true, creditAmount: true },
   });
+  // Dòng tách ngày chưa tính gross (phiếu "chưa có doanh thu ví") vẫn đã nhận ít nhất số tiền về
+  // của nó: bỏ qua thì QTVI-2610-NME-00045 (về lẻ 1,5tr ngày 19/10) ôm luôn 36,57tr đã nằm trong
+  // dòng gộp 25FH4 → phí 37,4tr (khách báo 14/11/2026).
   const claimedElsewhere = Math.round(claimedRows
     .filter((row) => row.revenueDate && revenueDayKey(row.revenueDate) === reportDay)
-    .reduce((sum, row) => sum + (row.grossAmount || 0), 0));
+    .reduce((sum, row) => sum + claimedGrossOf(row), 0));
   const groupAmount = group.reduce((sum, row) => sum + Math.round(row.amount), 0);
   // Phần còn lại không đủ cho số tiền về của nhóm = tiền về thêm ngoài doanh thu đã nhận: phí 0.
   const currentRevenue = claimedElsewhere > 0 ? Math.max(dayRevenue - claimedElsewhere, groupAmount) : dayRevenue;

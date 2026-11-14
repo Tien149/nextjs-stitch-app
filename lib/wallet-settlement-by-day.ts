@@ -1,3 +1,4 @@
+import { claimedGrossOf } from "@/lib/wallet-claimed-gross";
 import { prisma } from "@/lib/prisma";
 import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { createMoneySourceMatcher } from "@/lib/reports";
@@ -191,14 +192,14 @@ export async function computeWalletGrossByDay(input: {
       where: {
         revenueDate: { gte: rangeStart, lt: rangeEnd },
         decreaseMoneySourceCode: input.walletCode,
-        grossAmount: { not: null },
+        // Không lọc grossAmount: dòng tách ngày chưa tính gross vẫn nhận số tiền về (claimedGrossOf).
         // Phần đã tách sang loại thu hộ không phải doanh thu ví, không "nhận" gross nào.
         // (so sánh "khác" trong SQL bỏ luôn dòng NULL, nên phải OR thêm nhánh null).
         OR: [{ operationType: null }, { operationType: { not: "OTHER_RECEIPT" } }],
         bankTransactionId: { not: input.excludeBankTransactionId },
         bankTransaction: { deletedAt: null, branchCode: input.branchCode },
       },
-      select: { revenueDate: true, grossAmount: true },
+      select: { revenueDate: true, grossAmount: true, creditAmount: true },
     }),
   ]);
 
@@ -231,7 +232,7 @@ export async function computeWalletGrossByDay(input: {
   for (const row of claimed) {
     if (!row.revenueDate) continue;
     const day = vietnamBusinessDayKey(row.revenueDate);
-    claimedByDay.set(day, (claimedByDay.get(day) || 0) + (row.grossAmount || 0));
+    claimedByDay.set(day, (claimedByDay.get(day) || 0) + claimedGrossOf(row));
   }
 
   const goLiveDay = await branchGoLiveDay(input.branchCode);

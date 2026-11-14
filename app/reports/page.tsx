@@ -200,7 +200,7 @@ type RevenueSettlementData = {
   rows: RevenueSettlementRow[];
   looseVouchers?: RevenueSettlementLooseVoucher[];
   expensePnlItems?: Array<{ code: string; name: string }>;
-  totals: { revenue: number; received: number; remaining: number; waiting: number; fee: number; over: number; looseVoucherAmount?: number };
+  totals: { revenue: number; received: number; remaining: number; waiting: number; fee: number; feeGrab?: number; feeCard?: number; over: number; looseVoucherAmount?: number };
 };
 type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null };
 type RevenueLedgerRow = {
@@ -3577,10 +3577,12 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
         </section>
       )}
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <Kpi label="Doanh thu trong kỳ" value={data.totals.revenue} icon="point_of_sale" />
         <Kpi label="Tiền đã về" value={data.totals.received} icon="account_balance" tone="green" />
-        <Kpi label="Phí thu hộ" value={data.totals.fee} icon="percent" tone="amber" />
+        {/* Phí thu hộ tách hai khoản chi phí (khách 14/11/2026): Grab và quẹt thẻ/ví khác. */}
+        <Kpi label="Chi phí bán hàng Grab" value={data.totals.feeGrab ?? 0} icon="delivery_dining" tone="amber" />
+        <Kpi label="Chi phí quẹt thẻ bán hàng" value={data.totals.feeCard ?? 0} icon="credit_card" tone="amber" />
         <Kpi label="Chưa về" value={data.totals.waiting} icon="hourglass_top" tone="rose" />
         <Kpi label="Về dư, chưa có doanh thu" value={data.totals.over} icon="priority_high" tone="rose" />
       </section>

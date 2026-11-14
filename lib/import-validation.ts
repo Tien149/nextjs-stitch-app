@@ -1,3 +1,4 @@
+import { claimedGrossOf } from "@/lib/wallet-claimed-gross";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { EQUITY_OPENING_TYPES, isEquityOpeningType, openingAmountAllowsNegative } from "@/lib/balance-sheet";
 import { assertBranchAccess } from "@/lib/accounting";
@@ -1216,10 +1217,12 @@ async function fillWalletGrossFromPosRevenue(rows: ParsedImportRow[], masterItem
       where: {
         revenueDate: { gte: rangeStart, lt: rangeEnd },
         decreaseMoneySourceCode: { in: walletCodes },
-        grossAmount: { not: null },
+        // Dòng tách ngày chưa tính gross vẫn đã nhận số tiền về (claimedGrossOf); phần tách sang
+        // thu hộ không phải doanh thu ví.
+        OR: [{ operationType: null }, { operationType: { not: "OTHER_RECEIPT" } }],
         bankTransaction: { deletedAt: null },
       },
-      select: { revenueDate: true, decreaseMoneySourceCode: true, grossAmount: true },
+      select: { revenueDate: true, decreaseMoneySourceCode: true, grossAmount: true, creditAmount: true },
     }),
   ]);
 
@@ -1228,7 +1231,7 @@ async function fillWalletGrossFromPosRevenue(rows: ParsedImportRow[], masterItem
   for (const row of claimed) {
     if (!row.revenueDate || !row.decreaseMoneySourceCode) continue;
     const key = `${row.decreaseMoneySourceCode}|${dayKey(row.revenueDate)}`;
-    claimedByWallet.set(key, (claimedByWallet.get(key) || 0) + (row.grossAmount || 0));
+    claimedByWallet.set(key, (claimedByWallet.get(key) || 0) + claimedGrossOf(row));
   }
 
   // Nhiều dòng cùng ví + cùng ngày doanh thu thì chia theo tỷ trọng tiền thực nhận.
