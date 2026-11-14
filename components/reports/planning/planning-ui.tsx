@@ -274,11 +274,19 @@ export function UnpostedPeriodsNotice({ periods, debts, syncing, onSync }: {
 }
 
 /** Ô "Kế hoạch (đậm) + Thực đạt (chip màu) + %" dùng trong bảng Dự báo P&L và bảng theo cửa hàng. */
-export function PlanActualCell({ plan, actual, income, align = "right", compact = false }: { plan: number | null; actual: number; income: boolean; align?: "right" | "left"; compact?: boolean }) {
+export function PlanActualCell({ plan, actual, income, align = "right", compact = false, shareOf }: {
+  plan: number | null; actual: number; income: boolean; align?: "right" | "left"; compact?: boolean;
+  /**
+   * Có thì % dưới ô là TỶ TRỌNG thực tế / số này (doanh thu thực tế của dòng) thay vì thực tế / KH
+   * — bảng theo cửa hàng, khách 14/11/2026. Màu chip số thực tế vẫn so với kế hoạch.
+   */
+  shareOf?: number | null;
+}) {
   const fmt = compact ? fmtCompact : (value: number) => money(Math.round(value));
   const hasPlan = plan !== null && Math.abs(plan) > 0.5;
   const hasActual = Math.abs(actual) > 0.5;
   const rate = hasPlan ? actual / (plan as number) : null;
+  const share = shareOf !== undefined ? (shareOf !== null && Math.abs(shareOf) > 0.5 && hasActual ? actual / shareOf : null) : undefined;
   const good = rate === null ? null : income ? rate >= 1 : rate <= 1;
   const chipTone = !hasActual ? "bg-slate-50 text-slate-400" : good === null ? "bg-slate-100 text-slate-600" : good ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700";
   // Thực đạt in to trên, kế hoạch dòng nhỏ không đậm bên dưới (khách sửa 29/09/2026 — cùng luật
@@ -288,7 +296,9 @@ export function PlanActualCell({ plan, actual, income, align = "right", compact 
       <span className={`rounded px-1.5 py-0.5 text-[14px] font-bold whitespace-nowrap ${chipTone}`}>{hasActual ? `${fmt(actual)}${compact ? "" : " đ"}` : "0"}</span>
       <span className="flex items-center gap-1 text-[11px] font-normal whitespace-nowrap">
         <span className={hasPlan ? "text-slate-500" : "text-slate-300"}>KH {hasPlan ? `${fmt(plan as number)}${compact ? "" : " đ"}` : "—"}</span>
-        {rate !== null && <span className={`font-semibold ${good ? "text-emerald-600" : "text-rose-600"}`}>{pctText(rate, 0)}</span>}
+        {share !== undefined
+          ? share !== null && <span className="font-semibold text-slate-600" title="Thực tế / Doanh thu thực tế">{pctText(share, 1)}</span>
+          : rate !== null && <span className={`font-semibold ${good ? "text-emerald-600" : "text-rose-600"}`}>{pctText(rate, 0)}</span>}
       </span>
     </div>
   );

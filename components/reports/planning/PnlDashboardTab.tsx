@@ -219,12 +219,14 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
     .some((row) => Math.abs(row.opexRest.plan) > 0.5 || Math.abs(row.opexRest.actual) > 0.5);
   const operatingHeaders = ["Nhân sự", ...opexGroups.map((group) => group.name), ...(showOpexRest ? ["OPEX chưa gắn nhóm"] : [])];
   const operatingCells = (row: typeof totalRow) => [row.payroll, ...row.opex, ...(showOpexRest ? [row.opexRest] : [])];
+  // Từ cột Giá vốn trở đi, % dưới ô là tỷ trọng trên doanh thu thực tế (khách 14/11/2026), không so KH;
+  // riêng Doanh thu vẫn % so kế hoạch.
   const branchCells = (row: typeof totalRow) => [
-    { key: "revenue", value: row.revenue, income: true },
-    { key: "cogs", value: row.cogs, income: false },
-    { key: "capex", value: row.capex, income: false },
-    ...operatingCells(row).map((value, index) => ({ key: `operating-${index}`, value, income: false })),
-    { key: "netProfit", value: row.netProfit, income: true },
+    { key: "revenue", value: row.revenue, income: true, shareOf: undefined },
+    { key: "cogs", value: row.cogs, income: false, shareOf: row.revenue.actual },
+    { key: "capex", value: row.capex, income: false, shareOf: row.revenue.actual },
+    ...operatingCells(row).map((value, index) => ({ key: `operating-${index}`, value, income: false, shareOf: row.revenue.actual })),
+    { key: "netProfit", value: row.netProfit, income: true, shareOf: row.revenue.actual },
   ];
 
   /**
@@ -379,7 +381,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
                       {section.month >= 0 && section.rows.length === 1 && <b className="mr-2 text-[12px] text-slate-700">Tháng {section.month + 1}</b>}
                       <Tag tone={row.tone} className="text-[11px]">{storeLabel(row.code)}</Tag>
                     </td>
-                    {branchCells(row).map((cell) => <td key={cell.key} className="px-3 py-2.5"><PlanActualCell plan={cell.value.plan} actual={cell.value.actual} income={cell.income} /></td>)}
+                    {branchCells(row).map((cell) => <td key={cell.key} className="px-3 py-2.5"><PlanActualCell plan={cell.value.plan} actual={cell.value.actual} income={cell.income} shareOf={cell.shareOf} /></td>)}
                     <td className="px-3 py-2.5 text-right">
                       <RateChip rate={rate} good={rate === null ? null : rate >= 1} />
                       <div className="mt-1 h-1.5 w-28 ml-auto rounded-full bg-slate-100 overflow-hidden"><div className={`h-full ${rate !== null && rate >= 1 ? "bg-emerald-500" : "bg-amber-400"}`} style={{ width: `${Math.min(100, (rate || 0) * 100)}%` }} /></div>
@@ -397,7 +399,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
                 section.total && (
                   <tr key={`${section.month}-total`} className="border-t border-slate-100 font-semibold">
                     <td className="px-4 py-2 text-[11px] uppercase tracking-wide text-slate-500">Cộng tháng {section.month + 1}</td>
-                    {branchCells(section.total).map((cell) => <td key={cell.key} className="px-3 py-2"><PlanActualCell plan={cell.value.plan} actual={cell.value.actual} income={cell.income} /></td>)}
+                    {branchCells(section.total).map((cell) => <td key={cell.key} className="px-3 py-2"><PlanActualCell plan={cell.value.plan} actual={cell.value.actual} income={cell.income} shareOf={cell.shareOf} /></td>)}
                     <td className="px-3 py-2 text-right"><RateChip rate={ratioOf(section.total.revenue.actual, section.total.revenue.plan)} good={null} /></td>
                   </tr>
                 ),
@@ -406,7 +408,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
             {branchRows.length > 0 && (
               <tr className="border-t-2 border-slate-200 bg-slate-50 font-bold">
                 <td className="px-4 py-2.5 text-[12px] uppercase tracking-wide text-slate-600">Tổng cộng{monthSections.length > 0 && <span className="block normal-case font-normal text-[10px] text-slate-500">{monthPickLabel(picked)}</span>}</td>
-                {branchCells(totalRow).map((cell) => <td key={cell.key} className="px-3 py-2.5"><PlanActualCell plan={cell.value.plan} actual={cell.value.actual} income={cell.income} /></td>)}
+                {branchCells(totalRow).map((cell) => <td key={cell.key} className="px-3 py-2.5"><PlanActualCell plan={cell.value.plan} actual={cell.value.actual} income={cell.income} shareOf={cell.shareOf} /></td>)}
                 <td className="px-3 py-2.5 text-right"><RateChip rate={ratioOf(totalRow.revenue.actual, totalRow.revenue.plan)} good={null} /></td>
               </tr>
             )}
