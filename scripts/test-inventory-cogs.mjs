@@ -29,10 +29,12 @@ test("kho bar -> COGS Bar; nhóm kho viết có dấu vẫn nhận ra", () => {
   assert.equal(kitchen.pnlItemCode, "COGS_BEP");
 });
 
-test("kho không thuộc bếp/bar -> COGS kho chung, không gắn bộ phận", () => {
-  const [line] = planInventoryCogsJournal({ transactionType: "XUAT_KIEM_KE", warehouseGroup: "VAN_PHONG", lines: [{ totalCost: 300, itemType: "RAW_MATERIAL" }] });
-  assert.equal(line.pnlItemCode, "COGS_KHAC");
-  assert.equal(line.departmentCode, null);
+test("kho không thuộc bếp/bar (FOH, văn phòng) -> COGS Bar, bộ phận BAR (khách 14/11/2026)", () => {
+  for (const warehouseGroup of ["VAN_PHONG", "KHO FOH", null]) {
+    const [line] = planInventoryCogsJournal({ transactionType: "XUAT_KIEM_KE", warehouseGroup, lines: [{ totalCost: 300, itemType: "RAW_MATERIAL" }] });
+    assert.equal(line.pnlItemCode, "COGS_BAR");
+    assert.equal(line.departmentCode, "BAR");
+  }
 });
 
 test("bao bì thiếu kiểm kê -> 6428 CPBD_VTTH, nguyên liệu cùng phiếu vẫn vào COGS", () => {

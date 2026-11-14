@@ -11,7 +11,8 @@ import { REVENUE_DEPARTMENT_CODES, departmentFromWarehouseGroup } from "@/lib/re
  *   kho (Có 152 rồi Nợ 152); giá trị đó ra khỏi kho ở phiếu XUẤT BÁN của món. Cộng cả hai là
  *   tính trùng bán thành phẩm.
  * - Tách COGS Bếp / COGS Bar theo NHÓM KHO bị trừ (luật chung: bộ phận theo kho đã trừ, không
- *   suy theo mã hàng). Kho không thuộc bếp/bar vào dòng COGS kho chung.
+ *   suy theo mã hàng). Kho không thuộc bếp/bar (FOH, văn phòng...) vào COGS Bar (khách 14/11/2026;
+ *   trước đó vào dòng "COGS kho chung" riêng).
  * - Bao bì xuất hủy / chênh kiểm kê / xuất lẻ -> chi phí vật tư tiêu hao CPBD_VTTH (6428), không
  *   vào COGS. Bao bì nằm trong định lượng món thì đã chảy vào giá trị món lúc rã nên theo món.
  * - Đồng phục xuất cho nhân viên / hủy / chênh kiểm kê -> hạng mục đồng phục của khách
@@ -41,8 +42,24 @@ export function cogsPurchaseAccount(date: Date | string) {
 export const INVENTORY_COGS_PNL_ITEMS = {
   KITCHEN: { code: "COGS_BEP", name: "COGS Bếp" },
   BAR: { code: "COGS_BAR", name: "COGS Bar" },
-  OTHER: { code: "COGS_KHAC", name: "COGS kho chung (không thuộc bếp/bar)" },
 } as const;
+/**
+ * Hạng mục "COGS kho chung" cũ: kho không thuộc bếp/bar (FOH, văn phòng...) từng ghi vào đây. Khách
+ * chốt 14/11/2026 gộp về COGS Bar và bỏ dòng này khỏi P&L — hệ thống không tạo nữa, và chuyển sang
+ * Ngừng khi không còn bút toán nào dùng (sau khi Ghi sổ lại các kỳ cũ).
+ */
+export const RETIRED_COGS_PNL_ITEM_CODE = "COGS_KHAC";
+
+/**
+ * Hạng mục giá vốn + bộ phận theo nhóm kho bị trừ: kho bếp -> COGS Bếp (KIT); mọi kho còn lại
+ * (bar, FOH, văn phòng, kho không khai nhóm) -> COGS Bar (BAR) — khách chốt 14/11/2026.
+ */
+export function inventoryCogsTarget(warehouseGroup: string | null | undefined) {
+  const kitchen = departmentFromWarehouseGroup(warehouseGroup) === REVENUE_DEPARTMENT_CODES.KITCHEN;
+  return kitchen
+    ? { item: INVENTORY_COGS_PNL_ITEMS.KITCHEN, departmentCode: REVENUE_DEPARTMENT_CODES.KITCHEN }
+    : { item: INVENTORY_COGS_PNL_ITEMS.BAR, departmentCode: REVENUE_DEPARTMENT_CODES.BAR };
+}
 export const PACKAGING_EXPENSE_PNL_ITEM = { code: "CPBD_VTTH", name: "Chi phí vật tư tiêu hao" } as const;
 /** Hạng mục có sẵn trong danh mục khách ("D02. CP Đồng Phục Nhân Viên"); thiếu mới tự tạo. */
 export const UNIFORM_EXPENSE_PNL_ITEM = { code: "CPBD_DONGPHUC", name: "CP Đồng Phục Nhân Viên" } as const;
@@ -145,11 +162,11 @@ export function planInventoryCogsJournal(input: {
   const inbound = (COGS_INBOUND_TYPES as readonly string[]).includes(type);
   if (!inbound && !(COGS_OUTBOUND_TYPES as readonly string[]).includes(type)) return [];
 
-  const department = departmentFromWarehouseGroup(input.warehouseGroup);
-  const cogsItem = department === REVENUE_DEPARTMENT_CODES.KITCHEN
-    ? INVENTORY_COGS_PNL_ITEMS.KITCHEN
-    : department === REVENUE_DEPARTMENT_CODES.BAR ? INVENTORY_COGS_PNL_ITEMS.BAR : INVENTORY_COGS_PNL_ITEMS.OTHER;
-  const departmentCode = department === REVENUE_DEPARTMENT_CODES.KITCHEN || department === REVENUE_DEPARTMENT_CODES.BAR ? department : null;
+  const { item: cogsItem, departmentCode: cogsDepartment } = inventoryCogsTarget(input.warehouseGroup);
+  // Dòng chi phí (bao bì, đồng phục, xuất khác) giữ bộ phận THẬT của kho (FOH/văn phòng -> trống);
+  // chỉ dòng giá vốn mới gộp kho ngoài bếp về Bar.
+  const warehouseDepartment = departmentFromWarehouseGroup(input.warehouseGroup);
+  const expenseDepartment = warehouseDepartment === REVENUE_DEPARTMENT_CODES.KITCHEN || warehouseDepartment === REVENUE_DEPARTMENT_CODES.BAR ? warehouseDepartment : null;
 
   const buckets = new Map<string, { accountCode: string; pnlItemCode: string | null; amount: number }>();
   for (const line of input.lines) {
@@ -179,7 +196,7 @@ export function planInventoryCogsJournal(input: {
   const stockSide = inbound ? "debit" : "credit";
   return [
     ...rows.map((bucket) => (bucket.pnlItemCode
-      ? { accountCode: bucket.accountCode, [expenseSide]: bucket.amount, pnlItemCode: bucket.pnlItemCode, departmentCode }
+      ? { accountCode: bucket.accountCode, [expenseSide]: bucket.amount, pnlItemCode: bucket.pnlItemCode, departmentCode: bucket.pnlItemCode === cogsItem.code ? cogsDepartment : expenseDepartment }
       : { accountCode: bucket.accountCode, [expenseSide]: bucket.amount })),
     { accountCode: "152", [stockSide]: total },
   ];
@@ -194,11 +211,7 @@ function planSupplierReturnJournal(input: { warehouseGroup: string | null | unde
   const stockValue = input.lines.reduce((sum, line) => sum + (Number(line.totalCost) || 0), 0);
   const refund = input.supplierReturnAmount !== null && input.supplierReturnAmount !== undefined ? Number(input.supplierReturnAmount) || 0 : stockValue;
   if (!input.partnerCode || (!(refund > 0) && !(stockValue > 0))) return [];
-  const department = departmentFromWarehouseGroup(input.warehouseGroup);
-  const cogsItem = department === REVENUE_DEPARTMENT_CODES.KITCHEN
-    ? INVENTORY_COGS_PNL_ITEMS.KITCHEN
-    : department === REVENUE_DEPARTMENT_CODES.BAR ? INVENTORY_COGS_PNL_ITEMS.BAR : INVENTORY_COGS_PNL_ITEMS.OTHER;
-  const departmentCode = department === REVENUE_DEPARTMENT_CODES.KITCHEN || department === REVENUE_DEPARTMENT_CODES.BAR ? department : null;
+  const { item: cogsItem, departmentCode } = inventoryCogsTarget(input.warehouseGroup);
   const lines: CogsJournalLine[] = [];
   if (refund > 0) lines.push({ accountCode: "331", debit: refund, partnerCode: input.partnerCode });
   if (stockValue > 0) lines.push({ accountCode: "152", credit: stockValue });

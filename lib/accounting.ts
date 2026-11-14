@@ -23,6 +23,7 @@ import {
   COGS_PURCHASE_SOURCE_TYPES,
   INVENTORY_JOURNAL_TYPES,
   INVENTORY_COGS_PNL_ITEMS,
+  RETIRED_COGS_PNL_ITEM_CODE,
   INVENTORY_COGS_START_DATE,
   INVENTORY_COGS_START_PERIOD,
   PACKAGING_EXPENSE_PNL_ITEM,
@@ -1097,7 +1098,24 @@ async function postInventoryCogs(start: Date, end: Date, branchCode: string, act
     await prisma.$executeRaw`DELETE FROM "JournalEntry" WHERE "id" = ANY(${removable})`;
     results.push(...removable.map(() => "DELETED_STALE"));
   }
+  await retireGeneralCogsPnlItem();
   return results;
+}
+
+/**
+ * Bỏ dòng "COGS kho chung" khỏi P&L (khách 14/11/2026): kho ngoài bếp nay ghi COGS Bar. Hạng mục
+ * cũ chỉ chuyển sang Ngừng khi KHÔNG còn bút toán nào dùng — kỳ chưa Ghi sổ lại vẫn còn số trên
+ * dòng đó, ẩn sớm là mất tiền khỏi báo cáo. Ghi sổ lại hết các kỳ có số thì lần ghi sổ đó tự ẩn.
+ */
+async function retireGeneralCogsPnlItem() {
+  const item = await prisma.masterDataItem.findFirst({ where: { type: "PNL_ITEM", code: RETIRED_COGS_PNL_ITEM_CODE, status: "ACTIVE" }, select: { id: true } });
+  if (!item) return;
+  const inUse = await prisma.journalLine.count({ where: { pnlItemCode: RETIRED_COGS_PNL_ITEM_CODE, entry: { deletedAt: null } } });
+  if (inUse > 0) return;
+  await prisma.masterDataItem.update({
+    where: { id: item.id },
+    data: { status: "INACTIVE", note: "Ngừng 14/11/2026: kho ngoài bếp/bar ghi vào COGS Bar (khách chốt)" },
+  });
 }
 
 /**
@@ -1147,7 +1165,7 @@ export async function repostInventoryCogs(targets: Array<{ date: Date | string; 
 }
 
 /**
- * Hạng mục P&L của giá vốn theo kho: COGS Bếp / COGS Bar / COGS kho chung nằm dưới nhóm Giá vốn
+ * Hạng mục P&L của giá vốn theo kho: COGS Bếp / COGS Bar nằm dưới nhóm Giá vốn
  * đang có; vật tư tiêu hao CPBD_VTTH (danh mục của khách) chỉ tạo khi chưa có, dưới nhóm OPEX;
  * đồng phục CPBD_DONGPHUC là hạng mục khách có sẵn — chỉ khi thiếu mới tạo, dưới nhóm "Chi phí cố
  * định"; đang có thì để nguyên nhóm khách xếp (khách chốt 09/10/2026).
