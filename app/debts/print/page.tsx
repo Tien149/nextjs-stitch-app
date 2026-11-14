@@ -121,7 +121,8 @@ export default function DebtPrintPage() {
               </tr>
             ))}
           </tbody>
-          <tfoot>
+          {/* tbody thay vì tfoot: tfoot bị lặp ở cuối mọi trang in. */}
+          <tbody className="break-inside-avoid">
             <tr className="border-t-2 border-slate-300">
               <td colSpan={2} className="py-2 font-bold">Tổng cộng</td>
               {hasTax && <td className="py-2 pr-2 text-right tabular-nums font-bold">{money(total(beforeTaxOf))}</td>}
@@ -129,7 +130,7 @@ export default function DebtPrintPage() {
               {hasTax && <td className="py-2 pr-2 text-right tabular-nums font-bold">{money(total(vatOf))}</td>}
               <td className="py-2 text-right tabular-nums text-base font-bold">{money(total((row) => row.originalAmount))} đ</td>
             </tr>
-          </tfoot>
+          </tbody>
         </table>
 
         {/* Ô ký để trống cho ký tay trên bản in. */}

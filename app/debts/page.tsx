@@ -771,7 +771,10 @@ export default function DebtsPage() {
       #debt-statement-print { display: block !important; }
     }`;
     document.head.appendChild(style);
-    window.addEventListener("afterprint", () => style.remove(), { once: true });
+    // Ẩn chữ "FIN ERP" ở lề trên trang in (Chrome in tiêu đề tab vào đó) — khách 14/11.
+    const previousTitle = document.title;
+    document.title = "\u00a0";
+    window.addEventListener("afterprint", () => { style.remove(); document.title = previousTitle; }, { once: true });
     window.print();
   };
 
@@ -1277,8 +1280,22 @@ export default function DebtsPage() {
           <div id="debt-statement-print" className="hidden bg-white text-slate-950 text-[12px]">
             <p className="text-lg font-bold uppercase">{statementData.restaurantName}</p>
             {statementData.address && <p className="text-xs text-slate-600">Địa chỉ: {statementData.address}</p>}
-            <h2 className="mt-5 text-center text-2xl font-bold uppercase tracking-wide">{statementData.title}</h2>
-            <p className="mt-1 text-center text-sm">Từ ngày {statementData.fromLabel || "......."} đến ngày {statementData.toLabel}</p>
+            {/* Khung tóm tắt bên phải tiêu đề (khách 14/11) thay cho dòng tổng cuối bảng; cột trái cùng bề rộng để tiêu đề vẫn giữa trang. */}
+            <div className="mt-4 flex items-start gap-3">
+              <div className="w-[190px] shrink-0" />
+              <div className="flex-1 pt-1 text-center">
+                <h2 className="text-2xl font-bold uppercase tracking-wide">{statementData.title}</h2>
+                <p className="mt-1 text-sm">Từ ngày {statementData.fromLabel || "......."} đến ngày {statementData.toLabel}</p>
+              </div>
+              <table className="w-[190px] shrink-0 border-collapse text-[11px] [&_td]:border [&_td]:border-slate-300 [&_td]:px-1.5 [&_td]:py-0.5">
+                <tbody>
+                  <tr><td>Số dư đầu kỳ</td><td className="text-right tabular-nums whitespace-nowrap">{money(statementData.opening)}</td></tr>
+                  <tr><td>Phát sinh tăng</td><td className="text-right tabular-nums whitespace-nowrap">{money(statementData.increase)}</td></tr>
+                  <tr><td>Phát sinh giảm</td><td className="text-right tabular-nums whitespace-nowrap">{money(statementData.decrease)}</td></tr>
+                  <tr className="font-bold"><td>Số dư cuối kỳ</td><td className="text-right tabular-nums whitespace-nowrap">{money(statementData.closing)}</td></tr>
+                </tbody>
+              </table>
+            </div>
             <p className="mt-4 text-sm"><b>Đối tác:</b> {statementData.partnerLine}</p>
             <table className="mt-3 w-full border-collapse [&_td]:border [&_td]:border-slate-300 [&_td]:px-1.5 [&_td]:py-1 [&_th]:border [&_th]:border-slate-300 [&_th]:px-1.5 [&_th]:py-1">
               <thead className="bg-slate-100 text-[11px] uppercase">
@@ -1306,18 +1323,6 @@ export default function DebtsPage() {
                   </tr>
                 ))}
               </tbody>
-              <tfoot className="font-bold">
-                <tr>
-                  <td colSpan={5}>Cộng phát sinh</td>
-                  <td className="text-right tabular-nums whitespace-nowrap">{money(statementData.increase)}</td>
-                  <td className="text-right tabular-nums whitespace-nowrap">{money(statementData.decrease)}</td>
-                  <td />
-                </tr>
-                <tr className="text-[13px]">
-                  <td colSpan={5}>Số dư cuối kỳ ({statementData.toLabel})</td>
-                  <td colSpan={3} className="text-right tabular-nums">{money(statementData.closing)} đ</td>
-                </tr>
-              </tfoot>
             </table>
             {/* Ô ký để trống cho ký tay / đóng dấu xác nhận. */}
             <div className="mt-10 grid grid-cols-3 gap-6 text-center text-sm break-inside-avoid">
