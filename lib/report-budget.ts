@@ -140,7 +140,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
      * bảng không tài nào biết (khách báo 19/09/2026).
      */
     prisma.debtRecord.findMany({
-      where: { debtType: "PAYABLE", recognizeExpense: true, documentDate: { gte: yearStart, lt: yearEnd }, ...branchFilter },
+      // Khoản có lịch phân bổ treo 242, chi phí đi theo lịch — không phải "chưa ghi chi phí".
+      where: { debtType: "PAYABLE", recognizeExpense: true, OR: [{ allocationMonths: null }, { allocationMonths: { lte: 1 } }], documentDate: { gte: yearStart, lt: yearEnd }, ...branchFilter },
       select: { id: true, code: true, documentDate: true, originalAmount: true },
       // Cờ recognizeExpense là cột mới: môi trường chạy code mới mà CHƯA chạy migration (hoặc
       // server còn giữ Prisma Client cũ trong bộ nhớ) sẽ ném ngay ở đây và giết cả bảng P&L —

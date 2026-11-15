@@ -9,11 +9,14 @@
 -- được ghi chi phí nên bật lên đúng bằng luật cũ, số liệu các kỳ đã chốt không đổi một đồng.
 -- Viết idempotent để chạy được ở cả hai kiểu môi trường: nơi dùng `prisma migrate deploy`,
 -- và nơi dựng schema bằng `prisma db push` (cột đã có sẵn, chỉ còn thiếu câu backfill).
--- Chạy lại nhiều lần không đổi kết quả.
+-- Chạy lại nhiều lần không đổi kết quả — với điều kiện phải bỏ khoản có lịch phân bổ: bản đầu thiếu
+-- điều kiện đó, `prisma migrate deploy` ngày 28/10/2026 chạy lại và bật cờ cho 13 khoản đã tick phân
+-- bổ theo kỳ → chi phí tính hai lần (khách báo 15/11/2026).
 ALTER TABLE "DebtRecord" ADD COLUMN IF NOT EXISTS "recognizeExpense" BOOLEAN NOT NULL DEFAULT false;
 
 UPDATE "DebtRecord"
    SET "recognizeExpense" = true
  WHERE "debtType" = 'PAYABLE'
    AND "sourceType" = 'MANUAL'
+   AND COALESCE("allocationMonths", 0) <= 1
    AND "recognizeExpense" = false;

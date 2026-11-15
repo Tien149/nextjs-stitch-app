@@ -61,3 +61,10 @@ test("công nợ phải trả phát sinh trong kỳ gắn hạng mục lương l
   const allocated = { ...debt, recognizeExpense: false, allocationMonths: 6 };
   assert.equal(payrollAmount([payableDebtDebitLine(allocated, itemGroup.get("CPNLD_FOH") ?? null)]), 0);
 });
+
+test("khoản có lịch phân bổ luôn treo 242 kể cả khi cờ recognizeExpense bị bật nhầm (migration chạy lại 28/10)", () => {
+  const debt = { recognizeExpense: true, allocationMonths: 7, documentDate: new Date("2026-09-01T00:00:00"), originalAmount: 2_006_400, partnerCode: "VE00127", categoryCode: null, pnlItemCode: "CPCD_INTERNET" };
+  const line = payableDebtDebitLine(debt, "OPEX");
+  assert.equal(line.accountCode, "242");
+  assert.equal(line.pnlItemCode, undefined);
+});

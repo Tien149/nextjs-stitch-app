@@ -278,7 +278,11 @@ export function payableDebtDebitLine(
   row: { recognizeExpense: boolean; allocationMonths: number | null; documentDate: Date; originalAmount: number; partnerCode: string | null; categoryCode: string | null; pnlItemCode: string | null },
   debtGroup: string | null,
 ): JournalLineInput {
-  const isAllocated = !row.recognizeExpense && (row.allocationMonths || 0) > 1;
+  // Có lịch phân bổ (> 1 kỳ) thì LUÔN treo 242, bất kể cờ recognizeExpense: chi phí đã đi theo lịch
+  // PB-<mã>. Ngày 28/10/2026 `prisma migrate deploy` chạy lại migration 20260919090000 bật cờ cho
+  // mọi khoản khai tay → 13 khoản đã tick phân bổ vừa vào P&L đủ số ở ngày chứng từ vừa theo lịch
+  // (CNPT-202609-0069, khách báo 15/11/2026). Không để cờ một mình quyết định nữa.
+  const isAllocated = (row.allocationMonths || 0) > 1;
   const debitAccount = isAllocated ? "242" : debtGroup === "CAPEX" ? "211" : debtGroup === "COGS" ? cogsPurchaseAccount(row.documentDate) : "6428";
   return isAllocated || debitAccount === "152"
     ? { accountCode: debitAccount, debit: row.originalAmount, partnerCode: row.partnerCode }
