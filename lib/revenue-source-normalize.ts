@@ -87,7 +87,12 @@ export async function normalizeRevenueSources(
       unchanged += 1;
       continue;
     }
-    const departmentCode = row.departmentCode || resolveRevenueDepartment({ productCode: row.productCode, revenueSource }) || null;
+    // Đổi nhóm doanh thu thì bộ phận đi theo nhóm MỚI (Đồ ăn -> Bếp, Đồ uống -> Bar); giữ bộ phận
+    // cũ thì dòng Mì Ý gắn nhầm Đồ uống đổi sang Đồ ăn mà vẫn rã ở kho Bar (khách 15/11/2026).
+    const departmentCode = resolveRevenueDepartment({ revenueSource })
+      || resolveRevenueDepartment({ productCode: row.productCode })
+      || row.departmentCode
+      || null;
     const key = `${revenueSource}|${departmentCode || ""}`;
     const batch = batches.get(key) || { revenueSource, departmentCode, rows: 0, ids: [] };
     batch.ids.push(row.id);
