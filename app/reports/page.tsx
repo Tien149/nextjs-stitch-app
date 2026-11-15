@@ -26,6 +26,7 @@ import RevenueTrendTab from "@/components/reports/RevenueTrendTab";
 import { statValueTextClass } from "@/components/reports/report-ui";
 import { isRevenueGroupCategory } from "@/lib/voucher-rules";
 import { DocLink } from "@/components/DocLink";
+import type { WalletFeeCheck } from "@/lib/wallet-fee-check";
 import { ShowMoreRows, useRowLimit } from "@/components/ShowMoreRows";
 import { matchesSearch } from "@/lib/search-text";
 import { revenueExplosionKind, revenueExplosionRun, revenueSkipReason } from "@/lib/revenue-explosion-status";
@@ -200,6 +201,7 @@ type RevenueSettlementData = {
   rows: RevenueSettlementRow[];
   looseVouchers?: RevenueSettlementLooseVoucher[];
   expensePnlItems?: Array<{ code: string; name: string }>;
+  feeCheck?: WalletFeeCheck;
   totals: { revenue: number; received: number; remaining: number; waiting: number; fee: number; feeGrab?: number; feeCard?: number; over: number; looseVoucherAmount?: number };
 };
 type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null };
@@ -3230,6 +3232,74 @@ function RevenueImportRowsSection({ data, branchCode, moneySources, canEdit, can
   );
 }
 
+/**
+ * Bảng kiểm phí ví đã ghi sổ (khách 15/11/2026): ngày × ví nào phí trên P&L (phiếu QTVI) khác
+ * doanh thu − tiền về thì liệt kê kèm mã phiếu để bấm Chạy lại, không phải đợi soi P&L mới thấy.
+ */
+function WalletFeeCheckPanel({ check, showBranch }: { check: WalletFeeCheck; showBranch: boolean }) {
+  const dayLabel = (day: string) => day.split("-").reverse().join("/");
+  const totalGap = check.bookedTotal - check.expectedTotal;
+  if (check.rows.length === 0) {
+    return (
+      <section className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        <span className="material-symbols-outlined mr-1 align-middle text-[18px]">verified</span>
+        <b>Phí ví đã ghi sổ khớp</b> doanh thu − tiền về ở mọi ngày ({check.checkedCells} ô ngày × ví). Tổng phí ví trên sổ {money(check.bookedTotal)} đ.
+      </section>
+    );
+  }
+  return (
+    <section className="table-panel border border-amber-200">
+      <div className="px-5 pt-4">
+        <h3 className="font-bold text-amber-900">
+          <span className="material-symbols-outlined mr-1 align-middle text-[20px]">rule</span>
+          Kiểm phí ví đã ghi sổ — {check.rows.length} ngày × ví lệch
+        </h3>
+        <p className="mt-1 text-xs text-slate-600">
+          Phí đúng = doanh thu − tiền về của ngày đó (cùng cách tính thẻ chi phí bên trên). Đã ghi sổ = phí trên các phiếu quyết toán ví, là số lên P&amp;L.
+          Tổng trên sổ {money(check.bookedTotal)} đ, phí đúng {money(check.expectedTotal)} đ, chênh <b>{money(totalGap)} đ</b>.
+          Bấm Chạy lại trên phiếu ở cột cuối (hoặc &ldquo;Chạy lại quyết toán ví cả kỳ&rdquo; ở Vận hành tài chính). Không gồm phí ngân hàng trừ riêng bằng phiếu chi.
+        </p>
+      </div>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">
+            <tr>
+              <th className="px-4 py-2 text-left">Ngày DT</th>
+              {showBranch && <th className="px-3 py-2 text-left">Cửa hàng</th>}
+              <th className="px-3 py-2 text-left">Ví</th>
+              <th className="px-3 py-2 text-right">Doanh thu</th>
+              <th className="px-3 py-2 text-right">Tiền về</th>
+              <th className="px-3 py-2 text-right">Phí đúng</th>
+              <th className="px-3 py-2 text-right">Đã ghi sổ</th>
+              <th className="px-3 py-2 text-right">Lệch</th>
+              <th className="px-4 py-2 text-left">Phiếu cần chạy lại</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {check.rows.map((row) => (
+              <tr key={`${row.date}|${row.moneySourceCode}`}>
+                <td className="px-4 py-2 whitespace-nowrap">{dayLabel(row.date)}</td>
+                {showBranch && <td className="px-3 py-2">{row.branchCode}</td>}
+                <td className="px-3 py-2">{row.moneySourceName}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{money(row.revenue)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{money(row.received)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{money(row.expectedFee)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{money(row.bookedFee)}</td>
+                <td className={`px-3 py-2 text-right font-bold tabular-nums ${row.gap > 0 ? "text-rose-700" : "text-amber-700"}`}>{row.gap > 0 ? "+" : ""}{money(row.gap)}</td>
+                <td className="px-4 py-2">
+                  {row.voucherCodes.length > 0
+                    ? <span className="flex flex-wrap gap-x-2">{row.voucherCodes.map((code) => <DocLink key={code} code={code} />)}</span>
+                    : <span className="text-xs text-slate-400">Chưa có phiếu quyết toán</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSettlementData; canLink: boolean; onLinked: () => void }) {
   const dayLabel = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
   /**
@@ -3586,6 +3656,8 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
         <Kpi label="Chưa về" value={data.totals.waiting} icon="hourglass_top" tone="rose" />
         <Kpi label="Về dư, chưa có doanh thu" value={data.totals.over} icon="priority_high" tone="rose" />
       </section>
+
+      {data.feeCheck && <WalletFeeCheckPanel check={data.feeCheck} showBranch={data.branchCode === "ALL"} />}
 
       <section className="table-panel">
         <PanelHeader

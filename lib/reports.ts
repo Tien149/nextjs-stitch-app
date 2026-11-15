@@ -16,6 +16,8 @@ import { MANUAL_VOUCHER_MATCH_DAY_GAP } from "@/lib/bank-statement-voucher-match
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import { transferLegsForBranch } from "@/lib/internal-transfer";
 import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from "@/lib/wallet-settlement-allocation";
+import { buildWalletFeeCheck } from "@/lib/wallet-fee-check";
+import { WALLET_FEE_SOURCE_TYPE } from "@/lib/wallet-fee-journal";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { revenueExplosionKind, revenueExplosionRun, revenueSkipReason } from "@/lib/revenue-explosion-status";
 import { remainingWalletGross, selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
@@ -2711,6 +2713,82 @@ export async function getRevenueImportExport(from: string, to: string, branchCod
  * nào. Hai vế lấy từ hai luồng độc lập — doanh thu từ import POS, tiền về từ sổ sao kê — nên
  * bên nào chưa có dữ liệu thì hiện đúng là chưa có, không chặn bên còn lại.
  */
+/**
+ * Bảng kiểm phí ví đã ghi sổ (lib/wallet-fee-check.ts): phí đúng = doanh thu − tiền về của từng
+ * ngày × ví (đúng các ô của bảng Tiền về đủ chưa) so với bút toán phí QTVI (MONEY_TRANSFER_FEE,
+ * mã nguồn `<id phiếu>:<ngày doanh thu>`) của cùng ngày × ví.
+ */
+async function loadWalletFeeCheck(input: {
+  period: string;
+  branchCode: string;
+  start: Date;
+  end: Date;
+  rows: RevenueSettlementRow[];
+  sourceByCode: Map<string, { code: string; name: string; branch: string | null }>;
+}) {
+  const { period, branchCode, start, end, rows, sourceByCode } = input;
+  const dayMs = 86_400_000;
+  const feeLines = await prisma.journalLine.findMany({
+    where: {
+      pnlItemCode: { not: null },
+      debit: { gt: 0 },
+      entry: {
+        sourceType: WALLET_FEE_SOURCE_TYPE,
+        status: "POSTED",
+        deletedAt: null,
+        entryDate: { gte: new Date(start.getTime() - dayMs), lt: new Date(end.getTime() + dayMs) },
+        ...(branchCode === "ALL" ? {} : { branchCode }),
+      },
+    },
+    select: { debit: true, credit: true, entry: { select: { sourceId: true } } },
+  });
+  const transferIds = [...new Set(feeLines.map((line) => (line.entry.sourceId || "").split(":")[0]).filter(Boolean))];
+  const transfers = transferIds.length > 0
+    ? await prisma.moneyTransfer.findMany({ where: { id: { in: transferIds } }, select: { id: true, code: true, fromMoneySourceCode: true } })
+    : [];
+  const transferById = new Map(transfers.map((row) => [row.id, row]));
+  const booked = feeLines.flatMap((line) => {
+    const [transferId, day] = (line.entry.sourceId || "").split(":");
+    const transfer = transferById.get(transferId);
+    if (!transfer || !day || !day.startsWith(period)) return [];
+    return [{ date: day, moneySourceCode: transfer.fromMoneySourceCode, amount: line.debit - line.credit, voucherCode: transfer.code }];
+  });
+
+  // Phiếu QTVI đã nối với tiền về của từng ngày × ví — để chỉ đúng phiếu cần Chạy lại kể cả
+  // khi ngày đó chưa ghi đồng phí nào.
+  const settlementLinks = await prisma.bankStatementAllocation.findMany({
+    where: {
+      revenueDate: { gte: start, lt: end },
+      creditAmount: { gt: 0 },
+      decreaseMoneySourceCode: { in: [...new Set(rows.filter((row) => row.group === "WALLET").map((row) => row.moneySourceCode))] },
+      bankTransaction: { deletedAt: null, ...(branchCode === "ALL" ? {} : { branchCode }) },
+    },
+    select: {
+      revenueDate: true,
+      decreaseMoneySourceCode: true,
+      bankTransaction: { select: { matches: { where: { deletedAt: null, targetType: "WALLET_SETTLEMENT" }, select: { targetCode: true } } } },
+    },
+  });
+  const vouchersByKey = new Map<string, Set<string>>();
+  for (const link of settlementLinks) {
+    if (!link.revenueDate || !link.decreaseMoneySourceCode) continue;
+    const cellKey = `${vietnamBusinessDayKey(link.revenueDate)}|${link.decreaseMoneySourceCode}`;
+    const codes = vouchersByKey.get(cellKey) || new Set<string>();
+    for (const match of link.bankTransaction.matches) codes.add(match.targetCode);
+    vouchersByKey.set(cellKey, codes);
+  }
+
+  return buildWalletFeeCheck({
+    cells: rows,
+    booked,
+    sourceOf: (code) => {
+      const source = sourceByCode.get(code);
+      return source ? { name: source.name, branchCode: source.branch || "" } : null;
+    },
+    vouchersOf: (date, code) => [...(vouchersByKey.get(`${date}|${code}`) || [])],
+  });
+}
+
 export async function getRevenueSettlementReport(period: string, branchCode: string) {
   const { start, end } = periodBounds(period);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
@@ -3019,11 +3097,14 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     })
     .sort((a, b) => a.date.localeCompare(b.date) || a.moneySourceName.localeCompare(b.moneySourceName, "vi"));
 
+  const feeCheck = await loadWalletFeeCheck({ period, branchCode, start, end, rows, sourceByCode });
+
   return {
     period,
     branchCode,
     rows,
     looseVouchers,
+    feeCheck,
     // Hạng mục P&L nhóm chi phí, để chọn khi đẩy khoản chênh vặt vào chi phí ngay trên bảng này.
     expensePnlItems: (() => {
       const groupOf = new Map(pnlGroupCatalog.map((group) => [group.code, (group.group || "").toUpperCase()]));
