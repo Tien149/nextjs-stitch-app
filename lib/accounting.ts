@@ -583,6 +583,22 @@ export async function ensureRevenueChannelPnlItems() {
 }
 
 export async function syncAccountingPeriod(period: string, branchCode: string, actor: string) {
+  // Phí ví tính lại theo một công thức (doanh thu − tiền về từng ngày × ví) TRƯỚC khi ghi sổ, để
+  // không ai phải bấm "Chạy lại" từng phiếu QTVI nữa (lib/wallet-fee-recalc.ts, khách 15/11/2026).
+  // Nạp động: lib/wallet-fee-recalc → lib/reports → lib/accounting là vòng import.
+  let walletFees: { updated: number; skipped: number } | null = null;
+  try {
+    const { recalcWalletFees } = await import("@/lib/wallet-fee-recalc");
+    const recalc = await recalcWalletFees({ period, branchCode, actor });
+    walletFees = { updated: recalc.updated, skipped: recalc.skipped.length };
+  } catch (error) {
+    console.error("Tính lại phí ví khi đồng bộ ghi sổ lỗi:", error);
+  }
+  const summary = await syncAccountingPeriodJournals(period, branchCode, actor);
+  return { ...summary, walletFees };
+}
+
+async function syncAccountingPeriodJournals(period: string, branchCode: string, actor: string) {
   const { start, end } = periodBounds(period);
   // Nạp sẵn bút toán của kỳ (cả bản đã xoá mềm — cùng luật findExistingJournal). Bút toán nằm
   // ngoài kỳ mà nguồn thuộc kỳ này (hiếm) không có trong đệm thì postJournalEntry tự đọc thẳng.

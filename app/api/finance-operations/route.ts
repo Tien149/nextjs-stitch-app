@@ -1,3 +1,4 @@
+import { recalcWalletFees } from "@/lib/wallet-fee-recalc";
 import { claimedGrossOf } from "@/lib/wallet-claimed-gross";
 import { NextResponse } from "next/server";
 import { isAdmin, requireCashDepositCreate, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
@@ -282,6 +283,19 @@ async function resolveAdjustmentCategory(entryType: string, categoryCode: string
  * phiếu và nút chạy lại cả kỳ. `preview` chỉ trả bảng số, không ghi gì. Lỗi nghiệp vụ ném
  * businessError như mọi action khác.
  */
+/** Các ngày doanh thu của dòng sao kê đã nối với phiếu quyết toán ví (cùng ví, có tiền về). */
+async function walletSettlementDays(transfer: WalletSettlementTransfer) {
+  const matches = await prisma.reconciliationMatch.findMany({
+    where: { targetType: "WALLET_SETTLEMENT", targetId: transfer.id, deletedAt: null, bankTransaction: { deletedAt: null } },
+    select: { bankTransaction: { select: { allocations: { select: { revenueDate: true, creditAmount: true, operationType: true, decreaseMoneySourceCode: true } } } } },
+  });
+  const days = matches.flatMap((match) => match.bankTransaction.allocations)
+    .filter((line) => line.revenueDate && line.creditAmount > 0 && line.operationType !== "OTHER_RECEIPT"
+      && (!line.decreaseMoneySourceCode || line.decreaseMoneySourceCode === transfer.fromMoneySourceCode))
+    .map((line) => revenueDayKey(line.revenueDate as Date));
+  return [...new Set(days)].sort();
+}
+
 async function rerunWalletSettlementTransfer(
   transfer: WalletSettlementTransfer,
   options: { preview: boolean; acknowledgeHighFee: boolean; session: DemoSession },
@@ -1442,11 +1456,65 @@ export async function POST(request: Request) {
       } catch (e) {
         return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
       }
-      return NextResponse.json(await rerunWalletSettlementTransfer(transfer, {
-        preview,
-        acknowledgeHighFee: body.acknowledgeHighFee === true,
-        session: auth.session,
-      }));
+      // Phiếu đã nối sao kê: tính lại đúng các ngày doanh thu của phiếu bằng công thức chung
+      // (lib/wallet-fee-recalc.ts) — mọi phiếu cùng ngày × ví được chia lại cùng lúc. Phiếu chưa
+      // nối sao kê không biết ngày nào là của nó: giữ cách tính cũ theo Ngày doanh thu trên phiếu.
+      const linkedDays = await walletSettlementDays(transfer);
+      if (linkedDays.length === 0) {
+        return NextResponse.json(await rerunWalletSettlementTransfer(transfer, {
+          preview,
+          acknowledgeHighFee: body.acknowledgeHighFee === true,
+          session: auth.session,
+        }));
+      }
+      const periods = [...new Set(linkedDays.map((day) => day.slice(0, 7)))].sort();
+      const runs = [];
+      for (const period of periods) {
+        runs.push(await recalcWalletFees({ period, branchCode: transfer.branchCode, actor: auth.session.name, preview, days: linkedDays }));
+      }
+      const changes = new Map<string, { id: string; code: string; feeBefore: number; feeAfter: number }>();
+      for (const run of runs) for (const change of run.changes) changes.set(change.id, change);
+      const own = changes.get(transfer.id);
+      const skippedDays = runs.flatMap((run) => run.skippedDays);
+      const skipped = runs.flatMap((run) => run.skipped);
+      const ownSkip = skipped.find((row) => row.code === transfer.code);
+      if (ownSkip) businessError(ownSkip.reason);
+      const listed = [...changes.values()].filter((row) => row.feeBefore !== row.feeAfter || row.id === transfer.id);
+      if (preview && listed.length === 0 && skippedDays.length > 0) {
+        businessError(`Ngày ${skippedDays.map((row) => row.day.split("-").reverse().join("/")).join(", ")} chưa có doanh thu POS của ví — nạp file doanh thu ngày đó rồi chạy lại. Phí đang giữ nguyên.`);
+      }
+      const walletSource = await prisma.masterDataItem.findFirst({ where: { type: "MONEY_SOURCE", code: transfer.fromMoneySourceCode } });
+      const currentFee = Math.round(transfer.feeAmount);
+      const nextFee = own ? own.feeAfter : currentFee;
+      const updated = runs.reduce((sum, run) => sum + run.updated, 0);
+      if (!preview && updated > 0) {
+        await writeAuditLog({
+          session: auth.session,
+          module: menuHref,
+          action: "RERUN_WALLET_SETTLEMENT",
+          entityType: "MoneyTransfer",
+          entityId: transfer.id,
+          entityCode: transfer.code,
+          branchCode: transfer.branchCode,
+          message: `Tính lại phí ví ngày ${linkedDays.join(", ")} theo doanh thu − tiền về: ${updated} phiếu cập nhật`,
+          metadata: { days: linkedDays, changes: [...changes.values()], skipped, skippedDays, journalStatuses: Object.assign({}, ...runs.map((run) => run.journalStatuses)) },
+        });
+      }
+      return NextResponse.json({
+        // Kể cả khi tổng phí giữ nguyên: gross dòng sao kê / phần Grab đổi cũng là có việc để ghi.
+        changed: changes.size > 0,
+        totalAmount: Math.round(transfer.amount),
+        currentFee,
+        nextFee,
+        currentGross: Math.round(transfer.amount) + currentFee,
+        nextGross: Math.round(transfer.amount) + nextFee,
+        walletLabel: walletSource ? moneySourceDisplayName(walletSource) : transfer.fromMoneySourceCode,
+        reportDate: linkedDays[0],
+        reportDateLabel: linkedDays.map((day) => day.split("-").reverse().join("/")).join(", "),
+        highFeeMessage: null,
+        changes: listed.map(({ code, feeBefore, feeAfter }) => ({ code, feeBefore, feeAfter })),
+        updated,
+      });
     }
 
     /**
@@ -1467,66 +1535,10 @@ export async function POST(request: Request) {
       if (!period) businessError("Kỳ kế toán phải có dạng YYYY-MM");
       const branchCode = requestedBranch(auth.session, cleanText(body.branchCode) || "ALL");
       const preview = body.preview === true;
-      const { start, end } = periodBounds(period);
-
-      const transfers = await prisma.moneyTransfer.findMany({
-        where: {
-          transferPurpose: "WALLET_SETTLEMENT",
-          status: "APPROVED",
-          deletedAt: null,
-          ...(branchCode === "ALL" ? {} : { branchCode }),
-          ...effectiveMoneyTransferDateFilter(start, end),
-        },
-        orderBy: [{ branchCode: "asc" }, { code: "asc" }],
-      });
-
-      type BulkChange = { id: string; code: string; branchCode: string; feeBefore: number; feeAfter: number };
-      const changes = new Map<string, BulkChange>();
-      const skipped: Array<{ code: string; reason: string }> = [];
-      const highFee: Array<{ code: string; message: string }> = [];
-      let updated = 0;
-
-      for (const transfer of transfers) {
-        try {
-          assertBranchAccess(auth.session, transfer.branchCode);
-        } catch {
-          continue;
-        }
-        // Phiếu đã nằm trong nhóm của một phiếu trước đó thì số của nó đã được tính rồi.
-        if (preview && changes.has(transfer.id)) continue;
-        try {
-          const plan = await rerunWalletSettlementTransfer(transfer, {
-            preview: true,
-            acknowledgeHighFee: true,
-            session: auth.session,
-          });
-          if (!plan.changed) continue;
-          if ("highFeeMessage" in plan && plan.highFeeMessage) highFee.push({ code: transfer.code, message: plan.highFeeMessage });
-          if (!preview) {
-            const result = await rerunWalletSettlementTransfer(transfer, {
-              preview: false,
-              acknowledgeHighFee: true,
-              session: auth.session,
-            });
-            updated += "updated" in result ? Number(result.updated) || 0 : 0;
-          }
-          for (const change of plan.changes) {
-            if (change.feeBefore === change.feeAfter) continue;
-            const row = transfers.find((item) => item.id === change.id);
-            changes.set(change.id, {
-              id: change.id,
-              code: change.code,
-              branchCode: row?.branchCode || transfer.branchCode,
-              feeBefore: change.feeBefore,
-              feeAfter: change.feeAfter,
-            });
-          }
-        } catch (error) {
-          skipped.push({ code: transfer.code, reason: apiError(error).message });
-        }
-      }
-
-      const rows = [...changes.values()];
+      // Một công thức cho cả kỳ: phí từng ngày × ví = doanh thu − tiền về, chia cho các phiếu QTVI
+      // của ngày đó (lib/wallet-fee-recalc.ts) — cùng hàm Đồng bộ ghi sổ tự chạy.
+      const recalc = await recalcWalletFees({ period, branchCode, actor: auth.session.name, preview });
+      const rows = recalc.changes.filter((change) => change.feeBefore !== change.feeAfter || change.grabBefore !== change.grabAfter);
       const byBranch = new Map<string, { branchCode: string; count: number; feeBefore: number; feeAfter: number }>();
       for (const row of rows) {
         const item = byBranch.get(row.branchCode) || { branchCode: row.branchCode, count: 0, feeBefore: 0, feeAfter: 0 };
@@ -1535,8 +1547,7 @@ export async function POST(request: Request) {
         item.feeAfter += row.feeAfter;
         byBranch.set(row.branchCode, item);
       }
-
-      if (!preview && updated > 0) {
+      if (!preview && recalc.updated > 0) {
         await writeAuditLog({
           session: auth.session,
           module: menuHref,
@@ -1545,20 +1556,19 @@ export async function POST(request: Request) {
           entityId: period,
           entityCode: period,
           branchCode,
-          message: `Chạy lại quyết toán ví cả kỳ ${period} (${branchCode}): ${updated} phiếu đổi phí`,
-          metadata: { period, branchCode, changes: rows, skipped },
+          message: `Tính lại phí ví cả kỳ ${period} (${branchCode}) theo doanh thu − tiền về từng ngày: ${recalc.updated} phiếu cập nhật`,
+          metadata: { period, branchCode, changes: recalc.changes, skipped: recalc.skipped, skippedDays: recalc.skippedDays, journalStatuses: recalc.journalStatuses },
         });
       }
-
       return NextResponse.json({
         period,
         branchCode,
-        scanned: transfers.length,
+        scanned: new Set(recalc.changes.map((row) => row.id)).size + recalc.skipped.length,
         changes: rows,
         byBranch: [...byBranch.values()],
-        skipped,
-        highFee,
-        updated,
+        skipped: recalc.skipped,
+        highFee: [],
+        updated: recalc.updated,
       });
     }
 

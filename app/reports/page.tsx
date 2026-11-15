@@ -3257,7 +3257,8 @@ function WalletFeeCheckPanel({ check, showBranch }: { check: WalletFeeCheck; sho
         <p className="mt-1 text-xs text-slate-600">
           Phí đúng = doanh thu − tiền về của ngày đó (cùng cách tính thẻ chi phí bên trên). Đã ghi sổ = phí trên các phiếu quyết toán ví, là số lên P&amp;L.
           Tổng trên sổ {money(check.bookedTotal)} đ, phí đúng {money(check.expectedTotal)} đ, chênh <b>{money(totalGap)} đ</b>.
-          Bấm Chạy lại trên phiếu ở cột cuối (hoặc &ldquo;Chạy lại quyết toán ví cả kỳ&rdquo; ở Vận hành tài chính). Không gồm phí ngân hàng trừ riêng bằng phiếu chi.
+          Bấm <b>Đồng bộ ghi sổ</b> kỳ này là hệ thống tự tính lại phí mọi phiếu theo đúng công thức trên (hoặc &ldquo;Chạy lại quyết toán ví cả kỳ&rdquo; ở Vận hành tài chính).
+          Dòng còn lại sau đó thường là ngày chưa nạp doanh thu POS, phiếu thuộc kỳ đã khoá, hoặc tiền về chưa có phiếu quyết toán. Không gồm phí ngân hàng trừ riêng bằng phiếu chi.
         </p>
       </div>
       <div className="mt-3 overflow-x-auto">
