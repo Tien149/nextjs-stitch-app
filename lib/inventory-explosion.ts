@@ -283,7 +283,7 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
     const code = (row.productCode || "").toUpperCase();
     if (code && !revenueSourceByProduct.has(code)) revenueSourceByProduct.set(code, row.revenueSource);
   }
-  // Nhóm doanh thu khai sẵn trên danh mục mặt hàng: dùng khi dòng POS không nói được gì.
+  // Nhóm doanh thu khai sẵn trên danh mục mặt hàng: ưu tiên trước dòng POS (xem departmentOfProduct).
   const itemRevenueGroups = await tx.inventoryItem.findMany({
     where: { code: { in: [...new Set(planProductCodes.map((code) => code.toUpperCase()))] } },
     select: { code: true, revenueGroup: true },
@@ -299,7 +299,9 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
    */
   const departmentOfProduct = (productCode: string) => {
     const code = (productCode || "").toUpperCase();
-    const revenueSource = revenueSourceByProduct.get(code) || revenueGroupByItem.get(code) || null;
+    // Nhóm khai trên danh mục mặt hàng thắng chữ trên dòng POS (cùng luật pickRevenueSource,
+    // chị Bình chốt 15/11/2026); món chưa khai nhóm mới lấy theo dòng POS.
+    const revenueSource = revenueGroupByItem.get(code) || revenueSourceByProduct.get(code) || null;
     return resolveDepartment({ revenueSource }) || resolveDepartment({ productCode: code });
   };
   const departmentWarehouseOf = (productCode: string) => {

@@ -57,11 +57,17 @@ export async function buildRevenueSourceResolver(client: ItemLookupClient, produ
 
 /**
  * Gộp hai nguồn theo đúng thứ tự ưu tiên — dùng chung cho import và backfill.
- * Không truyền index thì giữ nguyên hành vi cũ (file thắng, y nguyên chữ trong file).
+ *
+ * Nhóm doanh thu khai trên DANH MỤC MẶT HÀNG thắng chữ trong file (chị Bình chốt 15/11/2026: "lấy
+ * theo trên mặt hàng, để user có cái nhìn là phải đúng từ bước nào"). POS gắn nhầm "ĐỒ UỐNG" cho
+ * 155 phần Mì Ý Bò Đút Lò tháng 8–9 nên Sốt Bolonaise / Heo Xay bị rã ở kho Bar. Mặt hàng chưa
+ * khai nhóm thì vẫn lấy theo file như trước. Danh mục khai sai thì báo cáo sai theo — khách tự
+ * rà lại danh mục (danh sách món lệch đã gửi khách 15/11).
  */
 export function pickRevenueSource(fileValue: unknown, catalogValue: string, index?: RevenueCategoryIndex) {
+  if (catalogValue) return catalogValue;
   const fromFile = cleanRevenueSourceInput(fileValue);
-  if (!fromFile) return catalogValue || "";
+  if (!fromFile) return "";
   if (!index) return fromFile;
   // Chữ tự do không tra được về mã danh mục nào ("Set combo", "Khác"...) thì nhường danh mục
   // mặt hàng; hết đường mới giữ lại chữ thô để báo cáo còn thấy dữ liệu gốc mà đối chiếu.
