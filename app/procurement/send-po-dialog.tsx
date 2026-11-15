@@ -2,13 +2,40 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PurchaseOrderSheet } from "@/components/PurchaseOrderSheet";
-import { purchaseOrderMessage, type SharedPurchaseOrder } from "@/lib/purchase-order-share";
+import { paginateOrderLines, purchaseOrderMessage, type SharedPurchaseOrder } from "@/lib/purchase-order-share";
 
 type SendableOrder = { id: string; code: string; status: string; shareToken: string | null; supplierName: string };
 type Contact = { phone?: string | null; email?: string | null };
 
 /** Số điện thoại chỉ giữ chữ số (và dấu + đầu số quốc tế) để ghép link zalo.me / sms:. */
 const phoneDigits = (value: string) => value.replace(/[^\d+]/g, "");
+
+/** Bề ngang cố định của ẢNH phiếu nhiều trang — ảnh ra giống nhau dù bấm từ điện thoại hay máy tính. */
+const PAGE_IMAGE_WIDTH = 420;
+
+/**
+ * Chụp một tờ phiếu thành PNG nét cả trên iPhone (khách 21/10/2026: iPhone mờ, Android rõ). Safari vẽ
+ * SVG foreignObject theo kích thước GỐC rồi mới phóng theo pixelRatio → nhoè. Phóng to chính phiếu
+ * bằng transform trước khi chụp (pixelRatio 1) thì Safari vẽ chữ ở độ phân giải thật. Hệ số tối đa 3,
+ * tự hạ cho phiếu dài để không vượt trần canvas của iOS (~16,7 triệu điểm ảnh).
+ */
+async function captureSheet(node: HTMLElement) {
+  const { toBlob } = await import("html-to-image");
+  const width = node.offsetWidth;
+  const height = node.offsetHeight;
+  const scale = Math.max(1, Math.min(3, Math.sqrt(16_000_000 / Math.max(1, width * height)), 16_000 / Math.max(1, height)));
+  const blob = await toBlob(node, {
+    pixelRatio: 1,
+    width: Math.floor(width * scale),
+    height: Math.floor(height * scale),
+    // Bỏ vị trí giấu ngoài màn hình của tờ trang khi chụp.
+    style: { transform: `scale(${scale})`, transformOrigin: "top left", width: `${width}px`, height: `${height}px`, position: "static", left: "auto", top: "auto" },
+    backgroundColor: "#ffffff",
+    cacheBust: true,
+  });
+  if (!blob) throw new Error("Không tạo được ảnh phiếu");
+  return blob;
+}
 
 /**
  * Gửi đơn mua hàng cho nhà cung cấp ngay trên màn Mua hàng, không phải mở phiếu rồi tự chép.
@@ -42,6 +69,7 @@ export function SendPurchaseOrderDialog({
   const [phone, setPhone] = useState(contact.phone || "");
   const [email, setEmail] = useState(contact.email || "");
   const sheetRef = useRef<HTMLDivElement>(null);
+  const pageRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   const patch = async (body: object) => {
     const response = await fetch("/api/procurement", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -93,36 +121,39 @@ export function SendPurchaseOrderDialog({
   };
 
   const message = sheet ? purchaseOrderMessage(sheet, { showPrices }) : "";
+  const pages = sheet ? paginateOrderLines(sheet.lines, { showPrices }) : [];
 
   const flash = (text: string) => {
     setNotice(text);
     window.setTimeout(() => setNotice((current) => (current === text ? "" : current)), 6000);
   };
 
+  /** Cả phiếu một ảnh — dùng cho chép vào bộ nhớ tạm (chỉ giữ được một ảnh) và tải ảnh trên máy tính. */
   const renderImage = async () => {
     if (!sheetRef.current) throw new Error("Phiếu chưa sẵn sàng");
-    const { toBlob } = await import("html-to-image");
-    /**
-     * Ảnh sắc nét cả trên iPhone (khách 21/10/2026: iPhone mờ, Android rõ). Safari vẽ SVG
-     * foreignObject theo kích thước GỐC rồi mới phóng theo pixelRatio → nhoè. Phóng to chính phiếu
-     * bằng transform trước khi chụp (pixelRatio 1) thì Safari vẽ chữ ở độ phân giải thật. Hệ số tối
-     * đa 3, tự hạ cho phiếu dài để không vượt trần canvas của iOS (~16,7 triệu điểm ảnh).
-     */
-    const node = sheetRef.current;
-    const width = node.offsetWidth;
-    const height = node.offsetHeight;
-    const scale = Math.max(1, Math.min(3, Math.sqrt(16_000_000 / Math.max(1, width * height)), 16_000 / Math.max(1, height)));
-    const blob = await toBlob(node, {
-      pixelRatio: 1,
-      width: Math.floor(width * scale),
-      height: Math.floor(height * scale),
-      style: { transform: `scale(${scale})`, transformOrigin: "top left", width: `${width}px`, height: `${height}px` },
-      backgroundColor: "#ffffff",
-      cacheBust: true,
-    });
-    if (!blob) throw new Error("Không tạo được ảnh phiếu");
-    return blob;
+    return captureSheet(sheetRef.current);
   };
+
+  /**
+   * Ảnh gửi qua bảng chia sẻ điện thoại: đơn dài tách nhiều ảnh (khách 16/11/2026 — đơn 50 món gửi
+   * Zalo trên iPhone chữ nhoè vì ảnh quá dài bị thu nhỏ theo cạnh dài; Android không bị).
+   */
+  const renderPageImages = async () => {
+    if (pages.length <= 1) return [await renderImage()];
+    const blobs: Blob[] = [];
+    for (let index = 0; index < pages.length; index += 1) {
+      const node = pageRefs.current[index];
+      if (!node) throw new Error("Phiếu chưa sẵn sàng");
+      blobs.push(await captureSheet(node));
+    }
+    return blobs;
+  };
+
+  const pageFiles = (blobs: Blob[]) => blobs.map((blob, index) => new File(
+    [blob],
+    blobs.length > 1 ? `${sheet?.code || order.code}-${index + 1}.png` : fileName(),
+    { type: "image/png" },
+  ));
 
   const copyText = async (text: string) => {
     try {
@@ -154,15 +185,14 @@ export function SendPurchaseOrderDialog({
     setBusy(true);
     try {
       // Điện thoại: bảng chia sẻ của máy gửi thẳng ẢNH phiếu vào Zalo, chọn đúng người là xong.
-      const blob = await renderImage().catch(() => null);
-      const file = blob ? new File([blob], fileName(), { type: "image/png" }) : null;
       const isTouch = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
-      if (isTouch && file && navigator.canShare?.({ files: [file] })) {
+      const files = isTouch ? await renderPageImages().then(pageFiles).catch(() => null) : null;
+      if (isTouch && files && navigator.canShare?.({ files })) {
         try {
           // Chỉ gửi ẢNH phiếu (khách 21/10/2026): kèm text/title thì Zalo dán thêm cả khối tin nhắn chữ
           // bên dưới ảnh — trùng nội dung, NCC đã có QR trên ảnh để mở link.
-          await navigator.share({ files: [file] });
-          flash("Đã mở bảng chia sẻ — chọn Zalo rồi chọn nhà cung cấp.");
+          await navigator.share({ files });
+          flash(files.length > 1 ? `Đã mở bảng chia sẻ (${files.length} ảnh) — chọn Zalo rồi chọn nhà cung cấp.` : "Đã mở bảng chia sẻ — chọn Zalo rồi chọn nhà cung cấp.");
           return;
         } catch {
           // Người dùng huỷ bảng chia sẻ — rơi xuống cách mở Zalo bên dưới.
@@ -218,6 +248,19 @@ export function SendPurchaseOrderDialog({
   const downloadImage = async () => {
     setBusy(true);
     try {
+      // Điện thoại + đơn nhiều trang: bảng chia sẻ có "Lưu hình ảnh" lưu cả các trang một lần.
+      const isTouch = window.matchMedia("(pointer: coarse)").matches;
+      if (isTouch && pages.length > 1) {
+        const files = pageFiles(await renderPageImages());
+        if (navigator.canShare?.({ files })) {
+          try {
+            await navigator.share({ files });
+            return;
+          } catch {
+            // Huỷ bảng chia sẻ — tải một ảnh cả phiếu như máy tính.
+          }
+        }
+      }
       const blob = await renderImage();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -277,6 +320,26 @@ export function SendPurchaseOrderDialog({
                 </div>
               ) : (
                 <p className="text-center text-sm text-slate-500 py-16">{error ? "" : "Đang chuẩn bị phiếu..."}</p>
+              )}
+              {sheet && pages.length > 1 && (
+                <>
+                  <p className="max-w-md mx-auto mt-2 text-center text-[11px] text-slate-500">
+                    Đơn {sheet.lines.length} món — gửi qua điện thoại sẽ tách thành <b>{pages.length} ảnh</b> cho chữ đủ rõ.
+                  </p>
+                  {/* Các trang ảnh, giấu ngoài màn hình, chỉ để chụp. */}
+                  <div aria-hidden className="pointer-events-none" style={{ position: "fixed", left: -10_000, top: 0 }}>
+                    {pages.map((page, index) => (
+                      <PurchaseOrderSheet
+                        key={`${page.start}-${page.end}`}
+                        ref={(node) => { pageRefs.current[index] = node; }}
+                        order={sheet}
+                        showPrices={showPrices}
+                        page={{ number: index + 1, total: pages.length, ...page }}
+                        style={{ width: PAGE_IMAGE_WIDTH }}
+                      />
+                    ))}
+                  </div>
+                </>
               )}
             </div>
 

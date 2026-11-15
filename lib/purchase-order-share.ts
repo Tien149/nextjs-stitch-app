@@ -78,3 +78,39 @@ export function purchaseOrderMessage(order: SharedPurchaseOrder, options: { show
   // Không kèm dòng "Xem phiếu: <link>" (khách 21/10/2026) — tin nhắn dừng ở danh sách hàng.
   return lines.join("\n");
 }
+
+/**
+ * Chia danh sách hàng của ẢNH phiếu thành nhiều trang (khách 16/11/2026: đơn 50 món gửi Zalo trên
+ * iPhone chữ nhoè, Android rõ). Ảnh dài gấp 5–6 lần bề ngang bị Zalo/iOS thu nhỏ theo cạnh dài nên
+ * chữ vỡ; mỗi trang giữ tỷ lệ gần màn điện thoại (~1:2,5) thì gửi đi vẫn đọc rõ.
+ * Trang 1 có đủ phần Thông tin đặt hàng nên chứa ít dòng hơn. Dòng có ghi chú / kèm giá cao hơn.
+ * Trả về [start, end) theo chỉ số dòng; đơn ngắn chỉ một trang.
+ */
+export const ORDER_IMAGE_FIRST_PAGE_UNITS = 16;
+export const ORDER_IMAGE_NEXT_PAGE_UNITS = 24;
+const SINGLE_PAGE_MAX_UNITS = 20;
+
+export function paginateOrderLines(lines: SharedOrderLine[], options: { showPrices?: boolean } = {}) {
+  const weight = (line: SharedOrderLine) => 1 + (line.note ? 0.6 : 0) + (options.showPrices && line.unitCost > 0 ? 0.6 : 0);
+  const weights = lines.map(weight);
+  const total = weights.reduce((a, b) => a + b, 0);
+  if (lines.length === 0 || total <= SINGLE_PAGE_MAX_UNITS) return [{ start: 0, end: lines.length }];
+  // Số trang tiếp theo, rồi chia đều phần còn lại để trang cuối không lẻ loi vài dòng.
+  const restPages = Math.max(1, Math.ceil((total - ORDER_IMAGE_FIRST_PAGE_UNITS) / ORDER_IMAGE_NEXT_PAGE_UNITS));
+  const perRestPage = (total - ORDER_IMAGE_FIRST_PAGE_UNITS) / restPages;
+  const pages: Array<{ start: number; end: number }> = [];
+  let start = 0;
+  let used = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const budget = pages.length === 0 ? ORDER_IMAGE_FIRST_PAGE_UNITS : perRestPage;
+    const isLastPage = pages.length === restPages;
+    if (!isLastPage && index > start && used + weights[index] > budget + 0.01) {
+      pages.push({ start, end: index });
+      start = index;
+      used = 0;
+    }
+    used += weights[index];
+  }
+  pages.push({ start, end: lines.length });
+  return pages;
+}
