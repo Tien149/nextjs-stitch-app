@@ -30,7 +30,17 @@ export type MovementInput = {
   referenceCode: string | null; partnerCode?: string | null; partnerName?: string | null; note?: string | null;
   /** Dòng nhập mua: tiền theo phiếu nhập (lib/stock-movement-pack). */
   purchase?: { grossAmount: number; discountAmount: number; vatRate: number | null; vatAmount: number } | null;
+  /** Dòng nhập khai theo ĐVT khác ĐVT tồn: tên ĐVT mua + số lượng theo ĐVT đó (trống = ĐVT tồn). */
+  purchaseUnit?: string | null;
+  purchaseQuantity?: number | null;
 };
+
+/** ĐVT mua + số lượng theo ĐVT mua của một dòng nhập; nhập thẳng ĐVT tồn thì lấy ĐVT tồn. */
+export function purchaseUnitOf(row: Pick<MovementInput, "unit" | "purchaseUnit" | "purchaseQuantity" | "inboundQuantity" | "outboundQuantity">) {
+  return row.purchaseUnit && row.purchaseQuantity !== null && row.purchaseQuantity !== undefined
+    ? { unit: row.purchaseUnit, quantity: row.purchaseQuantity }
+    : { unit: row.unit, quantity: row.inboundQuantity || row.outboundQuantity };
+}
 
 export type Direction = "IN" | "OUT";
 
@@ -153,6 +163,9 @@ export type MovementSummaryRow = {
   value: number;
   documentCount: number;
   lineCount: number;
+  /** Gom theo mặt hàng × ĐVT mua (Tổng hợp nhập): ĐVT mua và số lượng theo ĐVT đó. */
+  purchaseUnit?: string;
+  purchaseQuantity?: number;
 };
 
 /**
@@ -163,18 +176,25 @@ export function summarizeMovements(
   rows: MovementInput[],
   by: MovementSummaryBy,
   labels: { type: (type: string) => string; warehouse: (code: string) => string },
+  /**
+   * Tổng hợp NHẬP theo mặt hàng (khách 18/11/2026): tách mỗi ĐVT mua một dòng để cộng được số lượng
+   * theo ĐVT mua — cùng mặt hàng lúc mua kg lúc mua thùng thì ra hai dòng.
+   */
+  options: { splitPurchaseUnit?: boolean } = {},
 ): MovementSummaryRow[] {
   const grouped = new Map<string, MovementSummaryRow & { documents: Set<string> }>();
   for (const row of rows) {
     const { type } = movementDirection(row);
     const quantity = row.inboundQuantity || row.outboundQuantity;
     let key: string; let label: string; let detail = ""; let goodsGroup = ""; let unit = "";
-    if (by === "item") { key = row.itemCode.toUpperCase(); label = row.itemCode; detail = row.itemName; goodsGroup = row.goodsGroup || ""; unit = row.unit; }
+    const purchase = options.splitPurchaseUnit && by === "item" ? purchaseUnitOf(row) : null;
+    if (by === "item") { key = `${row.itemCode.toUpperCase()}${purchase ? `|${purchase.unit.toUpperCase()}` : ""}`; label = row.itemCode; detail = row.itemName; goodsGroup = row.goodsGroup || ""; unit = row.unit; }
     else if (by === "type") { key = type; label = labels.type(type); }
     else if (by === "warehouse") { key = row.warehouseCode; label = row.warehouseCode; detail = labels.warehouse(row.warehouseCode); }
     else { key = (row.partnerCode || "").toUpperCase(); label = row.partnerCode || "(Không có NCC)"; detail = row.partnerName || ""; }
-    const target = grouped.get(key) || { key, label, detail, goodsGroup, unit, quantity: 0, value: 0, documentCount: 0, lineCount: 0, documents: new Set<string>() };
+    const target = grouped.get(key) || { key, label, detail, goodsGroup, unit, quantity: 0, value: 0, documentCount: 0, lineCount: 0, documents: new Set<string>(), ...(purchase ? { purchaseUnit: purchase.unit, purchaseQuantity: 0 } : {}) };
     target.quantity += quantity;
+    if (purchase) target.purchaseQuantity = (target.purchaseQuantity || 0) + purchase.quantity;
     target.value += row.value || 0;
     target.lineCount += 1;
     target.documents.add(row.transactionId);
@@ -183,7 +203,7 @@ export function summarizeMovements(
   return [...grouped.values()]
     .map(({ documents, ...row }) => ({ ...row, documentCount: documents.size }))
     .sort((a, b) => by === "item"
-      ? Number(!a.goodsGroup) - Number(!b.goodsGroup) || a.goodsGroup.localeCompare(b.goodsGroup, "vi") || a.label.localeCompare(b.label)
+      ? Number(!a.goodsGroup) - Number(!b.goodsGroup) || a.goodsGroup.localeCompare(b.goodsGroup, "vi") || a.label.localeCompare(b.label) || (a.purchaseUnit || "").localeCompare(b.purchaseUnit || "", "vi")
       : b.value - a.value || a.label.localeCompare(b.label));
 }
 

@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cogsPurchaseAccount, inventoryCogsActive, inventoryCogsParentGroup, inventoryCogsRegroupTarget, issuePnlItemAccount, planInventoryCogsJournal } from "../lib/inventory-cogs.ts";
+import { cogsPurchaseAccount, inventoryCogsActive, inventoryCogsParentGroup, inventoryCogsRegroupTarget, isIssuePnlCandidate, issuePnlCandidates, issuePnlItemAccount, planInventoryCogsJournal } from "../lib/inventory-cogs.ts";
 import { paymentCounterAccount, voucherJournalLines } from "../lib/voucher-accounting.ts";
 
 const sum = (lines, side) => lines.reduce((total, line) => total + (line[side] || 0), 0);
@@ -181,4 +181,47 @@ test("xuất trả hàng NCC: Nợ 331 theo NCC / Có 152 trị giá xuất, kh�
   const lines = planInventoryCogsJournal({ transactionType: "XUAT_TRA_NCC", warehouseGroup: "BEP", partnerCode: "VE00037", lines: [{ totalCost: 300, itemType: "RAW_MATERIAL" }, { totalCost: 200, itemType: "RAW_MATERIAL" }] });
   assert.deepEqual(lines, [{ accountCode: "331", debit: 500, partnerCode: "VE00037" }, { accountCode: "152", credit: 500 }]);
   assert.deepEqual(planInventoryCogsJournal({ transactionType: "XUAT_TRA_NCC", warehouseGroup: "BEP", lines: [{ totalCost: 300, itemType: "RAW_MATERIAL" }] }), []);
+});
+
+test("phiếu xuất khác có phân bổ (khách 18/11/2026): MỌI dòng treo Nợ 242, không ghi chi phí ngay", () => {
+  const lines = planInventoryCogsJournal({
+    transactionType: "XUAT_KHAC",
+    warehouseGroup: "BEP",
+    lines: [{ totalCost: 300, itemType: "UNIFORM" }, { totalCost: 200, itemType: "GOODS" }, { totalCost: 100, itemType: "PACKAGING" }],
+    prepaidAll: true,
+    issuePnlItem: { pnlItemCode: "CPBD_TRANGTRI", accountCode: "6428" },
+  });
+  assert.deepEqual(lines, [{ accountCode: "242", debit: 600 }, { accountCode: "152", credit: 600 }]);
+});
+
+test("danh sách hạng mục P&L cho phiếu xuất: chỉ chi phí, bỏ doanh thu / thu nhập khác / lương, xếp theo nhóm", () => {
+  const groups = [
+    { code: "OPEX_CPCD", name: "Chi Phí Cố Định", group: "OPEX" },
+    { code: "OPEX_CPBD", name: "Chi Phí Biến Đổi", group: "OPEX" },
+    { code: "OPEX_CPNLD", name: "Chi Phí Lương Người Lao Động", group: "OPEX" },
+    { code: "OPEX_CPMKT", name: "Chi Phí Marketing", group: "OPEX" },
+    { code: "COGS_BEP", name: "COGS Bếp", group: "COGS" },
+    { code: "CAPEX_DTBD", name: "Chi Phí Đầu Tư Ban Đầu", group: "CAPEX" },
+    { code: "REV_BAR", name: "DT Bar", group: "REVENUE_SOURCE" },
+    { code: "OTHER_IN_VAT", name: "02. Thu Nhập Từ Xuất VAT", group: "OTHER_INCOME" },
+  ];
+  const items = [
+    { code: "CPMKT_INAN", name: "02. CP In Ấn", subGroup: "OPEX_CPMKT", group: "OPEX" },
+    { code: "CPCD_KHAUHAO", name: "01. CP Khấu Hao", subGroup: "OPEX_CPCD", group: "OPEX" },
+    { code: "CPNLD_BEP", name: "01. CPNLD Lương Bếp", subGroup: "OPEX_CPNLD", group: "OPEX" },
+    { code: "CPBD_VTTH", name: "A02. CP Vật Tư Tiêu Hao", subGroup: "OPEX_CPBD", group: "OPEX" },
+    { code: "CPBD_BAOTRI", name: "A01. CP Bảo Trì & Sữa Chữa", subGroup: "OPEX_CPBD", group: "OPEX" },
+    { code: "CPMKT_QUANGCAO", name: "01. CP Quảng Cáo (Chạy Ads)", subGroup: "OPEX_CPMKT", group: "OPEX" },
+    { code: "COGS_BEP", name: "COGS Bếp", subGroup: "COGS_BEP", group: "COGS" },
+    { code: "CAPEX_DTBD", name: "CP Đầu Tư Ban Đầu", subGroup: "CAPEX_DTBD", group: "CAPEX" },
+    { code: "PNL_DT_GRAB", name: "DT Grab", subGroup: "REV_BAR", group: "REVENUE_SOURCE" },
+    { code: "X_VAT", name: "Thu VAT", subGroup: "OTHER_IN_VAT", group: "OTHER_INCOME" },
+  ];
+  assert.deepEqual(issuePnlCandidates(items, groups).map((item) => item.code), [
+    "CPBD_BAOTRI", "CPBD_VTTH", "CPCD_KHAUHAO", "CPMKT_QUANGCAO", "CPMKT_INAN", "CAPEX_DTBD", "COGS_BEP",
+  ]);
+  assert.equal(issuePnlCandidates(items, groups)[0].groupName, "Chi Phí Biến Đổi");
+  assert.equal(isIssuePnlCandidate(items.find((item) => item.code === "CPNLD_BEP"), groups), false);
+  assert.equal(isIssuePnlCandidate(items.find((item) => item.code === "PNL_DT_GRAB"), groups), false);
+  assert.equal(isIssuePnlCandidate(items.find((item) => item.code === "CPBD_VTTH"), groups), true);
 });

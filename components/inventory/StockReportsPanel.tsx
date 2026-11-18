@@ -12,7 +12,7 @@ import { movementTypeLabel } from "@/lib/inventory-movement-labels";
 import { vatRateLabel } from "@/lib/inventory-vat";
 import {
   IN_CATEGORIES, IN_TYPES, OUT_CATEGORIES, OUT_TYPES,
-  aggregateNxtByStore, foldSearchText, isEmptyNxtRow, movementDirection, sortNxtRows, summarizeMovements, toNxtRow,
+  aggregateNxtByStore, foldSearchText, isEmptyNxtRow, movementDirection, purchaseUnitOf, sortNxtRows, summarizeMovements, toNxtRow,
   type MovementInput, type MovementSummaryBy, type MovementSummaryRow, type NxtRow, type StockSummaryInput,
 } from "@/lib/stock-report";
 
@@ -357,8 +357,18 @@ export default function StockReportsPanel(props: Props) {
     { path: ["Nhóm"], format: "text", value: (row) => row.goodsGroup || "" },
     { path: ["Mã hàng"], format: "text", value: (row) => row.itemCode },
     { path: ["Tên hàng"], format: "text", value: (row) => row.itemName, wide: true },
-    { path: ["ĐVT"], format: "text", value: (row) => row.unit },
-    ...(direction === null
+    // Nhập (khách 18/11/2026): thêm nhóm cột theo ĐVT MUA; số cũ đứng dưới "Theo ĐVT tồn kho".
+    ...(direction === "IN"
+      ? [
+          { path: ["Theo ĐVT mua", "ĐVT mua"], format: "text" as const, value: (row: MovementInput) => purchaseUnitOf(row).unit },
+          { path: ["Theo ĐVT mua", "Số lượng"], format: "qty" as const, value: (row: MovementInput) => purchaseUnitOf(row).quantity },
+          { path: ["Theo ĐVT mua", "Đơn giá"], format: "price" as const, value: (row: MovementInput) => { const q = purchaseUnitOf(row).quantity; return q ? inboundGross(row) / q : 0; } },
+          { path: ["Theo ĐVT tồn kho", "ĐVT tồn kho"], format: "text" as const, value: (row: MovementInput) => row.unit },
+          { path: ["Theo ĐVT tồn kho", "Số lượng"], format: "qty" as const, value: (row: MovementInput) => row.inboundQuantity },
+          { path: ["Theo ĐVT tồn kho", "Đơn giá"], format: "price" as const, value: (row: MovementInput) => (row.inboundQuantity ? inboundGross(row) / row.inboundQuantity : 0) },
+        ]
+      : [{ path: ["ĐVT"], format: "text" as const, value: (row: MovementInput) => row.unit }]),
+    ...(direction === "IN" ? [] : direction === null
       ? [
           { path: ["SL nhập"], format: "qty" as const, value: (row: MovementInput) => row.inboundQuantity },
           { path: ["SL xuất"], format: "qty" as const, value: (row: MovementInput) => row.outboundQuantity },
@@ -368,7 +378,6 @@ export default function StockReportsPanel(props: Props) {
       // Chi tiết nhập (khách 13/11/2026): tiền theo phiếu nhập — trước thuế, chiết khấu, thuế suất,
       // tiền thuế, sau thuế. Phiếu nhập không phải mua hàng: không thuế / chiết khấu, trước = sau thuế.
       ? [
-          { path: ["Đơn giá"], format: "price" as const, value: (row: MovementInput) => (row.inboundQuantity ? inboundGross(row) / row.inboundQuantity : 0) },
           { path: ["Thành tiền trước thuế"], format: "money" as const, value: inboundGross, total: true },
           { path: ["Tiền chiết khấu"], format: "money" as const, value: (row: MovementInput) => row.purchase?.discountAmount || 0, total: true },
           { path: ["Thuế suất"], format: "text" as const, value: (row: MovementInput) => (row.purchase ? vatRateLabel(row.purchase.vatRate) : "") },
@@ -389,7 +398,7 @@ export default function StockReportsPanel(props: Props) {
     ...(direction === "IN" ? [{ id: "partner" as const, label: "Theo nhà cung cấp" }] : []),
   ];
   const by = summaryByOptions.some((option) => option.id === summaryBy) ? summaryBy : "item";
-  const summaryRows = summarizeMovements(reportRows, by, { type: movementTypeLabel, warehouse: warehouseName });
+  const summaryRows = summarizeMovements(reportRows, by, { type: movementTypeLabel, warehouse: warehouseName }, { splitPurchaseUnit: direction === "IN" });
   const summaryTotal = summaryRows.reduce((sum, row) => sum + row.value, 0);
   const summaryColumns: Column<MovementSummaryRow>[] = by === "item"
     ? [
@@ -397,9 +406,20 @@ export default function StockReportsPanel(props: Props) {
         { path: ["Nhóm"], format: "text", value: (row) => row.goodsGroup },
         { path: ["Mã hàng"], format: "text", value: (row) => row.label, render: (row) => <CopyableText value={row.label}><b>{row.label}</b></CopyableText> },
         { path: ["Tên hàng"], format: "text", value: (row) => row.detail, wide: true },
-        { path: ["ĐVT"], format: "text", value: (row) => row.unit },
-        { path: [direction === "IN" ? "SL nhập" : "SL xuất"], format: "qty", value: (row) => row.quantity },
-        { path: ["Đơn giá bình quân"], format: "price", value: (row) => (row.quantity ? row.value / row.quantity : 0) },
+        ...(direction === "IN"
+          ? [
+              { path: ["Theo ĐVT mua", "ĐVT mua"], format: "text" as const, value: (row: MovementSummaryRow) => row.purchaseUnit || row.unit },
+              { path: ["Theo ĐVT mua", "SL nhập"], format: "qty" as const, value: (row: MovementSummaryRow) => row.purchaseQuantity ?? row.quantity },
+              { path: ["Theo ĐVT mua", "Đơn giá bình quân"], format: "price" as const, value: (row: MovementSummaryRow) => { const q = row.purchaseQuantity ?? row.quantity; return q ? row.value / q : 0; } },
+              { path: ["Theo ĐVT tồn kho", "ĐVT tồn kho"], format: "text" as const, value: (row: MovementSummaryRow) => row.unit },
+              { path: ["Theo ĐVT tồn kho", "SL nhập"], format: "qty" as const, value: (row: MovementSummaryRow) => row.quantity },
+              { path: ["Theo ĐVT tồn kho", "Đơn giá bình quân"], format: "price" as const, value: (row: MovementSummaryRow) => (row.quantity ? row.value / row.quantity : 0) },
+            ]
+          : [
+              { path: ["ĐVT"], format: "text" as const, value: (row: MovementSummaryRow) => row.unit },
+              { path: ["SL xuất"], format: "qty" as const, value: (row: MovementSummaryRow) => row.quantity },
+              { path: ["Đơn giá bình quân"], format: "price" as const, value: (row: MovementSummaryRow) => (row.quantity ? row.value / row.quantity : 0) },
+            ]),
         { path: [direction === "IN" ? "Trị giá nhập" : "Trị giá xuất"], format: "money", value: (row) => row.value, total: true },
         { path: ["Số phiếu"], format: "int", value: (row) => row.documentCount },
       ]

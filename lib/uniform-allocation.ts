@@ -3,12 +3,13 @@ import type { TxClient } from "@/lib/prisma";
 import { UNIFORM_EXPENSE_PNL_ITEM } from "@/lib/inventory-cogs";
 
 /**
- * PHÂN BỔ ĐỒNG PHỤC KHI XUẤT DÙNG (khách chốt 09/10/2026).
+ * PHÂN BỔ CHI PHÍ PHIẾU XUẤT KHÁC (đồng phục: khách chốt 09/10/2026; mọi mặt hàng: 18/11/2026).
  *
- * Phiếu Xuất khác có dòng đồng phục khai "Phân bổ N tháng" thì tiền đồng phục không vào chi phí
- * ngay mà treo Nợ 242 / Có 152 lúc ghi sổ giá vốn theo kho; lịch PB-<mã phiếu> (Accrual,
- * sourceType INVENTORY_ISSUE, sourceId = id phiếu) rút dần 242 vào hạng mục đồng phục mỗi kỳ —
- * cùng đường với phiếu chi trả trước / công nợ có phân bổ (Vận hành tài chính → Phân bổ).
+ * Phiếu Xuất khác khai "Phân bổ N tháng" thì trị giá xuất không vào chi phí ngay mà treo
+ * Nợ 242 / Có 152 lúc ghi sổ giá vốn theo kho; lịch PB-<mã phiếu> (Accrual, sourceType
+ * INVENTORY_ISSUE, sourceId = id phiếu) rút dần 242 vào hạng mục P&L của phiếu mỗi kỳ — cùng
+ * đường với phiếu chi trả trước / công nợ có phân bổ (Vận hành tài chính → Phân bổ). Phiếu toàn
+ * đồng phục chưa chọn hạng mục thì vào "CP Đồng phục" như trước.
  *
  * Trị giá xuất có thể đổi sau khi lập phiếu (sửa phiếu, xuất âm rồi mới có giá) nên mỗi lần
  * ghi sổ giá vốn lịch được dựng lại theo số mới: kỳ đã ghi nhận giữ nguyên, phần còn lại chia
@@ -16,10 +17,8 @@ import { UNIFORM_EXPENSE_PNL_ITEM } from "@/lib/inventory-cogs";
  */
 
 export const ISSUE_ALLOCATION_SOURCE = "INVENTORY_ISSUE";
-/** Phiếu xuất dùng cho nhân viên — huỷ / kiểm kê thiếu vẫn ghi chi phí ngay. */
+/** Phiếu xuất dùng — huỷ / kiểm kê thiếu / test món vẫn ghi chi phí ngay. */
 export const ALLOCATABLE_ISSUE_TYPES = ["XUAT_KHAC"] as const;
-/** Loại mặt hàng được treo 242 khi phiếu có lịch phân bổ. */
-export const ALLOCATABLE_ITEM_TYPES = ["UNIFORM"] as const;
 
 export const issueAllocationCode = (transactionCode: string) => `PB-${transactionCode}`;
 
@@ -27,11 +26,20 @@ export function isAllocatableIssueType(transactionType: string | null | undefine
   return (ALLOCATABLE_ISSUE_TYPES as readonly string[]).includes(String(transactionType || "").toUpperCase());
 }
 
-/** Tiền đồng phục của phiếu — phần đem phân bổ. */
-export function allocatableIssueAmount(lines: Array<{ totalCost: number; itemType: string | null | undefined }>) {
-  return lines
-    .filter((line) => (ALLOCATABLE_ITEM_TYPES as readonly string[]).includes(String(line.itemType || "").toUpperCase()))
-    .reduce((sum, line) => sum + (Number(line.totalCost) || 0), 0);
+/** Trị giá đem phân bổ = trị giá xuất của cả phiếu (mọi dòng treo 242). */
+export function allocatableIssueAmount(lines: Array<{ totalCost: number }>) {
+  return lines.reduce((sum, line) => sum + (Number(line.totalCost) || 0), 0);
+}
+
+const isUniformOnly = (lines: Array<{ itemType: string | null | undefined }>) => lines.length > 0 && lines.every((line) => String(line.itemType || "").toUpperCase() === "UNIFORM");
+
+/**
+ * Hạng mục P&L mà lịch phân bổ rút 242 vào: hạng mục chọn trên phiếu; phiếu toàn đồng phục chưa
+ * chọn thì "CP Đồng phục" (cách cũ). Còn lại null — phải chọn hạng mục mới phân bổ được.
+ */
+export function issueAllocationPnlItem(doc: { pnlItemCode?: string | null; lines: Array<{ itemType: string | null | undefined }> }) {
+  if (doc.pnlItemCode) return doc.pnlItemCode;
+  return isUniformOnly(doc.lines) ? UNIFORM_EXPENSE_PNL_ITEM.code : null;
 }
 
 type ScheduleRow = { period: string; amount: number; status: string };
@@ -47,7 +55,7 @@ export function replanIssueAllocation(input: { total: number; startPeriod: strin
   const remaining = Math.round(input.total) - postedSum;
   const planned = input.schedules.filter((row) => row.status !== "POSTED").sort((a, b) => a.period.localeCompare(b.period));
   if (remaining < 0) {
-    businessError(`Đã ghi nhận phân bổ ${postedSum.toLocaleString("vi-VN")} đ, lớn hơn trị giá đồng phục mới ${Math.round(input.total).toLocaleString("vi-VN")} đ. Bỏ ghi nhận các kỳ đã phân bổ trước.`);
+    businessError(`Đã ghi nhận phân bổ ${postedSum.toLocaleString("vi-VN")} đ, lớn hơn trị giá xuất mới ${Math.round(input.total).toLocaleString("vi-VN")} đ. Bỏ ghi nhận các kỳ đã phân bổ trước.`);
   }
   if (planned.length === 0) {
     if (remaining > 0) businessError("Lịch phân bổ đã ghi nhận hết các kỳ nên không nhận thêm trị giá. Bỏ ghi nhận kỳ cuối rồi sửa lại.");
@@ -67,6 +75,7 @@ type IssueDoc = {
   transactionDate: Date;
   branchCode: string;
   note: string | null;
+  pnlItemCode?: string | null;
   lines: Array<{ totalCost: number; item: { itemType: string } }>;
 };
 
@@ -94,13 +103,16 @@ export async function syncIssueAllocation(tx: TxClient, doc: IssueDoc, months: n
     await tx.accrual.delete({ where: { id: live.id } });
     return null;
   }
-  if (!isAllocatableIssueType(doc.transactionType)) businessError("Chỉ phiếu Xuất khác mới phân bổ chi phí đồng phục theo kỳ.");
-  const total = allocatableIssueAmount(doc.lines.map((line) => ({ totalCost: line.totalCost, itemType: line.item.itemType })));
-  if (months !== undefined && !doc.lines.some((line) => (ALLOCATABLE_ITEM_TYPES as readonly string[]).includes(line.item.itemType))) {
-    businessError("Phiếu không có dòng đồng phục nên không phân bổ được.");
-  }
+  if (!isAllocatableIssueType(doc.transactionType)) businessError("Chỉ phiếu Xuất khác mới phân bổ chi phí theo kỳ.");
+  const lineTypes = doc.lines.map((line) => ({ itemType: line.item.itemType }));
+  const total = allocatableIssueAmount(doc.lines);
+  const pnlItemCode = issueAllocationPnlItem({ pnlItemCode: doc.pnlItemCode, lines: lineTypes });
+  if (!pnlItemCode) businessError("Phiếu có phân bổ chi phí phải chọn Hạng mục P&L — lịch phân bổ ghi chi phí vào hạng mục đó mỗi kỳ.");
   if (live && postedCount > 0 && months !== undefined && months !== live.numberOfPeriods) {
     businessError(`Lịch phân bổ ${code} đã ghi nhận ${postedCount} kỳ nên không đổi số tháng được.`);
+  }
+  if (live && postedCount > 0 && live.pnlItemCode !== pnlItemCode) {
+    businessError(`Lịch phân bổ ${code} đã ghi nhận ${postedCount} kỳ vào hạng mục ${live.pnlItemCode || "(trống)"} nên không đổi hạng mục được. Bỏ ghi nhận ở Vận hành tài chính → Phân bổ trước.`);
   }
   const startPeriod = live && postedCount > 0 ? live.startPeriod : periodFromDate(doc.transactionDate);
   const schedules = live ? live.schedules : [];
@@ -108,14 +120,15 @@ export async function syncIssueAllocation(tx: TxClient, doc: IssueDoc, months: n
     && Math.round(live.totalAmount) === Math.round(total)
     && live.numberOfPeriods === wanted
     && live.startPeriod === startPeriod
-    && live.branchCode === doc.branchCode;
+    && live.branchCode === doc.branchCode
+    && live.pnlItemCode === pnlItemCode;
   if (unchanged) return live;
 
   const fields = {
-    name: `Đồng phục xuất dùng ${doc.code}${doc.note ? ` — ${doc.note}` : ""}`,
+    name: `${isUniformOnly(lineTypes) ? "Đồng phục xuất dùng" : "Xuất dùng phân bổ"} ${doc.code}${doc.note ? ` — ${doc.note}` : ""}`,
     branchCode: doc.branchCode,
     categoryCode: "OPEX",
-    pnlItemCode: UNIFORM_EXPENSE_PNL_ITEM.code,
+    pnlItemCode,
     totalAmount: Math.round(total),
     actualAmount: Math.round(total),
     startPeriod,

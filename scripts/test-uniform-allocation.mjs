@@ -6,12 +6,21 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allocatableIssueAmount, isAllocatableIssueType, replanIssueAllocation } from "../lib/uniform-allocation.ts";
+import { allocatableIssueAmount, isAllocatableIssueType, issueAllocationPnlItem, replanIssueAllocation } from "../lib/uniform-allocation.ts";
 
-test("chỉ dòng đồng phục đem phân bổ; chỉ phiếu Xuất khác", () => {
-  assert.equal(allocatableIssueAmount([{ totalCost: 600000, itemType: "UNIFORM" }, { totalCost: 50000, itemType: "PACKAGING" }]), 600000);
+test("cả phiếu đem phân bổ (mọi mặt hàng, khách 18/11/2026); chỉ phiếu Xuất khác", () => {
+  assert.equal(allocatableIssueAmount([{ totalCost: 600000, itemType: "UNIFORM" }, { totalCost: 50000, itemType: "PACKAGING" }]), 650000);
   assert.equal(isAllocatableIssueType("XUAT_KHAC"), true);
   assert.equal(isAllocatableIssueType("XUAT_HUY"), false);
+  assert.equal(isAllocatableIssueType("XUAT_TEST_MON"), false);
+});
+
+test("hạng mục của lịch phân bổ: theo phiếu; phiếu toàn đồng phục chưa chọn thì CP Đồng phục; còn lại phải chọn", () => {
+  assert.equal(issueAllocationPnlItem({ pnlItemCode: "CPBD_TRANGTRI", lines: [{ itemType: "PACKAGING" }] }), "CPBD_TRANGTRI");
+  assert.equal(issueAllocationPnlItem({ pnlItemCode: null, lines: [{ itemType: "UNIFORM" }, { itemType: "UNIFORM" }] }), "CPBD_DONGPHUC");
+  assert.equal(issueAllocationPnlItem({ pnlItemCode: "CPMKT_CHUPHINH", lines: [{ itemType: "UNIFORM" }] }), "CPMKT_CHUPHINH");
+  assert.equal(issueAllocationPnlItem({ pnlItemCode: null, lines: [{ itemType: "UNIFORM" }, { itemType: "GOODS" }] }), null);
+  assert.equal(issueAllocationPnlItem({ pnlItemCode: "", lines: [] }), null);
 });
 
 test("chưa ghi nhận kỳ nào: chia đều từ tháng xuất, kỳ cuối gánh phần lẻ", () => {
@@ -36,5 +45,5 @@ test("đã ghi nhận 1 kỳ mà trị giá phiếu đổi: giữ kỳ đã ghi,
 
 test("trị giá mới nhỏ hơn số đã ghi nhận thì chặn", () => {
   const schedules = [{ period: "2026-10", amount: 500000, status: "POSTED" }, { period: "2026-11", amount: 500000, status: "PLANNED" }];
-  assert.throws(() => replanIssueAllocation({ total: 400000, startPeriod: "2026-10", periods: 2, schedules }), /lớn hơn trị giá đồng phục mới/);
+  assert.throws(() => replanIssueAllocation({ total: 400000, startPeriod: "2026-10", periods: 2, schedules }), /lớn hơn trị giá xuất mới/);
 });

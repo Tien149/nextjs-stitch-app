@@ -39,7 +39,7 @@ import {
 } from "@/lib/inventory-cogs";
 import type { MoneyTransfer } from "@prisma/custom-client";
 import { isFixedCostPnlGroupName } from "@/lib/pnl-ordering";
-import { ALLOCATABLE_ITEM_TYPES, ISSUE_ALLOCATION_SOURCE, syncIssueAllocation } from "@/lib/uniform-allocation";
+import { ISSUE_ALLOCATION_SOURCE, syncIssueAllocation } from "@/lib/uniform-allocation";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -196,7 +196,7 @@ export async function postAccrualScheduleJournals(rows: AccrualScheduleWithAccru
   // - Khai tay ở tab Trích trước (chưa chi tiền): vẫn là Có 335 — chi phí phải trả.
   const results: Awaited<ReturnType<typeof postJournalEntry>>[] = [];
   for (const row of rows) {
-    // Phiếu xuất đồng phục có phân bổ (INVENTORY_ISSUE): ghi sổ giá vốn đã treo Nợ 242 / Có 152.
+    // Phiếu xuất khác có phân bổ (INVENTORY_ISSUE): ghi sổ giá vốn đã treo Nợ 242 / Có 152.
     const alreadyPaid = row.accrual.sourceType === "VOUCHER"
       || row.accrual.sourceType === "DEBT"
       || row.accrual.sourceType === ISSUE_ALLOCATION_SOURCE
@@ -1076,7 +1076,7 @@ async function postInventoryCogs(start: Date, end: Date, branchCode: string, act
       await prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, group: true } }),
     )
     : new Map<string, string | null>();
-  // Phiếu xuất đồng phục có lịch phân bổ: đồng phục treo 242, lịch PB- dựng lại theo trị giá
+  // Phiếu xuất khác có lịch phân bổ: cả phiếu treo 242, lịch PB- dựng lại theo trị giá
   // hiện tại của phiếu (sửa phiếu / xuất âm rồi mới có giá) — xem lib/uniform-allocation.
   const allocations = documents.length === 0 ? [] : await prisma.accrual.findMany({
     where: { sourceType: ISSUE_ALLOCATION_SOURCE, sourceId: { in: documents.map((doc) => doc.id) } },
@@ -1098,14 +1098,14 @@ async function postInventoryCogs(start: Date, end: Date, branchCode: string, act
       try {
         await prisma.$transaction((tx) => syncIssueAllocation(tx, doc, undefined, actor));
       } catch (error) {
-        console.warn(`Không dựng lại được lịch phân bổ đồng phục của ${doc.code}:`, error instanceof Error ? error.message : error);
+        console.warn(`Không dựng lại được lịch phân bổ của phiếu ${doc.code}:`, error instanceof Error ? error.message : error);
       }
     }
     const lines = planInventoryCogsJournal({
       transactionType: doc.transactionType,
       warehouseGroup: groupOf.get(doc.warehouseCode),
       lines: doc.lines.map((line) => ({ totalCost: line.totalCost, itemType: line.item.itemType, expensePnlItemCode: line.item.expensePnlItemCode })),
-      prepaidItemTypes: allocated ? ALLOCATABLE_ITEM_TYPES : undefined,
+      prepaidAll: allocated,
       issuePnlItem: doc.pnlItemCode ? { pnlItemCode: doc.pnlItemCode, accountCode: issuePnlItemAccount(issueItemGroupOf.get(doc.pnlItemCode)) } : null,
       partnerCode: doc.partnerCode,
       supplierReturnAmount: returnAmountByCode.get(doc.code) ?? null,

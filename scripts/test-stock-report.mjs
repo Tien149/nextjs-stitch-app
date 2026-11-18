@@ -71,3 +71,16 @@ test("tổng hợp theo mặt hàng / NCC: đếm phiếu không trùng", () => 
   const byPartner = summarizeMovements(rows, "partner", { type: (t) => t, warehouse: () => "" });
   assert.deepEqual(byPartner.map((row) => [row.label, row.value, row.documentCount]), [["(Không có NCC)", 40, 1], ["NCC1", 5, 1]]);
 });
+
+test("tổng hợp nhập theo mặt hàng tách theo ĐVT mua (khách 18/11/2026); nhập thẳng ĐVT tồn lấy ĐVT tồn", () => {
+  const line = (extra) => ({ transactionId: extra.id, code: extra.id, transactionType: "NHAP_MUA", transactionDate: "2026-11-01", warehouseCode: "K1", itemCode: "BIA", itemName: "Bia", unit: "LON", inboundQuantity: 0, outboundQuantity: 0, value: 0, referenceCode: null, ...extra });
+  const rows = [
+    line({ id: "a", inboundQuantity: 48, value: 480000, purchaseUnit: "Thùng 24 lon", purchaseQuantity: 2 }),
+    line({ id: "b", inboundQuantity: 24, value: 250000, purchaseUnit: "Thùng 24 lon", purchaseQuantity: 1 }),
+    line({ id: "c", inboundQuantity: 6, value: 66000 }),
+  ];
+  const split = summarizeMovements(rows, "item", { type: (t) => t, warehouse: () => "" }, { splitPurchaseUnit: true });
+  assert.deepEqual(split.map((row) => [row.purchaseUnit, row.purchaseQuantity, row.quantity, row.value]), [["LON", 6, 6, 66000], ["Thùng 24 lon", 3, 72, 730000]]);
+  const merged = summarizeMovements(rows, "item", { type: (t) => t, warehouse: () => "" });
+  assert.deepEqual([merged.length, merged[0].quantity, merged[0].purchaseUnit], [1, 78, undefined]);
+});

@@ -36,3 +36,19 @@ test("dòng nhập mua mang đủ tiền theo phiếu nhập (trước thuế, c
   assert.deepEqual(back[0].purchase, purchase);
   assert.equal("purchase" in back[1], false);
 });
+
+test("dòng nhập theo ĐVT mua (khách 18/11/2026): mang tên ĐVT + SL theo ĐVT đó, có / không có tiền nhập mua", () => {
+  const purchase = { grossAmount: 500000, discountAmount: 0, vatRate: null, vatAmount: 0 };
+  const input = [
+    { ...rows[2], purchase, purchaseUnit: "Thùng 24 lon", purchaseQuantity: 2 },
+    { ...rows[1], purchaseUnit: "Thùng 24 lon", purchaseQuantity: 1 },
+    rows[3],
+  ];
+  const packed = packStockMovements(input);
+  assert.deepEqual(packed.units, ["Thùng 24 lon"]);
+  const back = unpackStockMovements(JSON.parse(JSON.stringify(packed)));
+  assert.deepEqual([back[0].purchase, back[0].purchaseUnit, back[0].purchaseQuantity], [purchase, "Thùng 24 lon", 2]);
+  assert.equal("purchase" in back[1], false);
+  assert.deepEqual([back[1].purchaseUnit, back[1].purchaseQuantity], ["Thùng 24 lon", 1]);
+  assert.equal("purchaseUnit" in back[2], false);
+});

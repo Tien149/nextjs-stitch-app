@@ -36,6 +36,7 @@ import {
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { INVENTORY_ITEM_TYPES, isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { ISSUE_ALLOCATION_SOURCE, issueAllocationCode, syncIssueAllocation } from "@/lib/uniform-allocation";
+import { isIssuePnlCandidate, issuePnlCandidates } from "@/lib/inventory-cogs";
 import { roundPeriodCount } from "@/lib/period-count";
 import { PURCHASE_COST_TYPES } from "@/lib/purchase-cost";
 import { packStockMovements } from "@/lib/stock-movement-pack";
@@ -138,9 +139,12 @@ async function checkedIssuePnlItem(value: unknown, optional = false) {
     if (optional) return null;
     businessError("Phiếu Xuất khác phải chọn Hạng mục P&L — giá trị xuất lên thẳng hạng mục đó, không vào giá vốn.");
   }
-  const item = await prisma.masterDataItem.findFirst({ where: { type: "PNL_ITEM", code }, select: { status: true } });
+  const item = await prisma.masterDataItem.findFirst({ where: { type: "PNL_ITEM", code }, select: { code: true, name: true, subGroup: true, group: true, status: true } });
   if (!item) businessError(`Hạng mục P&L ${code} không có trong danh mục`);
   if (item?.status && item.status !== "ACTIVE") businessError(`Hạng mục P&L ${code} đã ngừng dùng`);
+  // Doanh thu / thu nhập khác / lương không nhận trị giá hàng xuất kho (khách 18/11/2026).
+  const groups = await prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true } });
+  if (item && !isIssuePnlCandidate(item, groups)) businessError(`Hạng mục ${item.name} không phải hạng mục chi phí dùng cho hàng xuất kho — chọn hạng mục chi phí (biến đổi, cố định, marketing, đầu tư ban đầu hoặc giá vốn).`);
   return code;
 }
 
@@ -275,7 +279,7 @@ type MovementLineSource = {
   note: string | null;
   lines: Array<{
     quantity: number; unitCost: number; totalCost: number;
-    inputQuantity?: number | null; inputUnitCost?: number | null; vatRate?: number | null; vatAmount?: number; purchaseCostShare?: number; discountAmount?: number;
+    inputQuantity?: number | null; inputUnitCode?: string | null; inputUnitCost?: number | null; vatRate?: number | null; vatAmount?: number; purchaseCostShare?: number; discountAmount?: number;
     item: { code: string; name: string; unit: string; itemType: string; goodsGroup: string | null };
   }>;
 };
@@ -301,7 +305,7 @@ function purchaseLineAmounts(transactionType: string, line: MovementLineSource["
  * vế nhập ở kho nhận (`counterpartWarehouseCode` là kho bên kia). Đủ cột cho các báo cáo tổng hợp /
  * chi tiết nhập, xuất (nhóm hàng hóa, NCC, đơn giá, diễn giải).
  */
-function buildStockMovements(transactions: MovementLineSource[], partnerNames: Map<string, string> = new Map()) {
+function buildStockMovements(transactions: MovementLineSource[], partnerNames: Map<string, string> = new Map(), unitNames: Map<string, string> = new Map()) {
   const rows: Array<{
     transactionId: string; code: string; transactionType: string; subType: string | null; transactionDate: Date; branchCode: string;
     warehouseCode: string; toWarehouseCode: string | null; counterpartWarehouseCode: string | null;
@@ -309,6 +313,7 @@ function buildStockMovements(transactions: MovementLineSource[], partnerNames: M
     quantity: number; inboundQuantity: number; outboundQuantity: number; unitCost: number; value: number;
     referenceCode: string | null; partnerCode: string | null; partnerName: string | null; note: string | null;
     purchase: ReturnType<typeof purchaseLineAmounts>;
+    purchaseUnit?: string | null; purchaseQuantity?: number | null;
   }> = [];
   for (const transaction of transactions) {
     const inbound = transaction.transactionType.startsWith("NHAP_");
@@ -337,8 +342,15 @@ function buildStockMovements(transactions: MovementLineSource[], partnerNames: M
         note: transaction.note,
         purchase: purchaseLineAmounts(transaction.transactionType, line),
       };
+      // ĐVT mua của dòng NHẬP (khách 18/11/2026): khai ĐVT khác ĐVT tồn thì báo cáo nhập có thêm
+      // cột ĐVT mua / SL / đơn giá theo ĐVT mua. Nhập thẳng ĐVT tồn thì để trống — báo cáo lấy ĐVT tồn.
+      const inputUnit = (line.inputUnitCode || "").trim();
+      const purchaseUnit = inputUnit && line.inputQuantity !== null && line.inputQuantity !== undefined && inputUnit.toUpperCase() !== line.item.unit.trim().toUpperCase()
+        ? { purchaseUnit: unitNames.get(`${line.item.code.toUpperCase()}|${inputUnit.toUpperCase()}`) || inputUnit, purchaseQuantity: line.inputQuantity }
+        : {};
       rows.push({
         ...base,
+        ...(inbound ? purchaseUnit : {}),
         warehouseCode: transaction.warehouseCode,
         toWarehouseCode: transaction.toWarehouseCode,
         counterpartWarehouseCode: transaction.toWarehouseCode,
@@ -346,7 +358,7 @@ function buildStockMovements(transactions: MovementLineSource[], partnerNames: M
         outboundQuantity: inbound ? 0 : line.quantity,
       });
       if (transaction.transactionType === "DIEU_CHUYEN" && transaction.toWarehouseCode) {
-        rows.push({ ...base, warehouseCode: transaction.toWarehouseCode, toWarehouseCode: null, counterpartWarehouseCode: transaction.warehouseCode, inboundQuantity: line.quantity, outboundQuantity: 0 });
+        rows.push({ ...base, ...purchaseUnit, warehouseCode: transaction.toWarehouseCode, toWarehouseCode: null, counterpartWarehouseCode: transaction.warehouseCode, inboundQuantity: line.quantity, outboundQuantity: 0 });
       }
     }
   }
@@ -465,7 +477,7 @@ async function loadStockMovements(branchFilter: { branchCode?: string }, searchP
       referenceCode: true, partnerCode: true, note: true,
       lines: { select: {
         quantity: true, unitCost: true, totalCost: true,
-        inputQuantity: true, inputUnitCost: true, vatRate: true, vatAmount: true, purchaseCostShare: true, discountAmount: true,
+        inputQuantity: true, inputUnitCode: true, inputUnitCost: true, vatRate: true, vatAmount: true, purchaseCostShare: true, discountAmount: true,
         item: { select: { code: true, name: true, unit: true, itemType: true, goodsGroup: true } },
       } },
     },
@@ -475,7 +487,13 @@ async function loadStockMovements(branchFilter: { branchCode?: string }, searchP
   const partners = partnerCodes.length
     ? await prisma.masterDataItem.findMany({ where: { type: "PARTNER", code: { in: partnerCodes, mode: "insensitive" } }, select: { code: true, name: true } })
     : [];
-  return buildStockMovements(transactions, new Map(partners.map((partner) => [partner.code.toUpperCase(), partner.name])));
+  // Tên ĐVT quy đổi ("Thùng 24 lon") cho cột ĐVT mua — dòng phiếu chỉ lưu mã (THUNG24LON).
+  const conversions = await prisma.itemUnitConversion.findMany({
+    where: { unitName: { not: null } },
+    select: { unitCode: true, unitName: true, item: { select: { code: true } } },
+  });
+  const unitNames = new Map(conversions.map((row) => [`${row.item.code.toUpperCase()}|${row.unitCode.toUpperCase()}`, row.unitName || row.unitCode]));
+  return buildStockMovements(transactions, new Map(partners.map((partner) => [partner.code.toUpperCase(), partner.name])), unitNames);
 }
 
 /**
@@ -1152,7 +1170,16 @@ export async function GET(request: Request) {
       !want("recipes") ? none<{ itemId: string; quantity: number; averageCost: number }>() : prisma.inventoryBalance.findMany({ select: { itemId: true, quantity: true, averageCost: true } }),
       loadNonInventoryRevenueGroups(prisma as unknown as CategoryLookupClient),
     ]);
-    const flowTransactions = recentFlowTransactions.map(compactFlowDocument);
+    // Số tháng phân bổ của phiếu Xuất khác — hộp Sửa phiếu hiện lại để đổi / bỏ (khách 18/11/2026).
+    const issueIds = recentFlowTransactions.filter((doc) => doc.transactionType === "XUAT_KHAC").map((doc) => doc.id);
+    const issueAllocations = new Map((issueIds.length === 0 ? [] : await prisma.accrual.findMany({
+      where: { sourceType: ISSUE_ALLOCATION_SOURCE, sourceId: { in: issueIds } },
+      select: { sourceId: true, numberOfPeriods: true, schedules: { where: { status: "POSTED" }, select: { id: true } } },
+    })).map((row) => [row.sourceId, { months: row.numberOfPeriods, postedPeriods: row.schedules.length }]));
+    const flowTransactions = recentFlowTransactions.map((doc) => {
+      const allocation = issueAllocations.get(doc.id);
+      return allocation ? { ...compactFlowDocument(doc), allocation } : compactFlowDocument(doc);
+    });
     const flowTruncated = recentFlowTransactions.length >= FLOW_DOCUMENT_LIMIT;
 
     /**
@@ -1398,12 +1425,12 @@ export async function GET(request: Request) {
       : undefined;
 
     // Hạng mục P&L cho phiếu Xuất khác (khách 20/10/2026) — danh sách nhẹ, dùng chung các tab.
+    // Chỉ hạng mục chi phí, xếp theo nhóm (khách 18/11/2026 "thanh lọc") — lib/inventory-cogs.
     const [pnlItemRows, pnlGroupRows] = await Promise.all([
-      prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM", status: "ACTIVE" }, select: { code: true, name: true, subGroup: true }, orderBy: { name: "asc" } }),
-      prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true } }),
+      prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM", status: "ACTIVE" }, select: { code: true, name: true, subGroup: true, group: true } }),
+      prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true } }),
     ]);
-    const pnlGroupName = new Map(pnlGroupRows.map((group) => [group.code, group.name]));
-    const issuePnlItems = pnlItemRows.map((item) => ({ code: item.code, name: item.name, groupName: item.subGroup ? pnlGroupName.get(item.subGroup) || item.subGroup : "" }));
+    const issuePnlItems = issuePnlCandidates(pnlItemRows, pnlGroupRows);
 
     const payload: Record<string, unknown> = { issuePnlItems, items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, ...movementPayload(stockMovements, searchParams), itemGroups, revenueGroups, itemRevenueGroups, receiptCategories, costSummary, productKitchenKinds, recipeUsage, wasteReport, pendingSales };
     // Phần không xin thì bỏ hẳn khỏi phản hồi (không trả mảng rỗng) để màn hình giữ số đã tải trước đó.

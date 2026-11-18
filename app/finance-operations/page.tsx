@@ -2189,13 +2189,13 @@ export default function FinanceOperationsPage() {
                             Chưa trả tiền · từ công nợ <DocLink code={row.code.replace(/^PB-/, "")} />
                           </span>
                         )}
-                        {/* Đồng phục xuất dùng có phân bổ: ghi sổ giá vốn theo kho đã treo Nợ 242 / Có 152. */}
+                        {/* Phiếu xuất khác có phân bổ: ghi sổ giá vốn theo kho đã treo Nợ 242 / Có 152. */}
                         {row.sourceType === "INVENTORY_ISSUE" && (
                           <span
                             className="ml-1.5 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full"
-                            title={`Sinh tự động từ phiếu xuất kho ${row.code.replace(/^PB-/, "")}. Trị giá đồng phục đang treo chi phí trả trước (242); mỗi kỳ ghi nhận sẽ rút dần vào hạng mục đồng phục. Số tiền tự cập nhật theo trị giá phiếu khi Ghi sổ kỳ.`}
+                            title={`Sinh tự động từ phiếu xuất kho ${row.code.replace(/^PB-/, "")}. Trị giá xuất đang treo chi phí trả trước (242); mỗi kỳ ghi nhận sẽ rút dần vào hạng mục P&L của phiếu. Số tiền tự cập nhật theo trị giá phiếu khi Ghi sổ kỳ.`}
                           >
-                            Xuất kho đồng phục · từ phiếu <DocLink code={row.code.replace(/^PB-/, "")} />
+                            Xuất kho phân bổ · từ phiếu <DocLink code={row.code.replace(/^PB-/, "")} />
                           </span>
                         )}
                         <h4 className="font-bold text-slate-900 mt-1">{row.name}</h4>

@@ -31,6 +31,12 @@ export type StockMovementRow = {
   note: string | null;
   /** Dòng NHẬP MUA: các cột tiền theo phiếu nhập (trước thuế, chiết khấu, thuế suất, tiền thuế). */
   purchase?: PurchaseAmounts | null;
+  /**
+   * Dòng nhập khai theo ĐVT khác ĐVT tồn (khách 18/11/2026, báo cáo nhập theo ĐVT mua): tên ĐVT
+   * nhập + số lượng theo ĐVT đó. Trống = nhập thẳng ĐVT tồn kho.
+   */
+  purchaseUnit?: string | null;
+  purchaseQuantity?: number | null;
 };
 
 export type PurchaseAmounts = { grossAmount: number; discountAmount: number; vatRate: number | null; vatAmount: number };
@@ -42,13 +48,20 @@ type PackedDoc = [
   referenceCode: string | null, partnerCode: string | null, partnerName: string | null, note: string | null,
 ];
 type PackedItem = [code: string, name: string, unit: string, itemType: string, goodsGroup: string | null];
-/** inbound = 1 thì số lượng là nhập, 0 là xuất. Dòng nhập mua có thêm 4 số tiền theo phiếu nhập. */
+/**
+ * inbound = 1 thì số lượng là nhập, 0 là xuất. Dòng nhập mua có thêm 4 số tiền theo phiếu nhập
+ * (grossAmount null = không phải nhập mua); dòng nhập theo ĐVT mua có thêm chỉ số ĐVT (trong
+ * `units`) + số lượng theo ĐVT đó.
+ */
 type PackedLine =
   | [doc: number, item: number, quantity: number, unitCost: number, value: number, inbound: 0 | 1]
   | [doc: number, item: number, quantity: number, unitCost: number, value: number, inbound: 0 | 1,
-     grossAmount: number, discountAmount: number, vatRate: number | null, vatAmount: number];
+     grossAmount: number | null, discountAmount: number | null, vatRate: number | null, vatAmount: number | null]
+  | [doc: number, item: number, quantity: number, unitCost: number, value: number, inbound: 0 | 1,
+     grossAmount: number | null, discountAmount: number | null, vatRate: number | null, vatAmount: number | null,
+     purchaseUnit: number, purchaseQuantity: number];
 
-export type PackedStockMovements = { docs: PackedDoc[]; items: PackedItem[]; lines: PackedLine[] };
+export type PackedStockMovements = { docs: PackedDoc[]; items: PackedItem[]; lines: PackedLine[]; units?: string[] };
 
 const isoDate = (value: Date | string) => (value instanceof Date ? value.toISOString() : String(value));
 
@@ -56,6 +69,8 @@ export function packStockMovements(rows: StockMovementRow[]): PackedStockMovemen
   const docs: PackedDoc[] = [];
   const items: PackedItem[] = [];
   const lines: PackedLine[] = [];
+  const units: string[] = [];
+  const unitIndex = new Map<string, number>();
   const docIndex = new Map<string, number>();
   const itemIndex = new Map<string, number>();
   for (const row of rows) {
@@ -77,19 +92,32 @@ export function packStockMovements(rows: StockMovementRow[]): PackedStockMovemen
       items.push([row.itemCode, row.itemName, row.unit, row.itemType, row.goodsGroup]);
     }
     const inbound = row.inboundQuantity !== 0 ? 1 : 0;
-    lines.push(row.purchase
-      ? [doc, item, row.quantity, row.unitCost, row.value, inbound, row.purchase.grossAmount, row.purchase.discountAmount, row.purchase.vatRate, row.purchase.vatAmount]
-      : [doc, item, row.quantity, row.unitCost, row.value, inbound]);
+    const head = [doc, item, row.quantity, row.unitCost, row.value, inbound] as const;
+    const money = row.purchase
+      ? [row.purchase.grossAmount, row.purchase.discountAmount, row.purchase.vatRate, row.purchase.vatAmount] as const
+      : [null, null, null, null] as const;
+    if (row.purchaseUnit && row.purchaseQuantity !== null && row.purchaseQuantity !== undefined) {
+      let unit = unitIndex.get(row.purchaseUnit);
+      if (unit === undefined) {
+        unit = units.length;
+        unitIndex.set(row.purchaseUnit, unit);
+        units.push(row.purchaseUnit);
+      }
+      lines.push([...head, ...money, unit, row.purchaseQuantity]);
+    } else {
+      lines.push(row.purchase ? [...head, ...money] : [...head]);
+    }
   }
-  return { docs, items, lines };
+  return { docs, items, lines, ...(units.length ? { units } : {}) };
 }
 
 export function unpackStockMovements(packed: PackedStockMovements): Array<StockMovementRow & { transactionDate: string }> {
   return packed.lines.map((line) => {
     const [docIndex, itemIndex, quantity, unitCost, value, inbound] = line;
-    const purchase: PurchaseAmounts | null = line.length > 6
+    const purchase: PurchaseAmounts | null = line.length > 6 && line[6] !== null
       ? { grossAmount: line[6] as number, discountAmount: line[7] as number, vatRate: line[8] as number | null, vatAmount: line[9] as number }
       : null;
+    const purchaseUnit = line.length > 10 ? packed.units?.[line[10] as number] ?? null : null;
     const [transactionId, code, transactionType, subType, transactionDate, branchCode, warehouseCode, toWarehouseCode, counterpartWarehouseCode, referenceCode, partnerCode, partnerName, note] = packed.docs[docIndex];
     const [itemCode, itemName, unit, itemType, goodsGroup] = packed.items[itemIndex];
     return {
@@ -98,6 +126,7 @@ export function unpackStockMovements(packed: PackedStockMovements): Array<StockM
       quantity, inboundQuantity: inbound ? quantity : 0, outboundQuantity: inbound ? 0 : quantity, unitCost, value,
       referenceCode, partnerCode, partnerName, note,
       ...(purchase ? { purchase } : {}),
+      ...(purchaseUnit ? { purchaseUnit, purchaseQuantity: line[11] as number } : {}),
     };
   });
 }

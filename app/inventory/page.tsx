@@ -61,6 +61,10 @@ type ItemGroup = { id: string; code: string; name: string; group: string | null;
 type RevenueGroup = { id: string; code: string; name: string; group: string | null };
 type Balance = { id: string; warehouseCode: string; quantity: number; averageCost: number; item: Item };
 type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; partnerCode: string | null; referenceType: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; explosionStatus?: string | null;
+  /** Hạng mục P&L của phiếu Xuất khác. */
+  pnlItemCode?: string | null;
+  /** Lịch phân bổ chi phí của phiếu Xuất khác (PB-<mã phiếu>): số tháng + số kỳ đã ghi nhận. */
+  allocation?: { months: number; postedPeriods: number };
   /** Chi phí mua hàng của phiếu nhập mua — đã phân bổ vào giá nhập từng dòng (lib/purchase-cost.ts). */
   purchaseCost?: number;
   /** Phiếu chế biến của rã BOM trên danh sách Nhập/Xuất kho chỉ mang 3 dòng đầu — số tổng nằm ở đây (xem compactFlowDocument). */
@@ -90,7 +94,7 @@ type Warehouse = { id: string; code: string; name: string; branch: string | null
 type Partner = { code: string; name: string; group: string | null; status: string };
 type MovementByType = Record<string, { inbound: number; outbound: number; inboundValue?: number; outboundValue?: number }>;
 type StockSummary = { item: Item; warehouseCode: string; openingQuantity: number; openingValue?: number; inboundQuantity: number; inboundValue?: number; outboundQuantity: number; outboundValue?: number; closingQuantity: number; averageCost: number; closingValue: number; movementByType?: MovementByType };
-type StockMovement = { transactionId: string; code: string; transactionType: string; subType?: string | null; transactionDate: string; branchCode?: string; warehouseCode: string; toWarehouseCode: string | null; counterpartWarehouseCode?: string | null; itemCode: string; itemName: string; unit: string; itemType?: string; goodsGroup?: string | null; quantity: number; inboundQuantity: number; outboundQuantity: number; unitCost?: number; value: number; referenceCode: string | null; partnerCode?: string | null; partnerName?: string | null; note?: string | null; purchase?: { grossAmount: number; discountAmount: number; vatRate: number | null; vatAmount: number } | null };
+type StockMovement = { transactionId: string; code: string; transactionType: string; subType?: string | null; transactionDate: string; branchCode?: string; warehouseCode: string; toWarehouseCode: string | null; counterpartWarehouseCode?: string | null; itemCode: string; itemName: string; unit: string; itemType?: string; goodsGroup?: string | null; quantity: number; inboundQuantity: number; outboundQuantity: number; unitCost?: number; value: number; referenceCode: string | null; partnerCode?: string | null; partnerName?: string | null; note?: string | null; purchase?: { grossAmount: number; discountAmount: number; vatRate: number | null; vatAmount: number } | null; purchaseUnit?: string | null; purchaseQuantity?: number | null };
 type Stocktake = {
   /** Đã từng mở lại sau khi duyệt → duyệt lại mặc định tính lại sổ sách. */
   reopened?: boolean;
@@ -349,7 +353,9 @@ export default function InventoryPage() {
   const [deletingItem, setDeletingItem] = useState<Item | null>(null);
   /** Sửa / xoá phiếu kho ngay trên bảng phiếu của ba tab Nhập / Xuất / Điều chuyển. */
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
-  const [transactionEditForm, setTransactionEditForm] = useState({ transactionDate: "", warehouseCode: "", toWarehouseCode: "", partnerCode: "", subType: "", referenceCode: "", note: "", purchaseCost: "" });
+  /** Khung cuộn danh sách dòng của hộp Sửa phiếu — "Thêm dòng" kéo xuống dòng mới. */
+  const editLinesRef = useRef<HTMLDivElement>(null);
+  const [transactionEditForm, setTransactionEditForm] = useState({ transactionDate: "", warehouseCode: "", toWarehouseCode: "", partnerCode: "", subType: "", referenceCode: "", note: "", purchaseCost: "", pnlItemCode: "", allocationMonths: "" });
   const [transactionEditLines, setTransactionEditLines] = useState<Array<{ key: string; sourceLineId?: string; itemId: string; quantity: string; unitCode: string; unitCost: string; baseUnitCost: number; vatRate: string; vatAmount: string; discountRate: string; discountAmount: string; note: string }>>([]);
   const [transactionEditError, setTransactionEditError] = useState<string | null>(null);
   const [transactionEditSaving, setTransactionEditSaving] = useState(false);
@@ -447,6 +453,8 @@ export default function InventoryPage() {
   /** Nhập kho thủ công NHIỀU dòng (khách 27/10/2026): tìm ở ô Mặt hàng, chọn là thêm một dòng. */
   /** Form Ghi nhận nhập / xuất kho mở bằng nút (khách 27/10/2026: khung rộng hai cột như phiếu mua tài sản). */
   const [stockFormOpen, setStockFormOpen] = useState(false);
+  /** Dòng mặt hàng của phiếu xuất đang lập (khách 18/11/2026: thêm nhiều dòng ngay khi tạo, không phải lưu rồi sửa). */
+  const [issueRows, setIssueRows] = useState<IssueRow[]>(() => [newIssueRow()]);
   const [manualLines, setManualLines] = useState<Array<{ key: string; itemId: string; unitCode: string; note: string }>>([]);
   const [manualValues, setManualValues] = useState<Record<string, ReceiveLineValue>>({});
   const [recipeForm, setRecipeForm] = useState({ productCode: "SP_COMBO01", productName: "Combo ban POS", sellingPrice: "45000", unit: "", outputConversionRate: "1", effectiveFrom: today(), stoppedFrom: "", itemId: "", quantity: "0.02", wasteRate: "3" });
@@ -1707,8 +1715,42 @@ export default function InventoryPage() {
    * Ghi nhận phiếu Nhập / Xuất xong: khung ghi nhận trở về phiếu MỚI trống (giữ cửa hàng, kho, ngày, loại
    * để lập tiếp), phiếu vừa tạo được tô sáng trong danh sách bên dưới (khách 28/10/2026).
    */
+  /**
+   * Ghi nhận phiếu xuất: Xuất khác / Xuất test món lấy nhiều dòng từ issueRows; Xuất trả NCC vẫn
+   * một dòng theo phiếu nhập gốc. Máy chủ tự định giá theo kho nên không gửi đơn giá.
+   */
+  const submitOutbound = async () => {
+    const supplierReturn = stockForm.transactionType === "XUAT_TRA_NCC";
+    const picked = issueRows.filter((row) => row.itemId);
+    if (!supplierReturn) {
+      if (picked.length === 0) {
+        setMessage("Chọn ít nhất một mặt hàng cho phiếu xuất.");
+        return;
+      }
+      const missing = picked.find((row) => !(Number(row.quantity) > 0));
+      if (missing) {
+        setMessage(`Nhập số lượng cho ${data.items.find((item) => item.id === missing.itemId)?.name || "mặt hàng"} hoặc bỏ dòng đó.`);
+        return;
+      }
+    }
+    const lines = supplierReturn
+      ? [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, note: stockForm.lineNote }]
+      : picked.map((row) => ({ itemId: row.itemId, inputQuantity: row.quantity, inputUnitCode: row.unitCode, note: row.note }));
+    const isIssue = stockForm.transactionType === "XUAT_KHAC";
+    const saved = await send({
+      action: "STOCK_TRANSACTION",
+      ...stockForm,
+      ...(supplierReturn ? { referenceType: "PURCHASE_RETURN" } : {}),
+      ...(isIssue ? {} : { pnlItemCode: "", allocationMonths: "" }),
+      transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime),
+      lines: lines.map((line) => ({ ...line, inputUnitCost: "0", vatRate: "", vatAmount: "", discountRate: "", discountAmount: "" })),
+    }, `Đã ghi nhận phiếu xuất kho${lines.length > 1 ? ` (${lines.length} dòng)` : ""}.`);
+    if (saved) afterStockSaved(saved.code);
+  };
+
   const afterStockSaved = (code?: string | null) => {
     clearManualLines();
+    setIssueRows([newIssueRow()]);
     setStockForm((current) => ({ ...current, itemId: "", inputUnitCode: "", quantity: "1", unitCost: "", vatAmount: "", discountRate: "", discountAmount: "", purchaseCost: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "", lineNote: "", allocationMonths: "", pnlItemCode: "" }));
     if (code) setFocusCode(code);
   };
@@ -2236,6 +2278,8 @@ export default function InventoryPage() {
       referenceCode: transaction.referenceCode || "",
       note: transaction.note || "",
       purchaseCost: transaction.purchaseCost ? String(Math.round(transaction.purchaseCost)) : "",
+      pnlItemCode: transaction.pnlItemCode || "",
+      allocationMonths: transaction.allocation ? String(transaction.allocation.months) : "",
     });
     setTransactionEditLines(transaction.lines.map((line, index) => {
       /**
@@ -2294,6 +2338,31 @@ export default function InventoryPage() {
     const rate = parseVatRate(line.vatRate);
     return vatAmountOf(roundVnd(Number(line.quantity || 0) * Number(line.unitCost || 0)) - editLineDiscount(line), rate.ok ? rate.rate : null);
   };
+  /**
+   * Số cộng ở chân hộp Sửa phiếu (khách 18/11/2026), tính theo số đang gõ — cùng công thức với dòng
+   * "Trước thuế − CK + thuế = …" của từng dòng. Phiếu xuất / điều chuyển: trị giá theo giá vốn đang có.
+   */
+  const editTransactionTotals = (): EditTotals => {
+    const inbound = Boolean(editingTransaction && isInboundType(editingTransaction.transactionType));
+    let quantity = 0, gross = 0, discount = 0, vat = 0;
+    const units = new Set<string>();
+    for (const line of transactionEditLines) {
+      const lineQuantity = Number(line.quantity || 0) || 0;
+      quantity += lineQuantity;
+      const item = data.items.find((candidate) => candidate.id === line.itemId);
+      if (item) units.add((item.unitConversions || []).find((unit) => unit.unitCode.toUpperCase() === line.unitCode.toUpperCase())?.unitName || line.unitCode || item.unit);
+      if (inbound) {
+        gross += roundVnd(lineQuantity * Number(line.unitCost || 0));
+        discount += editLineDiscount(line);
+        vat += line.vatAmount.trim() === "" ? editLineAutoVat(line) : Number(line.vatAmount || 0);
+      } else {
+        const rate = item ? safeConversionRate(item.unit, (item.unitConversions || []).find((unit) => unit.unitCode.toUpperCase() === line.unitCode.toUpperCase())) : 1;
+        gross += lineQuantity * rate * (line.baseUnitCost || 0);
+      }
+    }
+    const purchaseCost = editingTransaction?.transactionType === "NHAP_MUA" ? Number(transactionEditForm.purchaseCost || 0) || 0 : 0;
+    return { inbound, lineCount: transactionEditLines.length, quantity, units: [...units], gross: roundVnd(gross), discount, vat, purchaseCost };
+  };
 
   const submitTransactionEdit = async () => {
     if (!editingTransaction) return;
@@ -2314,6 +2383,7 @@ export default function InventoryPage() {
           referenceCode: transactionEditForm.referenceCode,
           note: transactionEditForm.note,
           ...(editingTransaction.transactionType === "NHAP_MUA" ? { purchaseCost: transactionEditForm.purchaseCost || "0" } : {}),
+          ...(editingTransaction.transactionType === "XUAT_KHAC" ? { pnlItemCode: transactionEditForm.pnlItemCode, allocationMonths: transactionEditForm.allocationMonths } : {}),
           lines: transactionEditLines.map((line) => ({
             sourceLineId: line.sourceLineId || "",
             itemId: line.itemId,
@@ -2963,15 +3033,12 @@ export default function InventoryPage() {
 
                   {["PACKAGING", "UNIFORM"].includes(itemEditForm.itemType) && (
                     <Input label="Hạng mục P&L khi xuất dùng">
-                      <select className="control" value={itemEditForm.expensePnlItemCode} onChange={(e) => setItemEditForm({ ...itemEditForm, expensePnlItemCode: e.target.value })}>
-                        <option value="">Mặc định ({itemEditForm.itemType === "UNIFORM" ? "CP đồng phục" : "Chi phí vật tư tiêu hao"})</option>
-                        {(data.issuePnlItems || []).map((item) => (
-                          <option key={item.code} value={item.code}>{item.name}{item.groupName ? ` · ${item.groupName}` : ""}</option>
-                        ))}
-                        {itemEditForm.expensePnlItemCode && !(data.issuePnlItems || []).some((item) => item.code === itemEditForm.expensePnlItemCode) && (
-                          <option value={itemEditForm.expensePnlItemCode}>{itemEditForm.expensePnlItemCode} (đã ngừng dùng)</option>
-                        )}
-                      </select>
+                      <PnlItemSelect
+                        items={data.issuePnlItems || []}
+                        value={itemEditForm.expensePnlItemCode}
+                        onChange={(expensePnlItemCode) => setItemEditForm({ ...itemEditForm, expensePnlItemCode })}
+                        emptyLabel={`Mặc định (${itemEditForm.itemType === "UNIFORM" ? "CP đồng phục" : "Chi phí vật tư tiêu hao"})`}
+                      />
                     </Input>
                   )}
 
@@ -3065,7 +3132,7 @@ export default function InventoryPage() {
             </button>
           )}
           {canCreate && stockFormOpen && (
-            <form onSubmit={(e) => { e.preventDefault(); if (grpoActive) { void receiveFromPO(); return; } if (active === "inbound") { void submitManualInbound(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, ...(active === "outbound" && stockForm.transactionType === "XUAT_TRA_NCC" ? { referenceType: "PURCHASE_RETURN" } : {}), transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: "0", vatRate: "", vatAmount: "", discountRate: "", discountAmount: "", note: stockForm.lineNote }] }, "Đã ghi nhận phiếu xuất kho.").then((saved) => { if (saved) afterStockSaved(saved.code); }); }} className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); if (grpoActive) { void receiveFromPO(); return; } if (active === "inbound") { void submitManualInbound(); return; } void submitOutbound(); }} className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
               <div className="flex items-start justify-between gap-3">
                 <h2 className="font-bold text-lg text-slate-800">{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}</h2>
                 <button type="button" onClick={() => setStockFormOpen(false)} className="icon-button" title="Đóng"><span className="material-symbols-outlined">close</span></button>
@@ -3085,17 +3152,43 @@ export default function InventoryPage() {
                 </select>
               </Input>
 
-              {active === "outbound" && stockForm.transactionType === "XUAT_KHAC" && !stockForm.allocationMonths && (
-                <Input label="Hạng mục P&L">
-                  <select className="control" value={stockForm.pnlItemCode} onChange={(e) => setStockForm({ ...stockForm, pnlItemCode: e.target.value })}>
-                    <option value="">— Để văn phòng chọn sau —</option>
-                    {(data.issuePnlItems || []).map((item) => (
-                      <option key={item.code} value={item.code}>{item.name}{item.groupName ? ` · ${item.groupName}` : ""}</option>
-                    ))}
-                  </select>
-                  <small className="block text-[11px] text-slate-500 mt-1">Xuất khác không vào giá vốn: trị giá xuất lên thẳng hạng mục này trên P&L. Chưa chọn thì nằm ở &quot;Chưa phân loại P&L&quot; tới khi văn phòng sửa phiếu chọn hạng mục.</small>
-                </Input>
-              )}
+              {active === "outbound" && stockForm.transactionType === "XUAT_KHAC" && (() => {
+                const allocating = Number(stockForm.allocationMonths) > 0;
+                const pickedItems = issueRows.map((row) => data.items.find((item) => item.id === row.itemId)).filter(Boolean);
+                const uniformOnly = pickedItems.length > 0 && pickedItems.every((item) => item?.itemType === "UNIFORM");
+                return (<>
+                  <Input label={allocating && !uniformOnly ? "Hạng mục P&L *" : "Hạng mục P&L"}>
+                    <PnlItemSelect
+                      items={data.issuePnlItems || []}
+                      value={stockForm.pnlItemCode}
+                      onChange={(pnlItemCode) => setStockForm({ ...stockForm, pnlItemCode })}
+                      emptyLabel={allocating && uniformOnly ? "— Mặc định: CP Đồng phục —" : "— Để văn phòng chọn sau —"}
+                    />
+                    <small className="block text-[11px] text-slate-500 mt-1">
+                      {allocating
+                        ? (uniformOnly ? "Phiếu toàn đồng phục: để trống thì phân bổ vào CP Đồng phục nhân viên." : "Có phân bổ thì phải chọn hạng mục — mỗi kỳ phân bổ ghi chi phí vào hạng mục này.")
+                        : <>Xuất khác không vào giá vốn: trị giá xuất lên thẳng hạng mục này trên P&L. Chưa chọn thì nằm ở &quot;Chưa phân loại P&L&quot; tới khi văn phòng sửa phiếu chọn hạng mục. Gõ để tìm theo tên hạng mục hoặc nhóm.</>}
+                    </small>
+                  </Input>
+                  {/* Phân bổ chi phí N tháng cho MỌI mặt hàng (khách 18/11/2026; trước chỉ đồng phục): cả phiếu
+                      treo 242, lịch PB-<mã phiếu> ở Vận hành tài chính → Phân bổ. Để trống = ghi chi phí ngay. */}
+                  <Input label="Phân bổ chi phí (số tháng)">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      inputMode="decimal"
+                      className="control"
+                      placeholder="Để trống = ghi chi phí ngay trong tháng xuất"
+                      value={stockForm.allocationMonths}
+                      onChange={(e) => setStockForm({ ...stockForm, allocationMonths: e.target.value })}
+                    />
+                    <small className="text-[11px] text-slate-500 block mt-1">
+                      Trị giá xuất của cả phiếu chia đều từ tháng xuất vào hạng mục P&L đã chọn (đồng phục, CCDC, trang trí…); ghi nhận từng kỳ ở Vận hành tài chính → Phân bổ.
+                    </small>
+                  </Input>
+                </>);
+              })()}
 
               {isSupplierReturn && (
                 <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50/60 p-3">
@@ -3341,14 +3434,11 @@ export default function InventoryPage() {
                 </div>
               )}
 
-              {!isSupplierReturn && active !== "inbound" && <Input label="Mặt hàng">
-                <ItemSelect items={data.items} value={stockForm.itemId} onChange={(itemId) => {
-                  const item = data.items.find((candidate) => candidate.id === itemId);
-                  setStockForm({ ...stockForm, itemId, inputUnitCode: item?.unitConversions?.[0]?.unitCode || item?.unit.toUpperCase() || "" });
-                }} />
-              </Input>}
+              {!isSupplierReturn && active !== "inbound" && (
+                <IssueRowsEditor items={data.items} rows={issueRows} onChange={setIssueRows} />
+              )}
 
-              {active !== "inbound" && <div className="grid grid-cols-2 gap-3">
+              {isSupplierReturn && <div className="grid grid-cols-2 gap-3">
                 <Input label="Số lượng">
                   <input type="number" step="0.01" className="control" value={stockForm.quantity} onChange={(e) => setStockForm({ ...stockForm, quantity: e.target.value })} />
                 </Input>
@@ -3361,27 +3451,7 @@ export default function InventoryPage() {
                 </Input>
               </div>}
 
-              {/* Đồng phục xuất dùng: phân bổ chi phí N tháng (treo 242, lịch PB-<mã phiếu> ở Vận hành
-                  tài chính → Phân bổ). Để trống = ghi chi phí ngay trong tháng xuất. */}
-              {active === "outbound" && stockForm.transactionType === "XUAT_KHAC" && selectedStockItem?.itemType === "UNIFORM" && (
-                <Input label="Phân bổ chi phí (số tháng)">
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    inputMode="decimal"
-                    className="control"
-                    placeholder="Để trống = ghi chi phí ngay"
-                    value={stockForm.allocationMonths}
-                    onChange={(e) => setStockForm({ ...stockForm, allocationMonths: e.target.value })}
-                  />
-                  <small className="text-[11px] text-slate-500 block mt-1">
-                    Tiền đồng phục chia đều từ tháng xuất vào hạng mục đồng phục; ghi nhận từng kỳ ở Vận hành tài chính → Phân bổ.
-                  </small>
-                </Input>
-              )}
-
-              {active !== "inbound" && selectedStockItem && (
+              {isSupplierReturn && selectedStockItem && (
                 <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
                   <b>Preview:</b> {qty(stockInputQuantity)} {selectedStockUnit?.unitName || selectedStockUnit?.unitCode || selectedStockItem.unit}
                   {" = "}
@@ -3390,12 +3460,12 @@ export default function InventoryPage() {
               )}
 
               {/* Ghi chú riêng của mặt hàng trên phiếu (khách 27/10/2026) — hiện trên phiếu in và sổ kho. */}
-              {!grpoActive && active !== "inbound" && <Input label="Ghi chú mặt hàng">
+              {!grpoActive && isSupplierReturn && <Input label="Ghi chú mặt hàng">
                 <input className="control" value={stockForm.lineNote} placeholder="Không bắt buộc" onChange={(e) => setStockForm({ ...stockForm, lineNote: e.target.value })} />
               </Input>}
               </>)}
 
-              <button className="primary-button w-full">{grpoActive ? (grpoOrders.length > 1 ? `Nhận hàng từ ${grpoOrders.length} PO` : "Nhận hàng từ PO") : active === "inbound" && manualLines.length > 0 ? `Ghi nhận (${manualLines.length} dòng)` : "Ghi nhận"}</button>
+              <button className="primary-button w-full">{grpoActive ? (grpoOrders.length > 1 ? `Nhận hàng từ ${grpoOrders.length} PO` : "Nhận hàng từ PO") : active === "inbound" && manualLines.length > 0 ? `Ghi nhận (${manualLines.length} dòng)` : active === "outbound" && !isSupplierReturn && issueRows.filter((row) => row.itemId).length > 1 ? `Ghi nhận (${issueRows.filter((row) => row.itemId).length} dòng)` : "Ghi nhận"}</button>
                 </section>
               </div>
             </form>
@@ -3890,25 +3960,26 @@ export default function InventoryPage() {
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
           <form
             onSubmit={(e) => { e.preventDefault(); void submitTransactionEdit(); }}
-            className="bg-white rounded-xl w-full max-w-4xl shadow-xl max-h-[92vh] overflow-y-auto"
+            className="bg-white rounded-xl w-full max-w-4xl shadow-xl max-h-[94vh] flex flex-col overflow-y-auto sm:overflow-hidden"
           >
-            <div className="p-5 border-b border-slate-200">
-              <h3 className="font-bold text-slate-900">Sửa phiếu {editingTransaction.code}</h3>
-              <p className="text-xs text-slate-500 mt-1">
-                {movementTypeLabel(editingTransaction.transactionType)} · {storeLabel(editingTransaction.branchCode)}.
-                Lưu xong hệ thống hoàn lại tồn của bản cũ rồi ghi bản mới, nên tồn kho và giá vốn bình quân được tính lại đúng.
-              </p>
+            {/* Đầu cố định (khách 18/11/2026): tiêu đề + thông tin chung + "Thêm dòng" đứng yên, chỉ
+                danh sách dòng cuộn; chân cố định có số cộng của phiếu. Màn hẹp thì cả hộp cuộn như cũ. */}
+            <div className="shrink-0 px-5 pt-3 pb-2 border-b border-slate-200 space-y-2">
+              <div className="flex items-start justify-between gap-3">
+                <h3 className="font-bold text-slate-900 leading-tight">
+                  Sửa phiếu {editingTransaction.code}
+                  <span className="ml-2 text-xs font-normal text-slate-500">{movementTypeLabel(editingTransaction.transactionType)} · {storeLabel(editingTransaction.branchCode)}</span>
+                </h3>
+                <span className="material-symbols-outlined text-lg text-slate-400 cursor-help shrink-0" title="Lưu xong hệ thống hoàn lại tồn của bản cũ rồi ghi bản mới, nên tồn kho và giá vốn bình quân được tính lại đúng.">info</span>
+              </div>
               {isPoReceiptDoc(editingTransaction) && (
-                <p className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                <p className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-[11px] leading-snug text-blue-800">
                   Phiếu nhận hàng từ <b>{editingTransaction.referenceCode}</b>: sửa số lượng / đơn giá / thuế / chiết khấu / chi phí mua hàng thì
                   số đã nhận trên PO và <b>công nợ NCC</b> tự cập nhật theo. Xoá dòng = không nhận dòng đó. Kho và NCC đi theo PO nên không đổi ở đây
                   {(editingTransaction.referenceCode || "").includes(",") ? "; phiếu gộp nhiều PO thì không thêm / đổi mặt hàng được" : ""}.
                 </p>
               )}
-            </div>
-
-            <div className="p-5 space-y-4">
-              <div className="grid grid-cols-1 *:min-w-0 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 *:min-w-0 sm:grid-cols-2 lg:grid-cols-3 gap-x-3 gap-y-1.5">
                 <Input label="Ngày chứng từ">
                   <DateInput className="control" value={transactionEditForm.transactionDate} onChange={(value) => setTransactionEditForm({ ...transactionEditForm, transactionDate: value })} required />
                 </Input>
@@ -3951,19 +4022,51 @@ export default function InventoryPage() {
                 <Input label="Ghi chú">
                   <input className="control" value={transactionEditForm.note} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, note: e.target.value })} />
                 </Input>
+                {/* Xuất khác: văn phòng chọn / đổi hạng mục P&L và phân bổ ngay trên phiếu (khách 18/11/2026). */}
+                {editingTransaction.transactionType === "XUAT_KHAC" && (<>
+                  <Input label="Hạng mục P&L">
+                    <PnlItemSelect
+                      items={data.issuePnlItems || []}
+                      value={transactionEditForm.pnlItemCode}
+                      onChange={(pnlItemCode) => setTransactionEditForm({ ...transactionEditForm, pnlItemCode })}
+                      emptyLabel="— Chưa phân loại P&L —"
+                    />
+                  </Input>
+                  <Input label="Phân bổ chi phí (số tháng)">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      inputMode="decimal"
+                      className="control disabled:bg-slate-100 disabled:text-slate-500"
+                      placeholder="Để trống = ghi chi phí ngay"
+                      value={transactionEditForm.allocationMonths}
+                      disabled={(editingTransaction.allocation?.postedPeriods || 0) > 0}
+                      title={(editingTransaction.allocation?.postedPeriods || 0) > 0 ? `Lịch PB-${editingTransaction.code} đã ghi nhận ${editingTransaction.allocation?.postedPeriods} kỳ — bỏ ghi nhận ở Vận hành tài chính → Phân bổ mới đổi được số tháng.` : ""}
+                      onChange={(e) => setTransactionEditForm({ ...transactionEditForm, allocationMonths: e.target.value })}
+                    />
+                  </Input>
+                </>)}
               </div>
 
+              <div className="flex items-center justify-between pt-1">
+                <b className="text-sm text-slate-700">Mặt hàng ({transactionEditLines.length} dòng)</b>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTransactionEditLines([...transactionEditLines, { key: `new-${Date.now()}`, itemId: "", quantity: "1", unitCode: "", unitCost: "0", baseUnitCost: 0, vatRate: "KKKNT", vatAmount: "", discountRate: "", discountAmount: "", note: "" }]);
+                    // Dòng mới nằm cuối danh sách đang cuộn — kéo xuống cho thấy ngay.
+                    window.setTimeout(() => editLinesRef.current?.scrollTo({ top: editLinesRef.current.scrollHeight, behavior: "smooth" }), 50);
+                  }}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold hover:bg-slate-50"
+                >
+                  + Thêm dòng
+                </button>
+              </div>
+            </div>
+
+            <div ref={editLinesRef} className="sm:flex-1 sm:min-h-0 sm:overflow-y-auto px-5 py-3 space-y-4">
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <b className="text-sm text-slate-700">Mặt hàng ({transactionEditLines.length} dòng)</b>
-                  <button
-                    type="button"
-                    onClick={() => setTransactionEditLines([...transactionEditLines, { key: `new-${Date.now()}`, itemId: "", quantity: "1", unitCode: "", unitCost: "0", baseUnitCost: 0, vatRate: "KKKNT", vatAmount: "", discountRate: "", discountAmount: "", note: "" }])}
-                    className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold hover:bg-slate-50"
-                  >
-                    + Thêm dòng
-                  </button>
-                </div>
                 {transactionEditLines.map((line, index) => {
                   const item = data.items.find((candidate) => candidate.id === line.itemId);
                   const units = item ? [{ unitCode: item.unit.toUpperCase(), unitName: item.unit }, ...(item.unitConversions || []).filter((unit) => unit.unitCode.toUpperCase() !== item.unit.toUpperCase())] : [];
@@ -4067,14 +4170,19 @@ export default function InventoryPage() {
                 );
               })()}
 
+            </div>
+
+            <div className="shrink-0 sticky bottom-0 sm:static bg-white px-5 py-3 border-t border-slate-200 space-y-2">
               {transactionEditError && (
                 <p className="rounded-lg bg-rose-50 border border-rose-100 text-rose-700 px-3 py-2 text-sm">{transactionEditError}</p>
               )}
-            </div>
-
-            <div className="p-5 border-t border-slate-200 flex items-center justify-end gap-2">
-              <button type="button" onClick={() => setEditingTransaction(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold hover:bg-slate-50">Huỷ</button>
-              <button type="submit" disabled={transactionEditSaving} className="primary-button">{transactionEditSaving ? "Đang lưu..." : "Lưu phiếu"}</button>
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                <EditTransactionTotals totals={editTransactionTotals()} />
+                <div className="flex items-center gap-2 ml-auto">
+                  <button type="button" onClick={() => setEditingTransaction(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold hover:bg-slate-50">Huỷ</button>
+                  <button type="submit" disabled={transactionEditSaving} className="primary-button">{transactionEditSaving ? "Đang lưu..." : "Lưu phiếu"}</button>
+                </div>
+              </div>
             </div>
           </form>
         </div>
@@ -5872,6 +5980,111 @@ function purchaseConversionLabel(item: { unit: string; unitConversions?: UnitCon
  * `nameOnly`: ô đã chọn chỉ hiện TÊN mặt hàng (ô hẹp trong hộp thoại sửa phiếu, hiện "mã - tên"
  * thì mã chiếm hết chỗ, tên bị cắt). Danh sách xổ xuống đưa mã xuống dòng phụ, vẫn gõ mã để tìm được.
  */
+type EditTotals = { inbound: boolean; lineCount: number; quantity: number; units: string[]; gross: number; discount: number; vat: number; purchaseCost: number };
+
+/** Chân hộp Sửa phiếu: số lượng, trước thuế, thuế, sau thuế (phiếu nhập) hoặc trị giá (phiếu xuất). */
+function EditTransactionTotals({ totals }: { totals: EditTotals }) {
+  const cell = (label: string, value: string, strong = false) => (
+    <div className="min-w-0">
+      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</div>
+      <div className={`tabular-nums text-sm ${strong ? "font-bold text-slate-900" : "font-semibold text-slate-700"}`}>{value}</div>
+    </div>
+  );
+  const quantityLabel = `${qty(totals.quantity)}${totals.units.length === 1 ? ` ${totals.units[0]}` : ""}`;
+  const beforeTax = totals.gross - totals.discount;
+  return (
+    <div className="flex flex-wrap items-end gap-x-5 gap-y-1">
+      {cell(`Số lượng (${totals.lineCount} dòng)`, quantityLabel)}
+      {totals.inbound ? (<>
+        {totals.discount > 0 && cell("Chiết khấu", `−${money(totals.discount)}`)}
+        {cell("Trước thuế", money(beforeTax))}
+        {cell("Thuế GTGT", money(totals.vat))}
+        {totals.purchaseCost > 0 && cell("CP mua hàng", money(totals.purchaseCost))}
+        {cell(totals.purchaseCost > 0 ? "Sau thuế + CP mua" : "Sau thuế", `${money(beforeTax + totals.vat + totals.purchaseCost)} đ`, true)}
+      </>) : cell("Trị giá (giá vốn)", `${money(totals.gross)} đ`, true)}
+    </div>
+  );
+}
+
+type IssueRow = { key: string; itemId: string; quantity: string; unitCode: string; note: string };
+let issueRowSeq = 0;
+function newIssueRow(): IssueRow {
+  issueRowSeq += 1;
+  return { key: `issue-${issueRowSeq}`, itemId: "", quantity: "1", unitCode: "", note: "" };
+}
+
+/**
+ * Các dòng mặt hàng của phiếu xuất đang lập (khách 18/11/2026: trước chỉ một dòng, lưu xong mới
+ * "Thêm dòng" được ở hộp Sửa phiếu). Mỗi dòng: mặt hàng, số lượng, ĐVT (kèm quy đổi), ghi chú.
+ */
+function IssueRowsEditor({ items, rows, onChange }: { items: Item[]; rows: IssueRow[]; onChange: (rows: IssueRow[]) => void }) {
+  const patch = (index: number, changes: Partial<IssueRow>) => onChange(rows.map((row, position) => (position === index ? { ...row, ...changes } : row)));
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-bold text-slate-600">Mặt hàng ({rows.filter((row) => row.itemId).length} dòng)</span>
+        <button type="button" className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-0.5" onClick={() => onChange([...rows, newIssueRow()])}>
+          <span className="material-symbols-outlined text-sm font-bold">add</span>Thêm dòng
+        </button>
+      </div>
+      {rows.map((row, index) => {
+        const item = items.find((candidate) => candidate.id === row.itemId);
+        const units = item?.unitConversions?.length
+          ? item.unitConversions
+          : item ? [{ id: "base", unitCode: item.unit.toUpperCase(), unitName: item.unit, conversionRate: 1, isDefaultPurchase: true }] : [];
+        const unit = units.find((candidate) => candidate.unitCode === row.unitCode) || units[0];
+        const baseQuantity = Number(row.quantity || 0) * safeConversionRate(item?.unit || "", unit);
+        return (
+          <div key={row.key} className="rounded-xl border border-slate-200 bg-white p-3 space-y-2 shadow-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Dòng #{index + 1}</span>
+              {rows.length > 1 && (
+                <button type="button" className="text-xs font-bold text-rose-600 hover:underline" onClick={() => onChange(rows.filter((_, position) => position !== index))}>Bỏ dòng</button>
+              )}
+            </div>
+            <ItemSelect items={items} value={row.itemId} onChange={(itemId) => {
+              const picked = items.find((candidate) => candidate.id === itemId);
+              patch(index, { itemId, unitCode: picked?.unitConversions?.[0]?.unitCode || picked?.unit.toUpperCase() || "" });
+            }} />
+            <div className="grid grid-cols-2 gap-2">
+              <input type="number" step="any" min="0" className="control" value={row.quantity} placeholder="Số lượng" aria-label={`Số lượng dòng ${index + 1}`} onChange={(e) => patch(index, { quantity: e.target.value })} />
+              <select className="control" value={unit?.unitCode || ""} aria-label={`ĐVT dòng ${index + 1}`} onChange={(e) => patch(index, { unitCode: e.target.value })}>
+                {units.map((candidate) => <option key={candidate.unitCode} value={candidate.unitCode}>{candidate.unitName || candidate.unitCode}</option>)}
+              </select>
+            </div>
+            {item && unit && unit.unitCode.toUpperCase() !== item.unit.toUpperCase() && (
+              <p className="text-[11px] text-blue-800">= {qty(baseQuantity)} {item.unit}</p>
+            )}
+            <input className="control text-sm" value={row.note} placeholder="Ghi chú dòng (không bắt buộc)" aria-label={`Ghi chú dòng ${index + 1}`} onChange={(e) => patch(index, { note: e.target.value })} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Ô chọn hạng mục P&L có ô tìm (khách 18/11/2026 "thanh lọc"): danh sách máy chủ đã lọc còn hạng mục
+ * chi phí và xếp theo nhóm; gõ tên hạng mục hoặc tên nhóm để lọc. Mã đang lưu mà không còn trong
+ * danh sách vẫn hiện để mở phiếu cũ không tự mất hạng mục.
+ */
+function PnlItemSelect({ items, value, onChange, emptyLabel }: { items: Array<{ code: string; name: string; groupName: string }>; value: string; onChange: (value: string) => void; emptyLabel: string }) {
+  const known = !value || items.some((item) => item.code === value);
+  return (
+    <SearchableSelect
+      value={value}
+      onChange={onChange}
+      placeholder={emptyLabel}
+      searchPlaceholder="Gõ tên hạng mục hoặc nhóm..."
+      options={[
+        { value: "", label: emptyLabel },
+        ...items.map((item) => ({ value: item.code, label: item.name, subLabel: item.groupName })),
+        ...(known ? [] : [{ value, label: `${value} (ngoài danh sách chi phí)` }]),
+      ]}
+    />
+  );
+}
+
 function ItemSelect({ items, value, onChange, nameOnly = false }: { items: Item[]; value: string; onChange: (value: string) => void; nameOnly?: boolean }) {
   return (
     <SearchableSelect

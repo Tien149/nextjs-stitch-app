@@ -119,6 +119,50 @@ export function issuePnlItemAccount(group: string | null | undefined) {
   return String(group || "").toUpperCase() === "COGS" ? "632" : "6428";
 }
 
+/** Nhóm lớn P&L nhận được trị giá hàng xuất kho, theo thứ tự hiện trên ô chọn. */
+export const ISSUE_PNL_GROUP_KINDS = ["OPEX", "CAPEX", "COGS"] as const;
+
+const plainText = (value: unknown) => String(value ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
+
+/** Nhóm "Chi phí lương người lao động": lương đi từ bảng lương, không bao giờ là hàng xuất kho. */
+function isLaborPnlGroup(group: { code: string; name?: string | null }) {
+  return /(^|[^a-z])cpnld([^a-z]|$)/.test(plainText(group.code)) || plainText(group.name).includes("luong nguoi lao dong");
+}
+
+/**
+ * Hạng mục P&L chọn được trên phiếu Xuất khác / hạng mục chi phí của mặt hàng (khách 18/11/2026:
+ * "thanh lọc" danh sách). Chỉ giữ hạng mục chi phí (OPEX, đầu tư ban đầu, giá vốn); bỏ doanh thu,
+ * thu nhập khác và lương người lao động. Xếp theo nhóm (Chi phí → Đầu tư → Giá vốn, trong đó theo
+ * tên nhóm) rồi theo tên hạng mục — tên khách đã đánh số nên đọc liền mạch trong từng nhóm.
+ */
+export function issuePnlCandidates(
+  items: Array<{ code: string; name: string; subGroup?: string | null; group?: string | null }>,
+  groups: Array<{ code: string; name?: string | null; group?: string | null }>,
+) {
+  const groupByCode = new Map(groups.map((group) => [group.code, group]));
+  const rank = (kind: string) => (ISSUE_PNL_GROUP_KINDS as readonly string[]).indexOf(kind);
+  return items
+    .map((item) => {
+      const parent = item.subGroup ? groupByCode.get(item.subGroup) : undefined;
+      const kind = String(item.group || parent?.group || "").toUpperCase();
+      return { item, parent, kind };
+    })
+    .filter(({ parent, kind }) => rank(kind) >= 0 && !(parent && isLaborPnlGroup(parent)))
+    .map(({ item, parent, kind }) => ({ code: item.code, name: item.name, groupName: parent?.name || item.subGroup || "", kind }))
+    .sort((a, b) => rank(a.kind) - rank(b.kind)
+      || a.groupName.localeCompare(b.groupName, "vi", { numeric: true })
+      || a.name.localeCompare(b.name, "vi", { numeric: true }))
+    .map(({ code, name, groupName }) => ({ code, name, groupName }));
+}
+
+/** Hạng mục đó có được làm hạng mục chi phí của phiếu xuất không (cùng luật với issuePnlCandidates). */
+export function isIssuePnlCandidate(
+  item: { code: string; name: string; subGroup?: string | null; group?: string | null },
+  groups: Array<{ code: string; name?: string | null; group?: string | null }>,
+) {
+  return issuePnlCandidates([item], groups).length === 1;
+}
+
 /** Phiếu kho làm hàng RỜI hệ thống kho (hoặc quay lại, với kiểm kê thừa). */
 export const COGS_OUTBOUND_TYPES = ["XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_KIEM_KE"] as const;
 export const COGS_INBOUND_TYPES = ["NHAP_KIEM_KE"] as const;
@@ -148,6 +192,11 @@ export function planInventoryCogsJournal(input: {
   /** Loại mặt hàng treo chi phí trả trước 242 (phiếu có lịch phân bổ) thay vì ghi chi phí ngay. */
   prepaidItemTypes?: readonly string[];
   /**
+   * Phiếu Xuất khác có lịch phân bổ: MỌI dòng treo 242 (khách 18/11/2026 — phân bổ không còn chỉ
+   * cho đồng phục); lịch PB-<mã phiếu> rút dần 242 vào hạng mục của phiếu.
+   */
+  prepaidAll?: boolean;
+  /**
    * Phiếu Xuất khác: hạng mục P&L người lập chọn + tài khoản theo nhóm của hạng mục (Giá vốn -> 632,
    * còn lại -> 6428). Khách chốt 20/10/2026: xuất khác KHÔNG vào COGS mà lên thẳng hạng mục đã chọn.
    */
@@ -173,7 +222,7 @@ export function planInventoryCogsJournal(input: {
     const amount = Number(line.totalCost) || 0;
     if (amount === 0) continue;
     const itemType = String(line.itemType || "").toUpperCase();
-    const prepaid = !inbound && (input.prepaidItemTypes || []).includes(itemType);
+    const prepaid = !inbound && (Boolean(input.prepaidAll) || (input.prepaidItemTypes || []).includes(itemType));
     const expenseItem = EXPENSE_ITEM_TYPES[itemType];
     const chosen = !prepaid && type === "XUAT_KHAC" ? input.issuePnlItem || null : null;
     // Xuất khác chưa chọn hạng mục (vận hành lập, văn phòng bổ sung sau — khách 24/10/2026): treo
