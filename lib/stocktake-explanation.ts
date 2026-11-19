@@ -491,3 +491,22 @@ export async function orphanExplanations<T extends ExplanationHead>(db: TxClient
       return { ...row, replacedBy: replacement ? replacement.sourceCode : null };
     });
 }
+
+/**
+ * Các bản giải trình KHÁC của cùng kho mà đợt nguồn còn hiệu lực (bỏ bản mồ côi của đợt đã mở lại).
+ * Dùng cho luật thứ tự chốt (lib/stocktake-explanation-order.ts).
+ */
+export async function liveSiblingExplanations(db: TxClient, record: { id: string; warehouseCode: string }) {
+  const rows = await db.stocktakeExplanation.findMany({
+    where: { warehouseCode: record.warehouseCode, id: { not: record.id } },
+    select: { id: true, sourceType: true, sourceId: true, sourceCode: true, periodTo: true, status: true, lines: true },
+  });
+  const batchIds = rows.filter((row) => row.sourceType === "BATCH").map((row) => row.sourceId);
+  const sessionIds = rows.filter((row) => row.sourceType !== "BATCH").map((row) => row.sourceId);
+  const [batches, sessions] = await Promise.all([
+    batchIds.length ? db.stocktakeBatch.findMany({ where: { id: { in: batchIds }, status: "APPROVED" }, select: { id: true } }) : Promise.resolve([]),
+    sessionIds.length ? db.stocktakeSession.findMany({ where: { id: { in: sessionIds }, status: STOCKTAKE_APPROVED, deletedAt: null }, select: { id: true } }) : Promise.resolve([]),
+  ]);
+  const live = new Set([...batches, ...sessions].map((row) => row.id));
+  return rows.filter((row) => live.has(row.sourceId));
+}

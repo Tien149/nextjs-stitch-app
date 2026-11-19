@@ -54,6 +54,8 @@ type Detail = {
   relinkCandidates: Source[];
   /** Đơn giá tạm tính theo mặt hàng (dòng có chênh lệch) — cột Trị giá chênh lệch. */
   unitCosts?: Record<string, number>;
+  /** Đầu kỳ so với số kiểm đợt trước của cùng kho (khách 19/11/2026). */
+  openingCheck?: { previousCode: string; previousLocked: boolean; count: number; rows: Array<{ itemId: string; itemCode: string; itemName: string; opening: number; previousCounted: number }> } | null;
 };
 
 type Props = {
@@ -473,6 +475,20 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
             <div className="mx-5 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
               <span>Đợt <b>{explanation.sourceCode}</b> đã được duyệt lại sau lúc chụp số — số dưới đây là số CŨ.</span>
               {canApprove && <button type="button" className="primary-button !min-h-8 !py-1" disabled={busy} onClick={() => void runAction("REFRESH_STOCKTAKE_EXPLANATION", "Đã cập nhật số liệu theo lần duyệt mới; giải trình giữ nguyên theo mã hàng.")}>Cập nhật số liệu</button>}
+            </div>
+          )}
+          {detail.openingCheck && detail.openingCheck.count > 0 && (
+            <div className="mx-5 mb-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+              <p>
+                <b>{detail.openingCheck.count} mã có SL đầu kỳ khác số kiểm kê đợt trước ({detail.openingCheck.previousCode})</b>
+                {" "}— thường do chốt giải trình không theo thứ tự kỳ (chốt kỳ sau khi kỳ trước đang mở chốt).
+                {" "}Cách sửa: Mở chốt từ kỳ mới nhất về tới kỳ sau {detail.openingCheck.previousCode}, rồi lần lượt từ kỳ cũ tới kỳ mới bấm <b>Cập nhật tồn hệ thống</b> → <b>Chốt</b>.
+                {!detail.openingCheck.previousLocked && <> Đợt {detail.openingCheck.previousCode} đang <b>chưa chốt</b> — chốt đợt đó trước.</>}
+              </p>
+              <p className="mt-1 text-xs">
+                Ví dụ: {detail.openingCheck.rows.slice(0, 5).map((row) => `${row.itemCode} (đầu kỳ ${row.opening.toLocaleString("vi-VN")}, kiểm đợt trước ${row.previousCounted.toLocaleString("vi-VN")})`).join("; ")}
+                {detail.openingCheck.count > 5 ? "; …" : ""}
+              </p>
             </div>
           )}
           {detail.needsRefresh && locked && (

@@ -23,7 +23,8 @@ import { loadMissingRecipeReport } from "@/lib/missing-recipes";
 import { buildMonthlyCostSummary } from "@/lib/recipe-cost-summary";
 import { netMovementsAfter } from "@/lib/stocktake-batch";
 import { buildStockSummary, type MovementTotalRow, type OpeningInventoryTotal } from "@/lib/stock-summary";
-import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, inheritedExplanationNotes, listStocktakeSources, loadStocktakeSource, orphanExplanations, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
+import { lockBlockers, openingMismatches, unlockBlockers } from "@/lib/stocktake-explanation-order";
+import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, inheritedExplanationNotes, listStocktakeSources, liveSiblingExplanations, loadStocktakeSource, orphanExplanations, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
 import { postStocktakeAdjustments, resyncOpenStocktakes, resyncStocktake, resyncStocktakeBatch, unpostStocktakeAdjustments } from "@/lib/stocktake-resync";
 import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, dispatchTransferRequest, TRANSFER_APPROVED, TRANSFER_DISPATCH_REFERENCE, TRANSFER_PENDING, TRANSFER_RETURNED, undoTransferDispatch } from "@/lib/inventory-transfer-request";
@@ -927,8 +928,16 @@ export async function GET(request: Request) {
         warehouseCode: record.warehouseCode,
         lines: explanationLines.filter((line) => Math.abs(line.variance) > 1e-6),
       }));
+      // Đầu kỳ phải bằng số kiểm của đợt trước (khách 19/11/2026) — lệch thì báo để chốt lại theo thứ tự.
+      const previous = (await liveSiblingExplanations(prisma as unknown as TxClient, record))
+        .filter((row) => row.periodTo.getTime() < record.periodTo.getTime())
+        .sort((a, b) => b.periodTo.getTime() - a.periodTo.getTime())[0];
+      const mismatches = previous
+        ? openingMismatches((Array.isArray(previous.lines) ? previous.lines : []) as unknown as ExplanationLine[], explanationLines)
+        : [];
       return NextResponse.json({
         explanation: record,
+        openingCheck: previous ? { previousCode: previous.sourceCode, previousLocked: previous.status === EXPLANATION_LOCKED, count: mismatches.length, rows: mismatches.slice(0, 10) } : null,
         unitCosts,
         source: source ? { status: source.status, code: source.code, cutoffAt: source.cutoffAt, approvedAt: source.approvedAt } : null,
         needsRefresh: sourceApproved && (record.sourceApprovedAt?.getTime() || 0) !== (source?.approvedAt?.getTime() || 0),
@@ -1979,6 +1988,18 @@ export async function POST(request: Request) {
       let current = await prisma.stocktakeExplanation.findFirst({ where: { id: cleanText(body.id) } });
       if (!current) businessError("Không tìm thấy bản giải trình kiểm kê");
       assertScope(current!);
+      // Chốt theo thứ tự kỳ (khách 19/11/2026): đầu kỳ đợt sau = số kiểm đợt trước chỉ đúng khi chênh
+      // lệch đợt trước đã ghi sổ trước lúc chốt đợt sau — lib/stocktake-explanation-order.ts.
+      if (action === "LOCK_STOCKTAKE_EXPLANATION" || action === "UNLOCK_STOCKTAKE_EXPLANATION") {
+        const siblings = await liveSiblingExplanations(prisma as unknown as TxClient, current!);
+        if (action === "LOCK_STOCKTAKE_EXPLANATION") {
+          const blockers = lockBlockers(current!, siblings, EXPLANATION_LOCKED);
+          if (blockers.length) businessError(`Chốt giải trình kỳ trước của kho này trước: ${blockers.join(", ")}. Chốt theo thứ tự kỳ để số đầu kỳ của đợt ${current!.sourceCode} = số kiểm kê đợt trước.`);
+        } else {
+          const blockers = unlockBlockers(current!, siblings, EXPLANATION_LOCKED);
+          if (blockers.length) businessError(`Mở chốt các kỳ sau của kho này trước: ${blockers.join(", ")} (mở từ kỳ mới nhất về). Sau khi sửa xong thì chốt lại lần lượt từ kỳ cũ tới kỳ mới.`);
+        }
+      }
       /**
        * Chốt / Cập nhật số liệu giải trình: trước đó đồng bộ chênh lệch theo sổ mới nhất (phiếu -N/-X +
        * số chụp nháp) — Chốt là lúc số kiểm kê đứng yên (khách 21/10/2026).
