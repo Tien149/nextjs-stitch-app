@@ -202,11 +202,16 @@ export function PurchaseReceiveLines({ lines, values, onChange, purchaseCost, ca
         Tổng số lượng: <b className="text-lg tabular-nums">{qty(totalQuantity)}</b>
         {totalUnits.length === 1 ? ` ${totalUnits[0]}` : ""} <span className="text-xs font-normal">({lines.length} dòng)</span>
       </p>
-      <p className="text-sm font-semibold">
-        Tổng tiền (sau thuế): <b className="text-xl tabular-nums">{money(total.afterTax)} đ</b>
-      </p>
-      {total.costShare > 0 && (
-        <p className="w-full text-right text-xs">Trị giá mua hàng (gồm chi phí mua {money(total.costShare)} đ): <b className="tabular-nums">{money(total.purchaseValue)} đ</b></p>
+      {/* Có chi phí mua: Trị giá mua hàng là số chính (chữ to), Tổng tiền sau thuế chữ nhỏ bên dưới (khách 19/11/2026). */}
+      {total.costShare > 0 ? (<>
+        <p className="text-sm font-semibold">
+          Trị giá mua hàng (gồm chi phí mua {money(total.costShare)} đ): <b className="text-xl tabular-nums">{money(total.purchaseValue)} đ</b>
+        </p>
+        <p className="w-full text-right text-xs">Tổng tiền (sau thuế): <b className="tabular-nums">{money(total.afterTax)} đ</b></p>
+      </>) : (
+        <p className="text-sm font-semibold">
+          Tổng tiền (sau thuế): <b className="text-xl tabular-nums">{money(total.afterTax)} đ</b>
+        </p>
       )}
     </div>
   ) : null;
