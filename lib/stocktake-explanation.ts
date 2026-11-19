@@ -20,6 +20,7 @@ import type { TxClient } from "@/lib/prisma";
 import { STOCKTAKE_APPROVED } from "@/lib/stocktake-status";
 import { latestKnownUnitCost } from "@/lib/inventory-stock";
 import { cutoffMinuteEnd, netMovementsAfter } from "@/lib/stocktake-batch";
+import { unlockBlockers } from "@/lib/stocktake-explanation-order";
 
 export const EXPLANATION_DRAFT = "DRAFT";
 export const EXPLANATION_LOCKED = "LOCKED";
@@ -509,4 +510,26 @@ export async function liveSiblingExplanations(db: TxClient, record: { id: string
   ]);
   const live = new Set([...batches, ...sessions].map((row) => row.id));
   return rows.filter((row) => live.has(row.sourceId));
+}
+
+/**
+ * Mở lại phiếu / đợt kiểm kê cũng gỡ chênh lệch (và phần rã kiểm dư) khỏi sổ như Mở chốt giải trình,
+ * nên theo cùng luật thứ tự (khách 19/11/2026; lỗ hổng ghi nhận 14/11 — Yến Linh mở lại KK T8–T9 ASA
+ * khi giải trình đã chốt, T10 gánh hết chênh lệch):
+ * - giải trình của chính đợt đã chốt → Mở chốt giải trình trước;
+ * - giải trình đợt SAU của cùng kho còn chốt → mở chốt các đợt đó trước.
+ */
+export async function assertStocktakeReopenAllowed(
+  db: TxClient,
+  source: { sourceType: StocktakeSourceType; sourceId: string; code: string; warehouseCode: string; cutoffAt: Date },
+) {
+  const own = await db.stocktakeExplanation.findFirst({ where: { sourceType: source.sourceType, sourceId: source.sourceId }, select: { id: true, status: true } });
+  if (own?.status === EXPLANATION_LOCKED) {
+    throw new Error(`BUSINESS:Giải trình kiểm kê đợt ${source.code} đã chốt — Mở chốt giải trình trước (ở tab Giải trình kiểm kê) rồi mới mở lại phiếu.`);
+  }
+  const siblings = await liveSiblingExplanations(db, { id: own?.id || "", warehouseCode: source.warehouseCode });
+  const blockers = unlockBlockers({ periodTo: source.cutoffAt }, siblings, EXPLANATION_LOCKED);
+  if (blockers.length) {
+    throw new Error(`BUSINESS:Kho này còn giải trình kỳ sau đã chốt: ${blockers.join(", ")}. Mở chốt các kỳ đó trước (từ kỳ mới nhất về) rồi mới mở lại đợt ${source.code}, để số đầu kỳ các kỳ sau không bị lệch.`);
+  }
 }

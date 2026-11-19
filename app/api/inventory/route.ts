@@ -24,7 +24,7 @@ import { buildMonthlyCostSummary } from "@/lib/recipe-cost-summary";
 import { netMovementsAfter } from "@/lib/stocktake-batch";
 import { buildStockSummary, type MovementTotalRow, type OpeningInventoryTotal } from "@/lib/stock-summary";
 import { lockBlockers, openingMismatches, unlockBlockers } from "@/lib/stocktake-explanation-order";
-import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, inheritedExplanationNotes, listStocktakeSources, liveSiblingExplanations, loadStocktakeSource, orphanExplanations, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
+import { assertStocktakeReopenAllowed, EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, inheritedExplanationNotes, listStocktakeSources, liveSiblingExplanations, loadStocktakeSource, orphanExplanations, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
 import { postStocktakeAdjustments, resyncOpenStocktakes, resyncStocktake, resyncStocktakeBatch, unpostStocktakeAdjustments } from "@/lib/stocktake-resync";
 import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, dispatchTransferRequest, TRANSFER_APPROVED, TRANSFER_DISPATCH_REFERENCE, TRANSFER_PENDING, TRANSFER_RETURNED, undoTransferDispatch } from "@/lib/inventory-transfer-request";
@@ -2218,6 +2218,7 @@ export async function POST(request: Request) {
       if (stocktake.status !== "APPROVED") businessError(`Phiếu kiểm kê ${stocktake.code} đang ở trạng thái ${stocktake.status}, chưa duyệt nên không có gì để mở lại.`);
       if (stocktake.batchId || stocktake.locationCode) businessError(`Phiếu ${stocktake.code} được duyệt gộp theo vị trí — mở lại cả đợt kiểm kê ở mục Kiểm kê theo vị trí.`);
       await assertPeriodOpen({ date: stocktake.stocktakeDate, branchCode: stocktake.branchCode }, "mở lại phiếu kiểm kê");
+      await assertStocktakeReopenAllowed(prisma as unknown as TxClient, { sourceType: "SESSION", sourceId: stocktake.id, code: stocktake.code, warehouseCode: stocktake.warehouseCode, cutoffAt: stocktake.stocktakeDate });
       /**
        * Phiếu điều chỉnh của chính phiếu kiểm kê + phần rã kiểm dư BTP của nó (phiếu chế biến / bù nguyên
        * liệu trong lần rã, referenceId = phiếu kiểm kê). Khách 21/10/2026: mở lại 5 phiếu T8 bị chặn vì

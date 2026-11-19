@@ -9,6 +9,7 @@ import { STOCKTAKE_PENDING, isStocktakeEditable } from "@/lib/stocktake-status";
 import { isLocationStocktakeItemType, resolveUnitInputs } from "@/lib/stocktake-consolidate";
 import { approveStocktakeBatch, buildBatchPreview, formatVnDateTime, reopenStocktakeBatch } from "@/lib/stocktake-batch";
 import { writeAuditLog } from "@/lib/audit-log";
+import { assertStocktakeReopenAllowed } from "@/lib/stocktake-explanation";
 
 /**
  * Kiểm kê THEO VỊ TRÍ + duyệt GỘP (khách chốt 28/09/2026) — vị trí & form mẫu, phiếu đếm từng vị
@@ -316,6 +317,8 @@ export async function POST(request: Request) {
       assertBranchAccess(auth.session, batch.branchCode);
       assertWarehouseAccess(auth.session, batch.warehouseCode);
       await assertPeriodOpen({ date: batch.cutoffAt, branchCode: batch.branchCode }, "mở lại đợt kiểm kê");
+      // Cùng luật thứ tự với Mở chốt giải trình (khách 19/11/2026).
+      await assertStocktakeReopenAllowed(prisma as unknown as TxClient, { sourceType: "BATCH", sourceId: batch.id, code: batch.code, warehouseCode: batch.warehouseCode, cutoffAt: batch.cutoffAt });
       const outcome = await prisma.$transaction(
         (tx) => reopenStocktakeBatch(tx as unknown as TxClient, { batchId: batch.id, reopenedBy: auth.session.name }),
         { timeout: 120000, maxWait: 20000 },
