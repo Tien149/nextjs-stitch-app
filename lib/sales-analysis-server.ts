@@ -18,7 +18,26 @@ export type SalesAnalysisData = {
   shiftConfigs: ShiftConfigs;
   /** Cửa hàng có doanh thu trong kỳ (xem Tất cả cửa hàng thì cấu hình ca theo từng cửa hàng này). */
   branches: string[];
+  /** Ghi chú của BOD theo mã món, cho đúng kỳ + phạm vi cửa hàng đang xem. */
+  notes: Record<string, SalesItemNoteValue>;
 };
+
+export type SalesItemNoteValue = { note: string; updatedBy: string | null; updatedAt: string };
+
+/** Ghi đè ghi chú một món; để trống là xoá. Trả về ghi chú đã lưu (null nếu đã xoá). */
+export async function saveSalesItemNote(period: string, branchCode: string, productCode: string, note: string, actor: string): Promise<SalesItemNoteValue | null> {
+  const key = { period, branchCode, productCode };
+  if (!note) {
+    await prisma.salesItemNote.deleteMany({ where: key });
+    return null;
+  }
+  const saved = await prisma.salesItemNote.upsert({
+    where: { period_branchCode_productCode: key },
+    create: { ...key, note, updatedBy: actor },
+    update: { note, updatedBy: actor },
+  });
+  return { note: saved.note, updatedBy: saved.updatedBy, updatedAt: saved.updatedAt.toISOString() };
+}
 
 function parseShiftsJson(value: string): ShiftDef[] {
   try {
@@ -144,8 +163,13 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
     current.total += group._sum.netAmount || 0;
     visitMap.set(key, current);
   }
-  const shiftConfigs = await loadSalesShiftConfigs();
+  const [shiftConfigs, noteRows] = await Promise.all([
+    loadSalesShiftConfigs(),
+    prisma.salesItemNote.findMany({ where: { period, branchCode } }),
+  ]);
+  const notes: Record<string, SalesItemNoteValue> = {};
+  for (const row of noteRows) notes[row.productCode] = { note: row.note, updatedBy: row.updatedBy, updatedAt: row.updatedAt.toISOString() };
   const branches = [...new Set(groups.map((group) => group.branchCode))].sort();
   if (branchCode !== "ALL" && !branches.includes(branchCode)) branches.push(branchCode);
-  return { period, branchCode, cells, names, visits: [...visitMap.values()], hasGuestData, shiftConfigs, branches };
+  return { period, branchCode, cells, names, visits: [...visitMap.values()], hasGuestData, shiftConfigs, branches, notes };
 }

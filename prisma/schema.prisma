@@ -351,6 +351,21 @@ model SalesShiftConfig {
   updatedAt  DateTime @updatedAt
 }
 
+/// Ghi chú của BOD trên từng món ở báo cáo DT theo ca & món (khách 20/11/2026): theo kỳ × phạm vi
+/// cửa hàng đang xem (kể cả ALL) × mã món. Xoá trắng ô là xoá dòng.
+model SalesItemNote {
+  id          String   @id @default(uuid())
+  period      String
+  branchCode  String
+  productCode String
+  note        String
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([period, branchCode, productCode])
+}
+
 model RevenueImportRow {
   id              String   @id @default(uuid())
   importBatchId   String

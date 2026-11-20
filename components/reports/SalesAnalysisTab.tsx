@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
+import { toFileSlug } from "@/lib/export-table-excel";
 import { CHART_COLORS, MoneyBarChart } from "@/components/charts/ReportCharts";
 import { PanelHeader, money, statValueTextClass } from "@/components/reports/report-ui";
 import { ShowMoreRows, useRowLimit } from "@/components/ShowMoreRows";
@@ -23,7 +25,7 @@ import {
   type VisitMoney,
 } from "@/lib/sales-analysis";
 import SalesShiftEditor from "@/components/reports/SalesShiftEditor";
-import type { SalesAnalysisData } from "@/lib/sales-analysis-server";
+import type { SalesAnalysisData, SalesItemNoteValue } from "@/lib/sales-analysis-server";
 
 /**
  * Tab "DT theo ca & món" (khách 20/11/2026): doanh thu sáng / trưa / tối, đồ ăn / đồ uống, từng
@@ -52,6 +54,29 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
   const [rankBy, setRankBy] = useState<RankBy>("quantity");
   const [skipFree, setSkipFree] = useState(true);
   const [search, setSearch] = useState("");
+  // Số món của hai bảng xếp hạng: BOD tự gõ (khách 20/11/2026), mặc định 20 bán chạy / 10 bán chậm.
+  const [bestLimit, setBestLimit] = useState(20);
+  const [worstLimit, setWorstLimit] = useState(10);
+  // Ghi chú của BOD theo món (kỳ × phạm vi cửa hàng đang xem). Số liệu tải lại thì lấy bản máy chủ.
+  const [noteState, setNoteState] = useState(() => ({ source: data.notes, notes: data.notes || {} }));
+  if (noteState.source !== data.notes) setNoteState({ source: data.notes, notes: data.notes || {} });
+  const notes = noteState.notes;
+  const saveNote = async (productCode: string, note: string) => {
+    const response = await fetch("/api/reports", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "SAVE_SALES_ITEM_NOTE", period: data.period, branchCode: data.branchCode, productCode, note }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as { note?: SalesItemNoteValue | null; error?: string };
+    if (!response.ok) throw new Error(payload.error || "Không lưu được ghi chú");
+    setNoteState((current) => {
+      const next = { ...current.notes };
+      if (payload.note) next[productCode] = payload.note;
+      else delete next[productCode];
+      return { ...current, notes: next };
+    });
+  };
+  const noteProps = { notes, canEdit: canConfigure, onSave: saveNote };
 
   const all = useMemo(() => summarizeSales(data.cells, configs, shiftNames), [data.cells, configs, shiftNames]);
   const filtered = useMemo(
@@ -75,8 +100,8 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
   // bảng bán chạy theo số lượng mà không phải món. Bấm riêng nhóm Phụ thu vẫn xem được.
   const rankPool = useMemo(() => (kindFilter === "ALL" ? filtered.items.filter((item) => item.kind !== "SERVICE") : filtered.items), [filtered.items, kindFilter]);
   const rankNote = `${filterLabel}${kindFilter === "ALL" && all.byKind.SERVICE.rows > 0 ? " (không tính Phụ thu)" : ""}${skipFree ? ", bỏ món 0 đ" : ""}`;
-  const best = useMemo(() => rankSalesItems(rankPool, { by: rankBy, order: "best", limit: 20, skipFree }), [rankPool, rankBy, skipFree]);
-  const worst = useMemo(() => rankSalesItems(rankPool, { by: rankBy, order: "worst", limit: 10, skipFree }), [rankPool, rankBy, skipFree]);
+  const best = useMemo(() => rankSalesItems(rankPool, { by: rankBy, order: "best", limit: bestLimit, skipFree }), [rankPool, rankBy, skipFree, bestLimit]);
+  const worst = useMemo(() => rankSalesItems(rankPool, { by: rankBy, order: "worst", limit: worstLimit, skipFree }), [rankPool, rankBy, skipFree, worstLimit]);
   const searchedItems = useMemo(
     () => filtered.items.filter((item) => matchesSearch(search, [item.code, data.names[item.code]])),
     [filtered.items, search, data.names],
@@ -262,7 +287,12 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
       )}
 
       <RankTable
-        title={`Top 20 món bán chạy nhất ${data.period}`}
+        titleBefore="Top"
+        titleAfter={`món bán chạy nhất ${data.period}`}
+        limit={bestLimit}
+        onLimit={setBestLimit}
+        available={rankPool.length}
+        {...noteProps}
         subtitle={`Xếp theo ${rankBy === "quantity" ? "số lượng bán" : "doanh thu món"}, ${rankNote}.`}
         items={best}
         shifts={shiftsShown.filter((shift) => shift !== NO_HOUR)}
@@ -271,7 +301,12 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
         tone="text-emerald-700"
       />
       <RankTable
-        title={`Top 10 món bán chậm nhất ${data.period}`}
+        titleBefore="Top"
+        titleAfter={`món bán chậm nhất ${data.period}`}
+        limit={worstLimit}
+        onLimit={setWorstLimit}
+        available={rankPool.length}
+        {...noteProps}
         subtitle={`Món có bán trong tháng nhưng ít nhất, xếp theo ${rankBy === "quantity" ? "số lượng bán" : "doanh thu món"}, ${rankNote}. Món không bán dòng nào thì không có trong file POS nên không hiện ở đây.`}
         items={worst}
         shifts={shiftsShown.filter((shift) => shift !== NO_HOUR)}
@@ -292,8 +327,8 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="text-xs uppercase tracking-wide text-slate-500">
-                {["Mã", "Tên món", "Nhóm", ...shiftsShown.map((shift) => `SL ${shift.toLocaleLowerCase("vi")}`), "Tổng SL", ...shiftsShown.map((shift) => `DT ${shift.toLocaleLowerCase("vi")}`), "Tổng DT món", "Tỷ trọng"].map((header, index) => (
-                  <th key={header} className={`sticky top-0 z-10 bg-white px-4 py-3 font-semibold whitespace-nowrap shadow-[inset_0_-1px_0_#e2e8f0] ${index >= 3 ? "text-right" : ""}`}>{header}</th>
+                {["Mã", "Tên món", "Nhóm", ...shiftsShown.map((shift) => `SL ${shift.toLocaleLowerCase("vi")}`), "Tổng SL", ...shiftsShown.map((shift) => `DT ${shift.toLocaleLowerCase("vi")}`), "Tổng DT món", "Tỷ trọng", "Ghi chú"].map((header, index, headers) => (
+                  <th key={header} className={`sticky top-0 z-10 bg-white px-4 py-3 font-semibold whitespace-nowrap shadow-[inset_0_-1px_0_#e2e8f0] ${index >= 3 && index < headers.length - 1 ? "text-right" : ""}`}>{header}</th>
                 ))}
               </tr>
             </thead>
@@ -308,10 +343,11 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
                   {shiftsShown.map((shift) => <td key={shift} className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{money(Math.round(item.byShift[shift]?.amount || 0))}</td>)}
                   <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums font-semibold">{money(Math.round(item.amount))}</td>
                   <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{pct(item.amount, filtered.total.amount)}</td>
+                  <NoteCell code={item.code} {...noteProps} />
                 </tr>
               ))}
               {searchedItems.length === 0 && (
-                <tr><td colSpan={6 + shiftsShown.length * 2} className="px-4 py-8 text-center text-slate-500">Không có món nào khớp.</td></tr>
+                <tr><td colSpan={7 + shiftsShown.length * 2} className="px-4 py-8 text-center text-slate-500">Không có món nào khớp.</td></tr>
               )}
             </tbody>
           </table>
@@ -322,8 +358,106 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
   );
 }
 
-function RankTable({ title, subtitle, items, shifts, nameOf, base, tone }: {
-  title: string;
+type NoteProps = {
+  notes: Record<string, SalesItemNoteValue>;
+  canEdit: boolean;
+  onSave: (productCode: string, note: string) => Promise<void>;
+};
+
+/**
+ * Ô ghi chú của BOD trên một món: bấm để gõ, Enter hoặc bấm ra ngoài là lưu, Esc huỷ, xoá trắng là
+ * xoá. Chữ ghi chú nằm thẳng trong ô nên Xuất Excel mang theo; nút sửa không vào file.
+ */
+function NoteCell({ code, notes, canEdit, onSave }: NoteProps & { code: string }) {
+  const current = notes[code];
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const commit = async () => {
+    if (draft === null) return;
+    const text = draft.trim();
+    if (text === (current?.note || "")) {
+      setDraft(null);
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(code, text);
+      setDraft(null);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Không lưu được ghi chú");
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (draft !== null) {
+    return (
+      <td className="px-4 py-2 min-w-64">
+        <textarea
+          autoFocus
+          rows={2}
+          className="control w-full text-sm"
+          value={draft}
+          disabled={saving}
+          placeholder="Ghi chú cho món này..."
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={() => void commit()}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setDraft(null);
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void commit();
+            }
+          }}
+        />
+        {saving && <span className="text-[11px] text-slate-500">Đang lưu...</span>}
+        {error && <span className="text-[11px] text-rose-600">{error}</span>}
+      </td>
+    );
+  }
+  return (
+    <td
+      className={`px-4 py-2 min-w-48 max-w-80 align-top ${canEdit ? "cursor-text hover:bg-amber-50" : ""}`}
+      title={current ? `${current.updatedBy || ""} · ${new Date(current.updatedAt).toLocaleString("vi-VN")}` : canEdit ? "Bấm để ghi chú" : undefined}
+      onClick={canEdit ? () => setDraft(current?.note || "") : undefined}
+    >
+      {current ? <span className="whitespace-pre-wrap text-slate-700">{current.note}</span> : canEdit ? <span className="text-xs text-slate-300" data-no-export>+ ghi chú</span> : null}
+    </td>
+  );
+}
+
+/** Ô gõ số món của bảng xếp hạng: giữ chữ đang gõ (xoá trắng để gõ lại không nhảy về 1), số hợp lệ mới áp. */
+function LimitInput({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const [text, setText] = useState(String(value));
+  const apply = (raw: string) => {
+    const number = Math.round(Number(raw));
+    if (Number.isFinite(number) && number >= 1) onChange(Math.min(500, number));
+  };
+  return (
+    <input
+      type="number"
+      inputMode="numeric"
+      min={1}
+      max={500}
+      className="control !w-20 !py-1 text-center font-bold"
+      value={text}
+      aria-label="Số món hiển thị"
+      onChange={(event) => {
+        setText(event.target.value);
+        apply(event.target.value);
+      }}
+      onBlur={() => setText(String(value))}
+    />
+  );
+}
+
+function RankTable({ titleBefore, titleAfter, limit, onLimit, available, notes, canEdit, onSave, subtitle, items, shifts, nameOf, base, tone }: NoteProps & {
+  titleBefore: string;
+  titleAfter: string;
+  limit: number;
+  onLimit: (value: number) => void;
+  available: number;
   subtitle: string;
   items: SalesItemSummary[];
   shifts: string[];
@@ -333,13 +467,23 @@ function RankTable({ title, subtitle, items, shifts, nameOf, base, tone }: {
 }) {
   return (
     <section className="table-panel">
-      <PanelHeader title={title} subtitle={subtitle} />
+      <div className="p-4 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="font-bold flex flex-wrap items-center gap-2">
+            {titleBefore}
+            <LimitInput value={limit} onChange={onLimit} />
+            {titleAfter}
+          </h2>
+          <p className="text-xs text-slate-500 mt-0.5">{subtitle} Gõ số món muốn xem vào ô{available > 0 ? ` (tháng này có ${available.toLocaleString("vi-VN")} món)` : ""}.</p>
+        </div>
+        <ExportExcelButton fileName={toFileSlug(`${titleBefore} ${limit} ${titleAfter}`)} sheetName={`${titleBefore} ${limit}`.slice(0, 31)} />
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="text-xs uppercase tracking-wide text-slate-500">
-              {["#", "Mã", "Tên món", "Nhóm", "SL bán", "DT món", "Tỷ trọng DT", ...shifts.map((shift) => `SL ${shift.toLocaleLowerCase("vi")}`)].map((header, index) => (
-                <th key={header} className={`px-4 py-3 font-semibold whitespace-nowrap ${index >= 4 ? "text-right" : ""}`}>{header}</th>
+              {["#", "Mã", "Tên món", "Nhóm", "SL bán", "DT món", "Tỷ trọng DT", ...shifts.map((shift) => `SL ${shift.toLocaleLowerCase("vi")}`), "Ghi chú"].map((header, index, headers) => (
+                <th key={header} className={`px-4 py-3 font-semibold whitespace-nowrap ${index >= 4 && index < headers.length - 1 ? "text-right" : ""}`}>{header}</th>
               ))}
             </tr>
           </thead>
@@ -354,10 +498,11 @@ function RankTable({ title, subtitle, items, shifts, nameOf, base, tone }: {
                 <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{money(Math.round(item.amount))}</td>
                 <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{pct(item.amount, base)}</td>
                 {shifts.map((shift) => <td key={shift} className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{qty(item.byShift[shift]?.quantity || 0)}</td>)}
+                <NoteCell code={item.code} notes={notes} canEdit={canEdit} onSave={onSave} />
               </tr>
             ))}
             {items.length === 0 && (
-              <tr><td colSpan={7 + shifts.length} className="px-4 py-8 text-center text-slate-500">Không có món nào.</td></tr>
+              <tr><td colSpan={8 + shifts.length} className="px-4 py-8 text-center text-slate-500">Không có món nào.</td></tr>
             )}
           </tbody>
         </table>

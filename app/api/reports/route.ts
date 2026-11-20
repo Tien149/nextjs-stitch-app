@@ -10,7 +10,7 @@ import { cashSourceCheck } from "@/lib/cash-source-check";
 import { getPayrollBudgetReport, getPnlHistoryEditor, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
 import { headcountToStored, isPnlHistoryChannelMetric, isPnlHistoryHeadcountMetric, isPnlHistoryPeriod, PNL_HISTORY_HEADCOUNT_PREFIX, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX } from "@/lib/pnl-history";
 import { getPnlNotes, savePnlNote, toPnlNoteKind } from "@/lib/pnl-note";
-import { getSalesAnalysis, saveSalesShiftConfig } from "@/lib/sales-analysis-server";
+import { getSalesAnalysis, saveSalesItemNote, saveSalesShiftConfig } from "@/lib/sales-analysis-server";
 import { apiError, assertPeriodOpen, businessError, cleanText, findClosedPeriod, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { createCashierCashMatcher, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -1355,6 +1355,27 @@ export async function POST(request: Request) {
     // Sửa phân loại một dòng doanh thu đã import là sửa số cũ, không phải lập số mới -> "edit".
     const auth = requireMenuAction(request, menuHref, action === "UPDATE_REVENUE_ROW" ? "edit" : action === "DELETE_REVENUE_ROWS" ? "delete" : "create");
     if (!auth.ok) return auth.response;
+
+    // Ghi chú từng món của BOD trên báo cáo DT theo ca & món (khách 20/11/2026).
+    if (action === "SAVE_SALES_ITEM_NOTE") {
+      const period = normalizePeriod(body.period);
+      if (!period) businessError("Thiếu kỳ báo cáo");
+      const branchCode = requestedBranch(auth.session, cleanText(body.branchCode) || "ALL");
+      const productCode = cleanText(body.productCode).toUpperCase();
+      if (!productCode) businessError("Thiếu mã món");
+      const note = cleanText(body.note).slice(0, 1000);
+      const saved = await saveSalesItemNote(period!, branchCode, productCode, note, auth.session.name);
+      await writeAuditLog({
+        session: auth.session,
+        module: menuHref,
+        action: note ? "SAVE_SALES_ITEM_NOTE" : "DELETE_SALES_ITEM_NOTE",
+        entityType: "SalesItemNote",
+        entityCode: `${period}/${branchCode}/${productCode}`,
+        branchCode: branchCode === "ALL" ? null : branchCode,
+        metadata: { note },
+      });
+      return NextResponse.json({ productCode, note: saved });
+    }
 
     // Ca bán hàng theo từng nhà hàng cho báo cáo DT theo ca & món (khách 20/11/2026).
     if (action === "SAVE_SALES_SHIFTS") {
