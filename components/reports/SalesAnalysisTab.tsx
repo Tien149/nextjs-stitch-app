@@ -9,16 +9,19 @@ import {
   DEFAULT_SHIFT_BOUNDS,
   normalizeShiftBounds,
   rankSalesItems,
+  revenuePerGuest,
   SALES_KINDS,
   salesKindLabels,
   salesShiftLabels,
   shiftRangeLabel,
   summarizeSales,
+  summarizeVisits,
   type RankBy,
   type SalesItemSummary,
   type SalesKind,
   type SalesShift,
   type ShiftBounds,
+  type VisitMoney,
 } from "@/lib/sales-analysis";
 import type { SalesAnalysisData } from "@/lib/sales-analysis-server";
 
@@ -256,6 +259,8 @@ export default function SalesAnalysisTab({ data }: { data: SalesAnalysisData }) 
         </div>
       </section>
 
+      <VisitsSection data={data} bounds={bounds} />
+
       {hourSeries.length > 0 && (
         <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
           <PanelHeader title="Doanh thu món theo giờ" subtitle={`Cộng cả tháng theo từng giờ bán (${filterLabel}). Dòng không có giờ không nằm trong biểu đồ.`} exportable={false} />
@@ -366,5 +371,136 @@ function RankTable({ title, subtitle, items, nameOf, base, tone }: {
         </table>
       </div>
     </section>
+  );
+}
+
+const perGuest = (value: VisitMoney) => {
+  const result = revenuePerGuest(value);
+  return result === null ? "—" : money(Math.round(result));
+};
+const perBill = (value: VisitMoney) => (value.bills > 0 ? money(Math.round(value.amount / value.bills)) : "—");
+const dayLabel = (date: string) => {
+  const [year, month, day] = date.split("-");
+  const weekday = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"][new Date(`${date}T00:00:00Z`).getUTCDay()];
+  return `${weekday} ${day}/${month}/${year}`;
+};
+
+/**
+ * Lượt khách (khách 20/11/2026): cột Số khách / Số hoá đơn của file POS. DT/khách chỉ chia doanh
+ * thu của kênh có ghi số khách — đơn Grab/giao hàng không có khách ngồi, chia vào là đội số lên.
+ */
+function VisitsSection({ data, bounds }: { data: SalesAnalysisData; bounds: ShiftBounds }) {
+  const visits = useMemo(() => summarizeVisits(data.visits || [], bounds), [data.visits, bounds]);
+  if (!data.hasGuestData || visits.total.guests <= 0) {
+    return (
+      <section className="table-panel">
+        <PanelHeader title={`Lượt khách ${data.period}`} subtitle="Lấy từ cột Số khách của file doanh thu POS." exportable={false} />
+        <p className="px-4 py-6 text-sm text-slate-600">
+          Kỳ này chưa có số khách. Thêm cột <b>Số khách</b> vào file doanh thu POS (Import &gt; Doanh thu POS thô) rồi import — có thêm cột <b>Số hoá đơn</b> thì
+          hệ thống đếm được số hoá đơn và mỗi hoá đơn chỉ tính khách một lần dù số khách ghi lặp trên mọi dòng món. Không có cột Số hoá đơn thì chỉ ghi số khách ở
+          một dòng của mỗi hoá đơn. Ngày đã import trước đó phải xoá ở Sổ doanh thu rồi nạp lại file có cột Số khách.
+        </p>
+      </section>
+    );
+  }
+  const hasBills = visits.total.bills > 0;
+  const noHour = visits.byShift.NO_HOUR.guests > 0;
+  const shifts: SalesShift[] = noHour ? [...TIMED_SHIFTS, "NO_HOUR"] : TIMED_SHIFTS;
+  const excluded = visits.byChannel.filter((channel) => !visits.guestChannels.includes(channel.channel) && Math.abs(channel.amount) >= 0.5).map((channel) => channel.channel);
+  return (
+    <>
+      <div className={`grid gap-4 sm:grid-cols-2 ${shifts.length > 3 ? "xl:grid-cols-5" : "xl:grid-cols-4"}`}>
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <p className="text-sm font-bold text-slate-700">Lượt khách cả tháng</p>
+          <p className="mt-2 text-2xl font-bold tabular-nums text-violet-700">{qty(visits.total.guests)}</p>
+          <p className="mt-1 text-xs text-slate-500">
+            {hasBills ? `${qty(visits.total.bills)} hoá đơn · ` : ""}DT/khách {perGuest(visits.total)} đ · TB {qty(Math.round((visits.total.guests / Math.max(1, visits.byDay.filter((day) => day.guests > 0).length)) * 10) / 10)} khách/ngày
+          </p>
+        </div>
+        {shifts.map((shift) => {
+          const value = visits.byShift[shift];
+          return (
+            <div key={shift} className="rounded-lg border border-slate-200 bg-white p-4">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-bold text-slate-700">Khách ca {salesShiftLabels[shift].toLowerCase()}</span>
+                <span className="text-xs text-slate-500">{pct(value.guests, visits.total.guests)}</span>
+              </div>
+              <p className="mt-2 text-2xl font-bold tabular-nums text-violet-700">{qty(value.guests)}</p>
+              <p className="mt-1 text-xs text-slate-500">{hasBills ? `${qty(value.bills)} hoá đơn · ` : ""}DT/khách {perGuest(value)} đ</p>
+            </div>
+          );
+        })}
+      </div>
+
+      <section className="table-panel">
+        <PanelHeader
+          title={`Lượt khách theo ngày ${data.period}`}
+          subtitle={`Cột Số khách của file POS, chia ca theo giờ bán. DT/khách = doanh thu món của kênh có ghi số khách ÷ số khách${excluded.length > 0 ? ` (không tính ${excluded.join(", ")} vì không ghi khách)` : ""}.`}
+        />
+        <div className="overflow-auto max-h-[75vh]">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="text-xs uppercase tracking-wide text-slate-500">
+                {["Ngày", ...shifts.map((shift) => `Khách ${salesShiftLabels[shift].toLowerCase()}`), "Tổng khách", ...(hasBills ? ["Số hoá đơn", "Khách/HĐ"] : []), "DT món", "DT/khách", ...(hasBills ? ["DT/HĐ"] : [])].map((header, index) => (
+                  <th key={header} className={`sticky top-0 z-10 bg-white px-4 py-3 font-semibold whitespace-nowrap shadow-[inset_0_-1px_0_#e2e8f0] ${index > 0 ? "text-right" : ""}`}>{header}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {visits.byDay.map((day) => (
+                <tr key={day.date} className="border-t border-slate-100">
+                  <td className="px-4 py-2 whitespace-nowrap">{dayLabel(day.date)}</td>
+                  {shifts.map((shift) => <td key={shift} className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{qty(day.byShift[shift].guests)}</td>)}
+                  <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums font-semibold">{qty(day.guests)}</td>
+                  {hasBills && <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{qty(day.bills)}</td>}
+                  {hasBills && <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{day.bills > 0 ? qty(Math.round((day.guests / day.bills) * 10) / 10) : "—"}</td>}
+                  <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{money(Math.round(day.amount))}</td>
+                  <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{perGuest(day)}</td>
+                  {hasBills && <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{perBill(day)}</td>}
+                </tr>
+              ))}
+              <tr className="border-t-2 border-slate-200 bg-slate-50 font-bold">
+                <td className="px-4 py-3">Tổng cộng</td>
+                {shifts.map((shift) => <td key={shift} className="px-4 py-3 whitespace-nowrap text-right tabular-nums">{qty(visits.byShift[shift].guests)}</td>)}
+                <td className="px-4 py-3 whitespace-nowrap text-right tabular-nums">{qty(visits.total.guests)}</td>
+                {hasBills && <td className="px-4 py-3 whitespace-nowrap text-right tabular-nums">{qty(visits.total.bills)}</td>}
+                {hasBills && <td className="px-4 py-3 whitespace-nowrap text-right tabular-nums">{visits.total.bills > 0 ? qty(Math.round((visits.total.guests / visits.total.bills) * 10) / 10) : "—"}</td>}
+                <td className="px-4 py-3 whitespace-nowrap text-right tabular-nums">{money(Math.round(visits.total.amount))}</td>
+                <td className="px-4 py-3 whitespace-nowrap text-right tabular-nums">{perGuest(visits.total)}</td>
+                {hasBills && <td className="px-4 py-3 whitespace-nowrap text-right tabular-nums">{perBill(visits.total)}</td>}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="table-panel">
+        <PanelHeader title={`Lượt khách theo kênh bán ${data.period}`} subtitle="Tại chỗ / Mang về / Grab... theo cột Hình thức bán của file POS." />
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="text-xs uppercase tracking-wide text-slate-500">
+                {["Kênh bán", "Lượt khách", "Tỷ trọng khách", ...(hasBills ? ["Số hoá đơn"] : []), "DT món", "DT/khách", ...(hasBills ? ["DT/HĐ"] : [])].map((header, index) => (
+                  <th key={header} className={`px-4 py-3 font-semibold whitespace-nowrap ${index > 0 ? "text-right" : ""}`}>{header}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {visits.byChannel.map((channel) => (
+                <tr key={channel.channel} className="border-t border-slate-100">
+                  <td className="px-4 py-2 whitespace-nowrap font-semibold">{channel.channel}</td>
+                  <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{qty(channel.guests)}</td>
+                  <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{pct(channel.guests, visits.total.guests)}</td>
+                  {hasBills && <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{qty(channel.bills)}</td>}
+                  <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{money(Math.round(channel.amount))}</td>
+                  <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{perGuest(channel)}</td>
+                  {hasBills && <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{perBill(channel)}</td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </>
   );
 }

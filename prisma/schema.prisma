@@ -353,6 +353,10 @@ model RevenueImportRow {
   revenueSource   String
   paymentMethod   String
   orderCount      Int?
+  /// Lượt khách của dòng (cột Số khách file POS, khách 20/11/2026). File có Số hoá đơn thì số khách
+  /// đã dồn về một dòng mỗi hoá đơn trước khi gộp món (lib/revenue-guest-count.ts); null = file
+  /// không có cột này. Chỉ dùng cho báo cáo Lượt khách, không vào sổ.
+  guestCount      Int?
   grossAmount     Float
   discountAmount  Float    @default(0)
   vatAmount       Float    @default(0)

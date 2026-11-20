@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
 import { isSurchargeItemText, revenueKindFromText } from "@/lib/revenue-source";
-import type { SalesCell, SalesKind } from "@/lib/sales-analysis";
+import { vietnamBusinessDayKey } from "@/lib/revenue-date";
+import type { SalesCell, SalesKind, VisitCell } from "@/lib/sales-analysis";
 
 export type SalesAnalysisData = {
   period: string;
@@ -9,6 +10,10 @@ export type SalesAnalysisData = {
   cells: SalesCell[];
   /** Tên món theo mã (danh mục mặt hàng); mã không có trong danh mục thì không có tên. */
   names: Record<string, string>;
+  /** Lượt khách theo ngày × giờ × kênh (cột Số khách / Số hoá đơn của file POS). */
+  visits: VisitCell[];
+  /** Có dòng nào trong kỳ mang cột Số khách không — chưa có thì màn báo cách thêm cột. */
+  hasGuestData: boolean;
 };
 
 /**
@@ -21,16 +26,25 @@ export type SalesAnalysisData = {
  */
 export async function getSalesAnalysis(period: string, branchCode: string): Promise<SalesAnalysisData> {
   const { start, end } = periodBounds(period);
-  const groups = await prisma.revenueImportRow.groupBy({
-    by: ["productCode", "revenueSource", "saleHour"],
-    where: {
-      saleDate: { gte: start, lt: end },
-      deletedAt: null,
-      ...(branchCode === "ALL" ? {} : { branchCode }),
-    },
-    _sum: { productQuantity: true, grossAmount: true, discountAmount: true, netAmount: true },
-    _count: { _all: true },
-  });
+  const scope = {
+    saleDate: { gte: start, lt: end },
+    deletedAt: null,
+    ...(branchCode === "ALL" ? {} : { branchCode }),
+  };
+  const [visitGroups, groups] = await Promise.all([
+    prisma.revenueImportRow.groupBy({
+      by: ["saleDate", "saleHour", "channel"],
+      where: scope,
+      _sum: { guestCount: true, orderCount: true, grossAmount: true, discountAmount: true, netAmount: true },
+      _count: { guestCount: true },
+    }),
+    prisma.revenueImportRow.groupBy({
+      by: ["productCode", "revenueSource", "saleHour"],
+      where: scope,
+      _sum: { productQuantity: true, grossAmount: true, discountAmount: true, netAmount: true },
+      _count: { _all: true },
+    }),
+  ]);
 
   const codes = [...new Set(groups.map((group) => (group.productCode || "").trim()).filter(Boolean))];
   const [items, categories] = await Promise.all([
@@ -75,5 +89,22 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
 
   const names: Record<string, string> = {};
   for (const item of items) names[item.code] = item.name;
-  return { period, branchCode, cells, names };
+  // Ngày lưu có thể là nửa đêm UTC (file mới) hoặc nửa đêm giờ VN (file cũ): gom theo ngày
+  // nghiệp vụ VN cho khỏi xé một ngày làm hai dòng — cùng luật Sổ doanh thu.
+  const visitMap = new Map<string, VisitCell>();
+  let hasGuestData = false;
+  for (const group of visitGroups) {
+    if (group._count.guestCount > 0) hasGuestData = true;
+    const date = vietnamBusinessDayKey(group.saleDate);
+    const channel = (group.channel || "").trim() || "Không ghi kênh";
+    const hour = group.saleHour ?? null;
+    const key = `${date}|${hour ?? ""}|${channel}`;
+    const current = visitMap.get(key) || { date, hour, channel, guests: 0, bills: 0, amount: 0, total: 0 };
+    current.guests += group._sum.guestCount || 0;
+    current.bills += group._sum.orderCount || 0;
+    current.amount += (group._sum.grossAmount || 0) - (group._sum.discountAmount || 0);
+    current.total += group._sum.netAmount || 0;
+    visitMap.set(key, current);
+  }
+  return { period, branchCode, cells, names, visits: [...visitMap.values()], hasGuestData };
 }

@@ -5,6 +5,7 @@ import {
   type ImportTemplateDefinition,
 } from "@/lib/import-templates";
 import { parseImportDate, parseImportHour, parseImportTime } from "@/lib/import-date";
+import { spreadBillGuestCounts } from "@/lib/revenue-guest-count";
 
 export { parseImportDate } from "@/lib/import-date";
 
@@ -123,10 +124,11 @@ export function autoMapHeaders(headers: string[], template: ImportTemplateDefini
   for (const field of template.fields) {
     if (field.hiddenFromMapping) continue;
     const candidates = [field.label, field.field, ...field.aliases];
+    const exactCandidates = [...candidates, ...(field.exactAliases || [])];
     // Duyệt theo thứ tự tên trong template chứ không theo thứ tự cột trong file, và xét trùng
     // khít trước khi xét trùng phần đầu. File POS có cả "Thành tiền", "Tổng tiền" lẫn
     // "Tổng tiền (không bao gồm VAT)", nếu để thứ tự cột quyết định thì lấy nhầm cột.
-    const matched = candidates.reduce<string | undefined>(
+    const matched = exactCandidates.reduce<string | undefined>(
       (found, candidate) => found || headers.find((header) => normalizeHeader(header) === normalizeHeader(candidate)),
       undefined,
     ) || candidates.reduce<string | undefined>(
@@ -322,7 +324,10 @@ export async function parseImportFile(
       };
     });
 
-  const rows = template.aggregate ? aggregateParsedRows(parsedRows, template.aggregate) : parsedRows;
+  // Số khách / số hoá đơn tính theo HOÁ ĐƠN: dồn về một dòng mỗi hoá đơn trước khi gộp món,
+  // không thì hoá đơn 5 món ghi "4 khách" trên cả 5 dòng thành 20 khách.
+  const billSpread = mapping.bill_code ? spreadBillGuestCounts(parsedRows) : parsedRows;
+  const rows = template.aggregate ? aggregateParsedRows(billSpread, template.aggregate) : billSpread;
 
   return {
     sheetName: candidate.sheet.name,

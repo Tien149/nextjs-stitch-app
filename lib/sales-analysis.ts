@@ -162,3 +162,65 @@ export function rankSalesItems(items: SalesItemSummary[], options: { by: RankBy;
     .sort((a, b) => sign * (primary(a) - primary(b)) || sign * (secondary(a) - secondary(b)) || a.code.localeCompare(b.code))
     .slice(0, Math.max(0, options.limit));
 }
+
+/**
+ * Lượt khách (khách 20/11/2026): ô gom theo ngày × giờ × kênh bán. `guests` = cột Số khách,
+ * `bills` = số hoá đơn (chỉ có khi file có cột Số hoá đơn), `amount` = doanh thu món của ô.
+ */
+export type VisitCell = { date: string; hour: number | null; channel: string; guests: number; bills: number; amount: number; total: number };
+export type VisitMoney = { guests: number; bills: number; amount: number; total: number; /** DT món của kênh có khách — mẫu số DT/khách. */ guestAmount: number };
+const emptyVisit = (): VisitMoney => ({ guests: 0, bills: 0, amount: 0, total: 0, guestAmount: 0 });
+
+export type VisitSummary = {
+  total: VisitMoney;
+  byShift: Record<SalesShift, VisitMoney>;
+  byDay: Array<VisitMoney & { date: string; byShift: Record<SalesShift, VisitMoney> }>;
+  byChannel: Array<VisitMoney & { channel: string }>;
+  /** Kênh có ghi số khách trong kỳ. Kênh giao hàng (Grab...) không có khách ngồi nên không vào DT/khách. */
+  guestChannels: string[];
+};
+
+/** DT trung bình mỗi khách: chỉ lấy doanh thu của kênh có ghi số khách (bỏ Grab/giao hàng). */
+export function revenuePerGuest(value: VisitMoney) {
+  return value.guests > 0 ? value.guestAmount / value.guests : null;
+}
+
+export function summarizeVisits(cells: VisitCell[], bounds: ShiftBounds = DEFAULT_SHIFT_BOUNDS): VisitSummary {
+  const guestChannels = new Set(cells.filter((cell) => cell.guests > 0).map((cell) => cell.channel));
+  const add = (target: VisitMoney, cell: VisitCell) => {
+    target.guests += cell.guests;
+    target.bills += cell.bills;
+    target.amount += cell.amount;
+    target.total += cell.total;
+    if (guestChannels.has(cell.channel)) target.guestAmount += cell.amount;
+  };
+  const total = emptyVisit();
+  const byShift = perShift(emptyVisit);
+  const days = new Map<string, VisitMoney & { date: string; byShift: Record<SalesShift, VisitMoney> }>();
+  const channels = new Map<string, VisitMoney & { channel: string }>();
+  for (const cell of cells) {
+    const shift = shiftOfHour(cell.hour, bounds);
+    add(total, cell);
+    add(byShift[shift], cell);
+    let day = days.get(cell.date);
+    if (!day) {
+      day = { date: cell.date, ...emptyVisit(), byShift: perShift(emptyVisit) };
+      days.set(cell.date, day);
+    }
+    add(day, cell);
+    add(day.byShift[shift], cell);
+    let channel = channels.get(cell.channel);
+    if (!channel) {
+      channel = { channel: cell.channel, ...emptyVisit() };
+      channels.set(cell.channel, channel);
+    }
+    add(channel, cell);
+  }
+  return {
+    total,
+    byShift,
+    byDay: [...days.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    byChannel: [...channels.values()].sort((a, b) => b.guests - a.guests || b.amount - a.amount),
+    guestChannels: [...guestChannels],
+  };
+}

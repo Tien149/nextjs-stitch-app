@@ -1229,6 +1229,7 @@ export async function commitImport(input: CommitInput) {
             revenueSource,
             paymentMethod: asText(row.values.payment_method),
             orderCount: row.values.order_count === null ? null : asInteger(row.values.order_count),
+            guestCount: row.values.guest_count === null || row.values.guest_count === undefined ? null : asInteger(row.values.guest_count),
             grossAmount: asNumber(row.values.gross_amount),
             discountAmount: asNumber(row.values.discount_amount),
             vatAmount: asNumber(row.values.vat_amount),

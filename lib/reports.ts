@@ -2649,7 +2649,7 @@ export async function getRevenueExplosionCheck(from: string, to: string, branchC
 
 /** Cột của file mẫu import doanh thu POS thô (REVENUE_POS_RAW_V1) — đúng thứ tự file khách đẩy lên. */
 export const REVENUE_IMPORT_EXPORT_COLUMNS = [
-  "Thời gian", "Giờ bán", "Cửa hàng", "Mã hàng", "Tên hàng", "Mã combo", "Số lượng", "Đơn vị tính", "Hình thức bán",
+  "Thời gian", "Giờ bán", "Cửa hàng", "Mã hàng", "Tên hàng", "Mã combo", "Số lượng", "Đơn vị tính", "Số khách", "Hình thức bán",
   "Nhóm doanh thu", "Nguồn tiền", "Doanh thu", "Giảm giá", "SVC", "Phí cà thẻ", "Phí bán hàng qua app", "Thuế", "Tổng tiền", "Ghi chú",
 ] as const;
 
@@ -2688,6 +2688,9 @@ export async function getRevenueImportExport(from: string, to: string, branchCod
       "Mã combo": text(source.combo_code),
       "Số lượng": row.productQuantity ?? "",
       "Đơn vị tính": text(source.unit),
+      // Dòng xuất là dòng đã gộp, số khách đã dồn đúng một lần mỗi hoá đơn — nạp lại (không có
+      // cột Số hoá đơn) thì cộng thẳng, ra đúng lượt khách cũ.
+      "Số khách": row.guestCount ?? "",
       "Hình thức bán": row.channel || "",
       "Nhóm doanh thu": row.revenueSource,
       "Nguồn tiền": row.paymentMethod,

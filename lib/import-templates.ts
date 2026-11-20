@@ -47,6 +47,11 @@ export type ImportFieldDefinition = {
   type: ImportFieldType;
   aliases: string[];
   hiddenFromMapping?: boolean;
+  /**
+   * Tên cột chỉ nhận khi TRÙNG KHÍT (không nhận khớp phần đầu). Dùng cho tên quá ngắn: "Khách"
+   * khớp phần đầu thì vớ luôn cột "Khách hàng" (tên khách) rồi báo lỗi không phải số.
+   */
+  exactAliases?: string[];
   /** In ra cột Ghi chú của sheet "Huong dan" trong file mẫu — chỗ người dùng tra khi không biết điền gì. */
   note?: string;
 };
@@ -319,6 +324,15 @@ export const importTemplates: ImportTemplateDefinition[] = [
         aliases: ["so bill", "so don", "order count", "bill count"],
       },
       {
+        field: "guest_count",
+        label: "Số khách",
+        required: false,
+        type: "integer",
+        aliases: ["so khach", "luot khach", "so luot khach", "so nguoi", "guest count", "guests", "pax"],
+        exactAliases: ["khach", "guest"],
+        note: "Không bắt buộc. Tổng số khách của dòng — lên báo cáo Lượt khách.",
+      },
+      {
         field: "gross_amount",
         label: "Doanh thu gross",
         required: true,
@@ -409,7 +423,9 @@ export const importTemplates: ImportTemplateDefinition[] = [
       // tới giờ chốt kiểm kê; file chỉ có ngày thì sale_hour trống và gộp y như trước.
       // combo_code: món con của combo (không rã) không được gộp chung với cùng món bán lẻ (có rã).
       by: ["sale_date", "sale_hour", "branch_code", "channel", "revenue_source", "payment_method", "product_code", "combo_code"],
-      sum: ["gross_amount", "discount_amount", "fee_amount", "card_fee_amount", "app_fee_amount", "vat_amount", "net_amount", "product_quantity"],
+      // guest_count / order_count: đã chia về một dòng mỗi hoá đơn trước khi gộp
+      // (lib/revenue-guest-count.ts), cộng dồn là ra lượt khách / số hoá đơn của ô.
+      sum: ["gross_amount", "discount_amount", "fee_amount", "card_fee_amount", "app_fee_amount", "vat_amount", "net_amount", "product_quantity", "guest_count", "order_count"],
     },
     // Bố cục cột theo file "Theo dõi nguồn tiền" chị Bình chốt (meeting 22/08/2026), sheet
     // Import doanh thu: Cửa hàng, Mã hàng, Tên hàng, ..., PTTT, Nguồn, ..., Thời gian, Số lượng,
@@ -484,6 +500,25 @@ export const importTemplates: ImportTemplateDefinition[] = [
         type: "text",
         aliases: ["don vi tinh", "dvt", "unit"],
         note: "Phần, Ly, Món... — dùng khi hệ thống tự tạo mặt hàng mới",
+      },
+      {
+        field: "guest_count",
+        label: "Số khách",
+        required: false,
+        type: "integer",
+        aliases: ["so khach", "luot khach", "so luot khach", "so nguoi", "guest count", "guests", "pax"],
+        exactAliases: ["khach", "guest"],
+        note: "Không bắt buộc. Số khách của hoá đơn — lên báo cáo Lượt khách (Báo cáo & BI > DT theo ca & món). Có cột Số hoá đơn thì ghi số khách trên mọi dòng của hoá đơn cũng được, hệ thống chỉ đếm một lần; KHÔNG có cột Số hoá đơn thì chỉ ghi ở MỘT dòng của mỗi hoá đơn, các dòng món khác để trống, nếu không khách bị cộng trùng.",
+      },
+      {
+        field: "bill_code",
+        label: "Số hoá đơn",
+        required: false,
+        type: "text",
+        // Viết có chữ "đ": normalizeHeader bỏ hẳn "đ" ("Hóa đơn" -> "hoa on"), alias "hoa don" không bao giờ khớp.
+        aliases: ["mã hoá đơn", "số bill", "mã bill", "số đơn hàng", "mã đơn hàng", "bill no", "invoice no", "order no", "order id"],
+        exactAliases: ["hoá đơn", "bill"],
+        note: "Không bắt buộc. Có cột này thì hệ thống đếm được số hoá đơn và mỗi hoá đơn chỉ tính số khách một lần.",
       },
       {
         field: "channel",
