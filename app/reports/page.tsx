@@ -23,6 +23,8 @@ import PayrollBudgetTab, { type PayrollBudgetData } from "@/components/reports/P
 import BudgetTab, { type BudgetData } from "@/components/reports/BudgetTab";
 import FinancialPlanningWorkspace from "@/components/reports/planning/FinancialPlanningWorkspace";
 import RevenueTrendTab from "@/components/reports/RevenueTrendTab";
+import SalesAnalysisTab from "@/components/reports/SalesAnalysisTab";
+import type { SalesAnalysisData } from "@/lib/sales-analysis-server";
 import { statValueTextClass } from "@/components/reports/report-ui";
 import { isRevenueGroupCategory } from "@/lib/voucher-rules";
 import { DocLink } from "@/components/DocLink";
@@ -255,7 +257,7 @@ type RevenueLedgerData = {
 type ActivityLog = { id: string; time: string; module: string; action: string; actor: string; branchCode: string; code: string; note: string };
 type AccountingPeriodStatus = { period: string; branchCode: string; status: string; closedBy: string | null; closedAt: string | null; reopenedBy: string | null; reopenedAt: string | null; reason: string | null };
 type ActivityData = { accountingPeriod: AccountingPeriodStatus; periods: AccountingPeriodStatus[]; logs: ActivityLog[] };
-type ReportData = DashboardData | PnlData | YoyData | CashflowData | BalanceData | OperationsData | BudgetData | DailyCashData | ActivityData | CashSourceData | RevenueSettlementData | RevenueLedgerData;
+type ReportData = DashboardData | PnlData | YoyData | CashflowData | BalanceData | OperationsData | BudgetData | DailyCashData | ActivityData | CashSourceData | RevenueSettlementData | RevenueLedgerData | SalesAnalysisData;
 type CashDepositDenomination = { denomination: number; quantity: string };
 type CashDepositForm = { depositTargetType: "PKT" | "CO"; fromMoneySourceCode: string; toMoneySourceCode: string; denominations: CashDepositDenomination[] };
 
@@ -516,6 +518,7 @@ export default function ReportsPage() {
   const cashSource = active === "cash-source" && data && typeof data === "object" && "totals" in data && "income" in data ? (data as CashSourceData) : null;
   const settlement = active === "revenue-settlement" && data && typeof data === "object" && "rows" in data && "totals" in data && !("income" in data) ? (data as RevenueSettlementData) : null;
   const ledger = active === "revenue-ledger" && data && typeof data === "object" && "rows" in data && "channels" in data ? (data as RevenueLedgerData) : null;
+  const salesAnalysis = active === "sales-analysis" && data && typeof data === "object" && "cells" in data && "names" in data ? (data as SalesAnalysisData) : null;
   const payrollBudget = active === "payroll-budget" && data && typeof data === "object" && "standard" in data && "headcount" in data ? (data as unknown as PayrollBudgetData) : null;
 
   const operationRows = useMemo(() => {
@@ -1329,6 +1332,8 @@ export default function ReportsPage() {
           </button>
         </section>
       )}
+
+      {!tabLoading && salesAnalysis && <SalesAnalysisTab key={`${salesAnalysis.period}|${salesAnalysis.branchCode}`} data={salesAnalysis} />}
 
       {!tabLoading && ledger && ledgerArmed && <RevenueLedgerPanel data={ledger} branchCode={branchCode} moneySources={moneySources} canEdit={canEditRevenueRow} canDelete={canDeleteRevenueRow} onSaved={() => void loadData()} />}
 

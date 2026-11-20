@@ -382,6 +382,7 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
     { id: "daily-cash", label: "Thu chi ngày" },
     { id: "cash-source", label: "Nguồn tiền" },
     { id: "revenue-ledger", label: "Sổ doanh thu" },
+    { id: "sales-analysis", label: "DT theo ca & món" },
     { id: "revenue-settlement", label: "Tiền về đủ chưa" },
     { id: "activity", label: "Kỳ & Log" },
     { id: "pnl", label: "Hoạch định P&L" },
@@ -475,7 +476,7 @@ export function allowedSubTabs(session: DemoSession | null | undefined, path: st
 
 /** Biểu tượng hiển thị của từng tab, tách khỏi khai báo quyền để giữ moduleTabs gọn. */
 export const moduleTabIcons: Record<string, string> = {
-  dashboard: "dashboard", operations: "fact_check", budget: "price_check", "payroll-budget": "groups", "daily-cash": "receipt", "cash-source": "savings", "revenue-ledger": "point_of_sale", "revenue-settlement": "rule",
+  dashboard: "dashboard", operations: "fact_check", budget: "price_check", "payroll-budget": "groups", "daily-cash": "receipt", "cash-source": "savings", "revenue-ledger": "point_of_sale", "sales-analysis": "restaurant_menu", "revenue-settlement": "rule",
   activity: "history", pnl: "finance", yoy: "query_stats", cashflow: "timeline", balance: "account_balance",
   cashbook: "account_balance_wallet", accruals: "calendar_month", expenses: "payments", closing: "lock",
   requests: "assignment", quotes: "compare_arrows", "price-lists": "sell", orders: "local_shipping", templates: "playlist_add_check",
@@ -537,6 +538,9 @@ const MODULE_TAB_FAMILIES: Record<string, Record<string, string[]>> = {
   // không được tick mà vẫn thấy) — vai trò nào cần thì tick riêng hai tab này ở Phân quyền.
   // Ai được tick "So sánh giá" thì cũng làm Bảng giá NCC (tab mới 03/10/2026).
   "/procurement": { quotes: ["price-lists"] },
+  // Báo cáo Doanh thu theo ca & món (20/11/2026) đọc cùng dòng import với Sổ doanh thu — ai xem
+  // được Sổ doanh thu thì xem được báo cáo này, khỏi phải tick lại cho từng vai trò.
+  "/reports": { "revenue-ledger": ["sales-analysis"] },
 };
 
 export function allowedMenuTabs(session: DemoSession | null | undefined, path: string) {
