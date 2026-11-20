@@ -99,6 +99,12 @@ function saleHourOf(value: unknown) {
   return Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
 }
 
+function saleMinuteOf(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const minute = Number(value);
+  return Number.isInteger(minute) && minute >= 0 && minute <= 59 ? minute : null;
+}
+
 /** Số kỳ phân bổ / khấu hao: số lẻ 2 chữ số thập phân (03/10/2026). */
 function asPeriods(value: unknown) {
   return roundPeriodCount(asNumber(value));
@@ -442,6 +448,41 @@ export async function commitImport(input: CommitInput) {
           duplicateDays.length > 5 ? ` và ${duplicateDays.length - 5} ngày khác` : "",
           ". Những ngày này đã nằm trong hệ thống — chỉ nạp lại file của ngày đã xoá, hoặc xoá ngày đó trước khi nạp.",
         ].join(""));
+      }
+      // Từ 20/11/2026 file có giờ:phút gộp theo khung 15 phút nên mã tham chiếu khác mã của lần
+      // nạp trước (gộp theo giờ). Nạp lại trùng ngày cũ thì kiểm tra theo mã ở trên KHÔNG bắt
+      // được -> doanh thu ngày đó vào hai lần. Chặn theo ngày: ngày đã có dòng gộp theo giờ
+      // (có giờ, chưa có phút) thì phải xoá ngày đó ở Sổ doanh thu trước khi nạp file có phút.
+      const minuteDays = new Map<string, { branchCode: string; saleDate: Date }>();
+      for (const row of input.rows) {
+        if (saleMinuteOf(row.values.sale_minute) === null) continue;
+        const saleDate = asDate(row.values.sale_date);
+        const branchCode = asText(row.values.branch_code);
+        minuteDays.set(`${branchCode}|${saleDate.toISOString()}`, { branchCode, saleDate });
+      }
+      if (minuteDays.size > 0) {
+        const hourOnly = await tx.revenueImportRow.findMany({
+          where: {
+            saleHour: { not: null },
+            saleMinute: null,
+            // Ngày lưu nửa đêm UTC (file mới) hoặc nửa đêm giờ VN (file cũ, lùi 7 tiếng).
+            OR: [...minuteDays.values()].map((day) => ({
+              branchCode: day.branchCode,
+              saleDate: { gte: new Date(day.saleDate.getTime() - 7 * 3600_000), lt: new Date(day.saleDate.getTime() + 3600_000) },
+            })),
+          },
+          select: { branchCode: true, saleDate: true },
+          distinct: ["branchCode", "saleDate"],
+          take: 50,
+        });
+        if (hourOnly.length > 0) {
+          const days = [...new Set(hourOnly.map((row) => `${revenueDayLabel(revenueDayKey(row.saleDate))} (${row.branchCode})`))];
+          throw new Error([
+            `File có doanh thu của ngày đã import trước đó: ${days.slice(0, 5).join(", ")}`,
+            days.length > 5 ? ` và ${days.length - 5} ngày khác` : "",
+            ". Xoá các ngày này ở Sổ doanh thu rồi nạp lại, hoặc cắt file bỏ các ngày đó — nạp chồng thì doanh thu bị tính hai lần.",
+          ].join(""));
+        }
       }
     }
 
@@ -1224,6 +1265,8 @@ export async function commitImport(input: CommitInput) {
             saleDate: asDate(row.values.sale_date),
             // Giờ bán (0–23) khi file POS có giờ — rã nguyên liệu tới đúng giờ chốt kiểm kê.
             saleHour: saleHourOf(row.values.sale_hour),
+            // Phút bắt đầu khung 15 phút — chia ca theo mốc phút (báo cáo DT theo ca & món).
+            saleMinute: saleHourOf(row.values.sale_hour) === null ? null : saleMinuteOf(row.values.sale_minute),
             branchCode: asText(row.values.branch_code),
             channel: row.values.channel === null ? null : asText(row.values.channel),
             revenueSource,

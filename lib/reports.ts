@@ -2681,7 +2681,7 @@ export async function getRevenueImportExport(from: string, to: string, branchCod
     const [year, month, day] = vietnamBusinessDayKey(row.saleDate).split("-");
     return {
       "Thời gian": `${day}/${month}/${year}`,
-      "Giờ bán": row.saleHour === null ? "" : `${String(row.saleHour).padStart(2, "0")}:00`,
+      "Giờ bán": row.saleHour === null ? "" : `${String(row.saleHour).padStart(2, "0")}:${String(row.saleMinute ?? 0).padStart(2, "0")}`,
       "Cửa hàng": row.branchCode,
       "Mã hàng": row.productCode || "",
       "Tên hàng": text(source.product_name),

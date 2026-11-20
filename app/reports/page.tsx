@@ -1333,7 +1333,7 @@ export default function ReportsPage() {
         </section>
       )}
 
-      {!tabLoading && salesAnalysis && <SalesAnalysisTab key={`${salesAnalysis.period}|${salesAnalysis.branchCode}`} data={salesAnalysis} />}
+      {!tabLoading && salesAnalysis && <SalesAnalysisTab key={`${salesAnalysis.period}|${salesAnalysis.branchCode}|${JSON.stringify(salesAnalysis.shiftConfigs || {})}`} data={salesAnalysis} canConfigure={canConfigure} />}
 
       {!tabLoading && ledger && ledgerArmed && <RevenueLedgerPanel data={ledger} branchCode={branchCode} moneySources={moneySources} canEdit={canEditRevenueRow} canDelete={canDeleteRevenueRow} onSaved={() => void loadData()} />}
 

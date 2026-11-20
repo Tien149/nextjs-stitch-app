@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
 import { isSurchargeItemText, revenueKindFromText } from "@/lib/revenue-source";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
-import type { SalesCell, SalesKind, VisitCell } from "@/lib/sales-analysis";
+import { normalizeShiftDefs, type SalesCell, type SalesKind, type ShiftConfigs, type ShiftDef, type VisitCell } from "@/lib/sales-analysis";
 
 export type SalesAnalysisData = {
   period: string;
@@ -14,7 +14,42 @@ export type SalesAnalysisData = {
   visits: VisitCell[];
   /** Có dòng nào trong kỳ mang cột Số khách không — chưa có thì màn báo cách thêm cột. */
   hasGuestData: boolean;
+  /** Ca đã khai theo cửa hàng (SalesShiftConfig); cửa hàng chưa khai thì không có khoá -> ca mặc định. */
+  shiftConfigs: ShiftConfigs;
+  /** Cửa hàng có doanh thu trong kỳ (xem Tất cả cửa hàng thì cấu hình ca theo từng cửa hàng này). */
+  branches: string[];
 };
+
+function parseShiftsJson(value: string): ShiftDef[] {
+  try {
+    return normalizeShiftDefs(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+
+export async function loadSalesShiftConfigs(): Promise<ShiftConfigs> {
+  const rows = await prisma.salesShiftConfig.findMany();
+  const configs: ShiftConfigs = {};
+  for (const row of rows) {
+    const shifts = parseShiftsJson(row.shiftsJson);
+    if (shifts.length > 0) configs[row.branchCode] = shifts;
+  }
+  return configs;
+}
+
+/** Lưu bộ ca của một cửa hàng. Trả về bộ ca đã chuẩn hoá (giờ làm tròn khung 15 phút, xếp theo giờ). */
+export async function saveSalesShiftConfig(branchCode: string, input: unknown, actor: string) {
+  const shifts = normalizeShiftDefs(input);
+  if (shifts.length === 0) throw new Error("BUSINESS:Cần ít nhất một ca có tên và giờ bắt đầu");
+  const shiftsJson = JSON.stringify(shifts);
+  await prisma.salesShiftConfig.upsert({
+    where: { branchCode },
+    create: { branchCode, shiftsJson, updatedBy: actor },
+    update: { shiftsJson, updatedBy: actor },
+  });
+  return shifts;
+}
 
 /**
  * Gom dòng doanh thu POS của tháng về ô (mã món × nhóm × giờ bán) cho báo cáo Doanh thu theo
@@ -33,13 +68,13 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
   };
   const [visitGroups, groups] = await Promise.all([
     prisma.revenueImportRow.groupBy({
-      by: ["saleDate", "saleHour", "channel"],
+      by: ["saleDate", "branchCode", "saleHour", "saleMinute", "channel"],
       where: scope,
       _sum: { guestCount: true, orderCount: true, grossAmount: true, discountAmount: true, netAmount: true },
       _count: { guestCount: true },
     }),
     prisma.revenueImportRow.groupBy({
-      by: ["productCode", "revenueSource", "saleHour"],
+      by: ["productCode", "revenueSource", "branchCode", "saleHour", "saleMinute"],
       where: scope,
       _sum: { productQuantity: true, grossAmount: true, discountAmount: true, netAmount: true },
       _count: { _all: true },
@@ -79,7 +114,9 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
     return {
       code,
       kind,
+      branchCode: group.branchCode,
       hour: group.saleHour ?? null,
+      minute: group.saleHour === null ? null : group.saleMinute ?? null,
       quantity: group._sum.productQuantity || 0,
       amount: gross - discount,
       total: group._sum.netAmount || 0,
@@ -98,13 +135,17 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
     const date = vietnamBusinessDayKey(group.saleDate);
     const channel = (group.channel || "").trim() || "Không ghi kênh";
     const hour = group.saleHour ?? null;
-    const key = `${date}|${hour ?? ""}|${channel}`;
-    const current = visitMap.get(key) || { date, hour, channel, guests: 0, bills: 0, amount: 0, total: 0 };
+    const minute = hour === null ? null : group.saleMinute ?? null;
+    const key = `${date}|${group.branchCode}|${hour ?? ""}|${minute ?? ""}|${channel}`;
+    const current = visitMap.get(key) || { date, branchCode: group.branchCode, hour, minute, channel, guests: 0, bills: 0, amount: 0, total: 0 };
     current.guests += group._sum.guestCount || 0;
     current.bills += group._sum.orderCount || 0;
     current.amount += (group._sum.grossAmount || 0) - (group._sum.discountAmount || 0);
     current.total += group._sum.netAmount || 0;
     visitMap.set(key, current);
   }
-  return { period, branchCode, cells, names, visits: [...visitMap.values()], hasGuestData };
+  const shiftConfigs = await loadSalesShiftConfigs();
+  const branches = [...new Set(groups.map((group) => group.branchCode))].sort();
+  if (branchCode !== "ALL" && !branches.includes(branchCode)) branches.push(branchCode);
+  return { period, branchCode, cells, names, visits: [...visitMap.values()], hasGuestData, shiftConfigs, branches };
 }

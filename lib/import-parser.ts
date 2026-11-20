@@ -4,7 +4,7 @@ import {
   type ImportFieldDefinition,
   type ImportTemplateDefinition,
 } from "@/lib/import-templates";
-import { parseImportDate, parseImportHour, parseImportTime } from "@/lib/import-date";
+import { parseImportDate, parseImportHour, parseImportMinuteSlot, parseImportTime } from "@/lib/import-date";
 import { spreadBillGuestCounts } from "@/lib/revenue-guest-count";
 
 export { parseImportDate } from "@/lib/import-date";
@@ -309,6 +309,13 @@ export async function parseImportFile(
       // có phần lẻ). Ô chỉ có ngày thì để trống — doanh thu cả ngày như trước.
       if (values.sale_hour === null && template.fields.some((field) => field.field === "sale_hour") && mapping.sale_date) {
         values.sale_hour = parseImportHour(source[mapping.sale_date]);
+      }
+      // Phút (khung 15 phút) của giờ bán — chia ca theo mốc phút (ASA Trưa từ 10:30). Đọc ở cột Giờ
+      // riêng trước, không có thì ở ô ngày bán. Không có phút thì để trống, gộp theo giờ như cũ.
+      if (template.fields.some((field) => field.field === "sale_hour")) {
+        const hour = typeof values.sale_hour === "number" ? values.sale_hour : null;
+        values.sale_minute = (mapping.sale_hour ? parseImportMinuteSlot(source[mapping.sale_hour], hour) : null)
+          ?? (mapping.sale_date ? parseImportMinuteSlot(source[mapping.sale_date], hour) : null);
       }
       // Phiếu kho: không có cột Giờ thì đọc giờ trong ô Ngày ("31/08/2026 15:30").
       if (values.transaction_time === null && template.fields.some((field) => field.field === "transaction_time") && mapping.transaction_date) {

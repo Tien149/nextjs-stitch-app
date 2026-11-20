@@ -10,7 +10,7 @@ import { cashSourceCheck } from "@/lib/cash-source-check";
 import { getPayrollBudgetReport, getPnlHistoryEditor, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
 import { headcountToStored, isPnlHistoryChannelMetric, isPnlHistoryHeadcountMetric, isPnlHistoryPeriod, PNL_HISTORY_HEADCOUNT_PREFIX, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX } from "@/lib/pnl-history";
 import { getPnlNotes, savePnlNote, toPnlNoteKind } from "@/lib/pnl-note";
-import { getSalesAnalysis } from "@/lib/sales-analysis-server";
+import { getSalesAnalysis, saveSalesShiftConfig } from "@/lib/sales-analysis-server";
 import { apiError, assertPeriodOpen, businessError, cleanText, findClosedPeriod, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { createCashierCashMatcher, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -1355,6 +1355,25 @@ export async function POST(request: Request) {
     // Sửa phân loại một dòng doanh thu đã import là sửa số cũ, không phải lập số mới -> "edit".
     const auth = requireMenuAction(request, menuHref, action === "UPDATE_REVENUE_ROW" ? "edit" : action === "DELETE_REVENUE_ROWS" ? "delete" : "create");
     if (!auth.ok) return auth.response;
+
+    // Ca bán hàng theo từng nhà hàng cho báo cáo DT theo ca & món (khách 20/11/2026).
+    if (action === "SAVE_SALES_SHIFTS") {
+      const branchCode = cleanText(body.branchCode).toUpperCase();
+      if (!branchCode || branchCode === "ALL") businessError("Chọn cửa hàng cần khai ca");
+      assertBranchAccess(auth.session, branchCode);
+      const shifts = await saveSalesShiftConfig(branchCode, body.shifts, auth.session.name);
+      await writeAuditLog({
+        session: auth.session,
+        module: menuHref,
+        action: "SAVE_SALES_SHIFTS",
+        entityType: "SalesShiftConfig",
+        entityId: branchCode,
+        entityCode: branchCode,
+        branchCode,
+        metadata: { shifts },
+      });
+      return NextResponse.json({ branchCode, shifts });
+    }
 
     // Xoá dòng doanh thu ngay trên Sổ doanh thu (khách 21/10/2026) — luật ở deleteRevenueImportRows.
     if (action === "DELETE_REVENUE_ROWS") {

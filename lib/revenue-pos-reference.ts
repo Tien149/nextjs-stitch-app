@@ -36,6 +36,8 @@ export function generatedRevenuePosReference(values: Record<string, unknown>) {
   const fingerprint = [
     ...referenceFields.map((field) => `${field}=${canonicalValue(values[field])}`),
     ...(hour === null || hour === undefined || hour === "" ? [] : [`sale_hour=${canonicalValue(hour)}`]),
+    // Phút (khung 15 phút) cũng chỉ vào khi có — file chỉ có giờ ra đúng mã cũ.
+    ...(values.sale_minute === null || values.sale_minute === undefined || values.sale_minute === "" ? [] : [`sale_minute=${canonicalValue(values.sale_minute)}`]),
     // Món con của combo tách khỏi cùng món bán lẻ; file không có cột combo ra đúng mã cũ.
     ...(canonicalValue(values.combo_code) ? [`combo_code=${canonicalValue(values.combo_code)}`] : []),
   ].join("|");

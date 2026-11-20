@@ -111,6 +111,19 @@ export function parseImportTime(value: unknown): string | null {
   return hour >= 0 && hour <= 23 && minute < 60 ? pad(hour, minute) : null;
 }
 
+/**
+ * Phút bắt đầu khung 15 phút của một ô giờ ("10:37" -> 30), chỉ khi ô có PHÚT và đúng giờ đã đọc
+ * (`hour`). Ô chỉ ghi giờ ("13") hay nửa đêm trơn -> null. Khung 15 phút: gộp món theo từng phút
+ * làm số dòng doanh thu phình lên gần bằng số dòng hoá đơn (khách 20/11/2026, ca ASA từ 10:30).
+ */
+export function parseImportMinuteSlot(value: unknown, hour: number | null, slot = 15): number | null {
+  if (hour === null || hour === undefined) return null;
+  const time = parseImportTime(value);
+  if (!time || Number(time.slice(0, 2)) !== hour) return null;
+  const minute = Number(time.slice(3, 5));
+  return Math.floor(minute / slot) * slot;
+}
+
 /** Ngày nhập (mốc nửa đêm UTC của parseImportDate) + giờ:phút Việt Nam -> thời điểm đúng. */
 export function withVietnamTime(day: Date, time: string | null | undefined) {
   if (!time || !/^\d{2}:\d{2}$/.test(time)) return day;

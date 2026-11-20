@@ -422,7 +422,8 @@ export const importTemplates: ImportTemplateDefinition[] = [
       // sale_hour: file có giờ trong cột Thời gian thì gộp theo từng GIỜ để rã nguyên liệu đúng
       // tới giờ chốt kiểm kê; file chỉ có ngày thì sale_hour trống và gộp y như trước.
       // combo_code: món con của combo (không rã) không được gộp chung với cùng món bán lẻ (có rã).
-      by: ["sale_date", "sale_hour", "branch_code", "channel", "revenue_source", "payment_method", "product_code", "combo_code"],
+      // sale_minute: khung 15 phút (lib/import-date.ts parseImportMinuteSlot) — ca chia theo phút.
+      by: ["sale_date", "sale_hour", "sale_minute", "branch_code", "channel", "revenue_source", "payment_method", "product_code", "combo_code"],
       // guest_count / order_count: đã chia về một dòng mỗi hoá đơn trước khi gộp
       // (lib/revenue-guest-count.ts), cộng dồn là ra lượt khách / số hoá đơn của ô.
       sum: ["gross_amount", "discount_amount", "fee_amount", "card_fee_amount", "app_fee_amount", "vat_amount", "net_amount", "product_quantity", "guest_count", "order_count"],
