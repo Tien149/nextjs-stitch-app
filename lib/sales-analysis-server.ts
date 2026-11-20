@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
 import { isSurchargeItemText, revenueKindFromText } from "@/lib/revenue-source";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
+import { normalizeGoodsGroup } from "@/lib/goods-group";
 import { normalizeShiftDefs, type SalesCell, type SalesKind, type ShiftConfigs, type ShiftDef, type VisitCell } from "@/lib/sales-analysis";
 
 export type SalesAnalysisData = {
@@ -10,6 +11,8 @@ export type SalesAnalysisData = {
   cells: SalesCell[];
   /** Tên món theo mã (danh mục mặt hàng); mã không có trong danh mục thì không có tên. */
   names: Record<string, string>;
+  /** Loại (itemType) và Nhóm hàng hóa (goodsGroup) của món theo danh mục mặt hàng — để lọc (khách 20/11/2026). */
+  itemInfo: Record<string, { itemType: string; goodsGroup: string | null }>;
   /** Lượt khách theo ngày × giờ × kênh (cột Số khách / Số hoá đơn của file POS). */
   visits: VisitCell[];
   /** Có dòng nào trong kỳ mang cột Số khách không — chưa có thì màn báo cách thêm cột. */
@@ -103,8 +106,8 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
   const codes = [...new Set(groups.map((group) => (group.productCode || "").trim()).filter(Boolean))];
   const [items, categories] = await Promise.all([
     codes.length > 0
-      ? prisma.inventoryItem.findMany({ where: { code: { in: codes } }, select: { code: true, name: true, revenueGroup: true } })
-      : Promise.resolve([] as Array<{ code: string; name: string; revenueGroup: string | null }>),
+      ? prisma.inventoryItem.findMany({ where: { code: { in: codes } }, select: { code: true, name: true, revenueGroup: true, itemType: true, goodsGroup: true } })
+      : Promise.resolve([] as Array<{ code: string; name: string; revenueGroup: string | null; itemType: string; goodsGroup: string | null }>),
     prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY", deletedAt: null }, select: { code: true, name: true } }),
   ]);
   const categoryName = new Map(categories.map((category) => [category.code.toUpperCase(), category.name]));
@@ -144,7 +147,11 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
   });
 
   const names: Record<string, string> = {};
-  for (const item of items) names[item.code] = item.name;
+  const itemInfo: SalesAnalysisData["itemInfo"] = {};
+  for (const item of items) {
+    names[item.code] = item.name;
+    itemInfo[item.code] = { itemType: item.itemType, goodsGroup: normalizeGoodsGroup(item.goodsGroup) };
+  }
   // Ngày lưu có thể là nửa đêm UTC (file mới) hoặc nửa đêm giờ VN (file cũ): gom theo ngày
   // nghiệp vụ VN cho khỏi xé một ngày làm hai dòng — cùng luật Sổ doanh thu.
   const visitMap = new Map<string, VisitCell>();
@@ -171,5 +178,5 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
   for (const row of noteRows) notes[row.productCode] = { note: row.note, updatedBy: row.updatedBy, updatedAt: row.updatedAt.toISOString() };
   const branches = [...new Set(groups.map((group) => group.branchCode))].sort();
   if (branchCode !== "ALL" && !branches.includes(branchCode)) branches.push(branchCode);
-  return { period, branchCode, cells, names, visits: [...visitMap.values()], hasGuestData, shiftConfigs, branches, notes };
+  return { period, branchCode, cells, names, itemInfo, visits: [...visitMap.values()], hasGuestData, shiftConfigs, branches, notes };
 }

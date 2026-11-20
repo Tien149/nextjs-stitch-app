@@ -3,6 +3,8 @@
 import React, { useMemo, useState } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { toFileSlug } from "@/lib/export-table-excel";
+import { goodsGroupKey } from "@/lib/goods-group";
+import { inventoryItemTypeLabel } from "@/lib/inventory-scope";
 import { CHART_COLORS, MoneyBarChart } from "@/components/charts/ReportCharts";
 import { PanelHeader, money, statValueTextClass } from "@/components/reports/report-ui";
 import { ShowMoreRows, useRowLimit } from "@/components/ShowMoreRows";
@@ -54,6 +56,9 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
   const [rankBy, setRankBy] = useState<RankBy>("quantity");
   const [skipFree, setSkipFree] = useState(true);
   const [search, setSearch] = useState("");
+  // Lọc theo Loại và Nhóm hàng hóa của danh mục mặt hàng (khách 20/11/2026) — khác Nhóm doanh thu.
+  const [typeFilter, setTypeFilter] = useState("");
+  const [goodsGroupFilter, setGoodsGroupFilter] = useState("");
   // Số món của hai bảng xếp hạng: BOD tự gõ (khách 20/11/2026), mặc định 20 bán chạy / 10 bán chậm.
   const [bestLimit, setBestLimit] = useState(20);
   const [worstLimit, setWorstLimit] = useState(10);
@@ -78,10 +83,47 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
   };
   const noteProps = { notes, canEdit: canConfigure, onSave: saveNote };
 
-  const all = useMemo(() => summarizeSales(data.cells, configs, shiftNames), [data.cells, configs, shiftNames]);
+  const itemInfo = useMemo(() => data.itemInfo || {}, [data.itemInfo]);
+  const goodsGroupOf = (code: string) => itemInfo[code]?.goodsGroup || "";
+  // Ô chọn chỉ liệt kê loại / nhóm có bán trong kỳ. "__NONE__" = món chưa khai nhóm hàng hóa.
+  const filterOptions = useMemo(() => {
+    const types = new Map<string, number>();
+    const groups = new Map<string, { label: string; count: number }>();
+    for (const code of new Set(data.cells.map((cell) => cell.code))) {
+      const info = itemInfo[code];
+      const type = info?.itemType || "";
+      types.set(type, (types.get(type) || 0) + 1);
+      const key = info?.goodsGroup ? goodsGroupKey(info.goodsGroup) : "__NONE__";
+      const current = groups.get(key) || { label: info?.goodsGroup || "(Chưa có nhóm hàng hóa)", count: 0 };
+      current.count += 1;
+      groups.set(key, current);
+    }
+    return {
+      types: [...types.entries()].map(([value, count]) => ({ value, label: value ? inventoryItemTypeLabel(value) : "(Không có trong danh mục)", count })).sort((a, b) => b.count - a.count),
+      groups: [...groups.entries()].map(([value, group]) => ({ value, ...group })).sort((a, b) => (a.value === "__NONE__" ? 1 : b.value === "__NONE__" ? -1 : a.label.localeCompare(b.label, "vi"))),
+    };
+  }, [data.cells, itemInfo]);
+  const cells = useMemo(() => {
+    if (!typeFilter && !goodsGroupFilter) return data.cells;
+    return data.cells.filter((cell) => {
+      const info = itemInfo[cell.code];
+      if (typeFilter && (info?.itemType || "") !== typeFilter.replace(/^__EMPTY__$/, "")) return false;
+      if (goodsGroupFilter) {
+        const key = info?.goodsGroup ? goodsGroupKey(info.goodsGroup) : "__NONE__";
+        if (key !== goodsGroupFilter) return false;
+      }
+      return true;
+    });
+  }, [data.cells, goodsGroupFilter, itemInfo, typeFilter]);
+  const itemFilterLabel = [
+    typeFilter ? `loại ${filterOptions.types.find((option) => (option.value || "__EMPTY__") === typeFilter)?.label || typeFilter}` : "",
+    goodsGroupFilter ? `nhóm hàng hóa ${filterOptions.groups.find((option) => option.value === goodsGroupFilter)?.label || goodsGroupFilter}` : "",
+  ].filter(Boolean).join(", ");
+
+  const all = useMemo(() => summarizeSales(cells, configs, shiftNames), [cells, configs, shiftNames]);
   const filtered = useMemo(
-    () => (kindFilter === "ALL" ? all : summarizeSales(data.cells, configs, shiftNames, [kindFilter])),
-    [all, data.cells, configs, shiftNames, kindFilter],
+    () => (kindFilter === "ALL" ? all : summarizeSales(cells, configs, shiftNames, [kindFilter])),
+    [all, cells, configs, shiftNames, kindFilter],
   );
   const kindsPresent = useMemo(() => SALES_KINDS.filter((kind) => Math.abs(all.byKind[kind].amount) >= 0.5 || all.byKind[kind].rows > 0), [all]);
   const tableKinds = useMemo(() => (kindsPresent.length > 0 ? kindsPresent : (["FOOD", "DRINK"] as SalesKind[])), [kindsPresent]);
@@ -94,7 +136,7 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
   const shiftLabel = (name: string) => (name === NO_HOUR ? NO_HOUR : `Ca ${name.toLocaleLowerCase("vi")}`);
   const rangeOf = (name: string) => rangeText(configs, branches, name);
   const nameOf = (code: string) => data.names[code] || "";
-  const filterLabel = kindFilter === "ALL" ? "mọi nhóm" : salesKindLabels[kindFilter];
+  const filterLabel = `${kindFilter === "ALL" ? "mọi nhóm doanh thu" : salesKindLabels[kindFilter]}${itemFilterLabel ? `, ${itemFilterLabel}` : ""}`;
 
   // Xem "Tất cả" thì xếp hạng bỏ nhóm Phụ thu: khăn lạnh bán 4.480 cái/tháng (ASA T10) đứng đầu
   // bảng bán chạy theo số lượng mà không phải món. Bấm riêng nhóm Phụ thu vẫn xem được.
@@ -103,8 +145,8 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
   const best = useMemo(() => rankSalesItems(rankPool, { by: rankBy, order: "best", limit: bestLimit, skipFree }), [rankPool, rankBy, skipFree, bestLimit]);
   const worst = useMemo(() => rankSalesItems(rankPool, { by: rankBy, order: "worst", limit: worstLimit, skipFree }), [rankPool, rankBy, skipFree, worstLimit]);
   const searchedItems = useMemo(
-    () => filtered.items.filter((item) => matchesSearch(search, [item.code, data.names[item.code]])),
-    [filtered.items, search, data.names],
+    () => filtered.items.filter((item) => matchesSearch(search, [item.code, data.names[item.code], itemInfo[item.code]?.goodsGroup])),
+    [filtered.items, search, data.names, itemInfo],
   );
   const itemRows = useRowLimit(50, `${data.period}|${data.branchCode}|${kindFilter}|${search}`);
 
@@ -118,14 +160,14 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
     if (lastHour < 0) return [];
     const kinds = kindFilter === "ALL" ? tableKinds.filter((kind) => kind !== "OTHER" || all.byKind.OTHER.rows > 0) : [kindFilter];
     return kinds.map((kind, index) => {
-      const byHour = summarizeSales(data.cells, configs, shiftNames, [kind]).byHour;
+      const byHour = summarizeSales(cells, configs, shiftNames, [kind]).byHour;
       return {
         name: salesKindLabels[kind],
         color: CHART_COLORS[index % CHART_COLORS.length],
         values: Array.from({ length: lastHour - firstHour + 1 }, (_, offset) => Math.round(byHour[firstHour + offset].amount)),
       };
     });
-  }, [all.byKind.OTHER.rows, configs, data.cells, firstHour, kindFilter, lastHour, shiftNames, tableKinds]);
+  }, [all.byKind.OTHER.rows, cells, configs, firstHour, kindFilter, lastHour, shiftNames, tableKinds]);
 
   if (data.cells.length === 0) {
     return (
@@ -141,7 +183,7 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
       <section className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
         <div className="flex flex-wrap items-end gap-4">
           <div>
-            <p className="text-xs font-semibold text-slate-500">Nhóm</p>
+            <p className="text-xs font-semibold text-slate-500">Nhóm doanh thu</p>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {(["ALL", ...kindsPresent] as Array<SalesKind | "ALL">).map((kind) => (
                 <button
@@ -155,6 +197,25 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
               ))}
             </div>
           </div>
+          <label className="block">
+            <span className="text-xs font-semibold text-slate-500">Loại</span>
+            <select className="control mt-1.5 w-44" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+              <option value="">Tất cả loại</option>
+              {filterOptions.types.map((option) => <option key={option.value || "__EMPTY__"} value={option.value || "__EMPTY__"}>{option.label} ({option.count})</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-slate-500">Nhóm hàng hóa</span>
+            <select className="control mt-1.5 w-56" value={goodsGroupFilter} onChange={(event) => setGoodsGroupFilter(event.target.value)}>
+              <option value="">Tất cả nhóm hàng hóa</option>
+              {filterOptions.groups.map((option) => <option key={option.value} value={option.value}>{option.label} ({option.count})</option>)}
+            </select>
+          </label>
+          {(typeFilter || goodsGroupFilter) && (
+            <button type="button" className="self-end pb-2 text-xs font-bold text-blue-600 hover:underline" onClick={() => { setTypeFilter(""); setGoodsGroupFilter(""); }}>
+              Bỏ lọc loại / nhóm
+            </button>
+          )}
           <div>
             <p className="text-xs font-semibold text-slate-500">Xếp hạng món theo</p>
             <div className="mt-1.5 flex gap-1.5">
@@ -297,6 +358,7 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
         items={best}
         shifts={shiftsShown.filter((shift) => shift !== NO_HOUR)}
         nameOf={nameOf}
+        groupOf={goodsGroupOf}
         base={filtered.total.amount}
         tone="text-emerald-700"
       />
@@ -311,6 +373,7 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
         items={worst}
         shifts={shiftsShown.filter((shift) => shift !== NO_HOUR)}
         nameOf={nameOf}
+        groupOf={goodsGroupOf}
         base={filtered.total.amount}
         tone="text-rose-700"
       />
@@ -321,14 +384,14 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
           subtitle={`${filtered.items.length.toLocaleString("vi-VN")} món (${filterLabel}), xếp theo doanh thu món giảm dần. Số lượng và doanh thu tách theo ca.`}
         />
         <div className="px-4 pt-3" data-no-export>
-          <input className="control w-72 max-w-full" placeholder="Tìm mã hoặc tên món..." value={search} onChange={(event) => setSearch(event.target.value)} />
+          <input className="control w-72 max-w-full" placeholder="Tìm mã, tên món hoặc nhóm hàng hóa..." value={search} onChange={(event) => setSearch(event.target.value)} />
         </div>
         <div className="overflow-auto max-h-[75vh]">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="text-xs uppercase tracking-wide text-slate-500">
-                {["Mã", "Tên món", "Nhóm", ...shiftsShown.map((shift) => `SL ${shift.toLocaleLowerCase("vi")}`), "Tổng SL", ...shiftsShown.map((shift) => `DT ${shift.toLocaleLowerCase("vi")}`), "Tổng DT món", "Tỷ trọng", "Ghi chú"].map((header, index, headers) => (
-                  <th key={header} className={`sticky top-0 z-10 bg-white px-4 py-3 font-semibold whitespace-nowrap shadow-[inset_0_-1px_0_#e2e8f0] ${index >= 3 && index < headers.length - 1 ? "text-right" : ""}`}>{header}</th>
+                {["Mã", "Tên món", "Nhóm DT", "Nhóm hàng hóa", ...shiftsShown.map((shift) => `SL ${shift.toLocaleLowerCase("vi")}`), "Tổng SL", ...shiftsShown.map((shift) => `DT ${shift.toLocaleLowerCase("vi")}`), "Tổng DT món", "Tỷ trọng", "Ghi chú"].map((header, index, headers) => (
+                  <th key={header} className={`sticky top-0 z-10 bg-white px-4 py-3 font-semibold whitespace-nowrap shadow-[inset_0_-1px_0_#e2e8f0] ${index >= 4 && index < headers.length - 1 ? "text-right" : ""}`}>{header}</th>
                 ))}
               </tr>
             </thead>
@@ -338,6 +401,7 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
                   <td className="px-4 py-2 whitespace-nowrap font-mono text-xs">{item.code}</td>
                   <td className="px-4 py-2 min-w-48">{nameOf(item.code) || <span className="text-slate-400">(chưa có trong danh mục)</span>}</td>
                   <td className="px-4 py-2 whitespace-nowrap">{salesKindLabels[item.kind]}</td>
+                  <td className="px-4 py-2 whitespace-nowrap text-slate-600">{goodsGroupOf(item.code)}</td>
                   {shiftsShown.map((shift) => <td key={shift} className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{qty(item.byShift[shift]?.quantity || 0)}</td>)}
                   <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums font-semibold">{qty(item.quantity)}</td>
                   {shiftsShown.map((shift) => <td key={shift} className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{money(Math.round(item.byShift[shift]?.amount || 0))}</td>)}
@@ -347,7 +411,7 @@ export default function SalesAnalysisTab({ data, canConfigure = false }: { data:
                 </tr>
               ))}
               {searchedItems.length === 0 && (
-                <tr><td colSpan={7 + shiftsShown.length * 2} className="px-4 py-8 text-center text-slate-500">Không có món nào khớp.</td></tr>
+                <tr><td colSpan={8 + shiftsShown.length * 2} className="px-4 py-8 text-center text-slate-500">Không có món nào khớp.</td></tr>
               )}
             </tbody>
           </table>
@@ -452,7 +516,8 @@ function LimitInput({ value, onChange }: { value: number; onChange: (value: numb
   );
 }
 
-function RankTable({ titleBefore, titleAfter, limit, onLimit, available, notes, canEdit, onSave, subtitle, items, shifts, nameOf, base, tone }: NoteProps & {
+function RankTable({ titleBefore, titleAfter, limit, onLimit, available, notes, canEdit, onSave, subtitle, items, shifts, nameOf, groupOf, base, tone }: NoteProps & {
+  groupOf: (code: string) => string;
   titleBefore: string;
   titleAfter: string;
   limit: number;
@@ -482,8 +547,8 @@ function RankTable({ titleBefore, titleAfter, limit, onLimit, available, notes, 
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="text-xs uppercase tracking-wide text-slate-500">
-              {["#", "Mã", "Tên món", "Nhóm", "SL bán", "DT món", "Tỷ trọng DT", ...shifts.map((shift) => `SL ${shift.toLocaleLowerCase("vi")}`), "Ghi chú"].map((header, index, headers) => (
-                <th key={header} className={`px-4 py-3 font-semibold whitespace-nowrap ${index >= 4 && index < headers.length - 1 ? "text-right" : ""}`}>{header}</th>
+              {["#", "Mã", "Tên món", "Nhóm DT", "Nhóm hàng hóa", "SL bán", "DT món", "Tỷ trọng DT", ...shifts.map((shift) => `SL ${shift.toLocaleLowerCase("vi")}`), "Ghi chú"].map((header, index, headers) => (
+                <th key={header} className={`px-4 py-3 font-semibold whitespace-nowrap ${index >= 5 && index < headers.length - 1 ? "text-right" : ""}`}>{header}</th>
               ))}
             </tr>
           </thead>
@@ -494,6 +559,7 @@ function RankTable({ titleBefore, titleAfter, limit, onLimit, available, notes, 
                 <td className="px-4 py-2 whitespace-nowrap font-mono text-xs">{item.code}</td>
                 <td className="px-4 py-2 min-w-48">{nameOf(item.code) || <span className="text-slate-400">(chưa có trong danh mục)</span>}</td>
                 <td className="px-4 py-2 whitespace-nowrap">{salesKindLabels[item.kind]}</td>
+                <td className="px-4 py-2 whitespace-nowrap text-slate-600">{groupOf(item.code)}</td>
                 <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums font-semibold">{qty(item.quantity)}</td>
                 <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{money(Math.round(item.amount))}</td>
                 <td className="px-4 py-2 whitespace-nowrap text-right tabular-nums">{pct(item.amount, base)}</td>
@@ -502,7 +568,7 @@ function RankTable({ titleBefore, titleAfter, limit, onLimit, available, notes, 
               </tr>
             ))}
             {items.length === 0 && (
-              <tr><td colSpan={8 + shifts.length} className="px-4 py-8 text-center text-slate-500">Không có món nào.</td></tr>
+              <tr><td colSpan={9 + shifts.length} className="px-4 py-8 text-center text-slate-500">Không có món nào.</td></tr>
             )}
           </tbody>
         </table>
