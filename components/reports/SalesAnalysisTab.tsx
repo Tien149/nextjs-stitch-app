@@ -543,12 +543,13 @@ function RankTable({ titleBefore, titleAfter, limit, onLimit, available, notes, 
         </div>
         <ExportExcelButton fileName={toFileSlug(`${titleBefore} ${limit} ${titleAfter}`)} sheetName={`${titleBefore} ${limit}`.slice(0, 31)} />
       </div>
-      <div className="overflow-x-auto">
+      {/* Gõ Top 100, 200... thì bảng dài: cuộn trong khung, dòng tiêu đề đứng yên (khách 20/11/2026). */}
+      <div className="overflow-auto max-h-[70vh]">
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="text-xs uppercase tracking-wide text-slate-500">
               {["#", "Mã", "Tên món", "Nhóm DT", "Nhóm hàng hóa", "SL bán", "DT món", "Tỷ trọng DT", ...shifts.map((shift) => `SL ${shift.toLocaleLowerCase("vi")}`), "Ghi chú"].map((header, index, headers) => (
-                <th key={header} className={`px-4 py-3 font-semibold whitespace-nowrap ${index >= 5 && index < headers.length - 1 ? "text-right" : ""}`}>{header}</th>
+                <th key={header} className={`sticky top-0 z-10 bg-white px-4 py-3 font-semibold whitespace-nowrap shadow-[inset_0_-1px_0_#e2e8f0] ${index >= 5 && index < headers.length - 1 ? "text-right" : ""}`}>{header}</th>
               ))}
             </tr>
           </thead>
