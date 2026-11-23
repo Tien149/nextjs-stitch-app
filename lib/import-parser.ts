@@ -328,8 +328,10 @@ export async function parseImportFile(
       // riêng trước, không có thì ở ô ngày bán. Không có phút thì để trống, gộp theo giờ như cũ.
       if (template.fields.some((field) => field.field === "sale_hour")) {
         const hour = typeof values.sale_hour === "number" ? values.sale_hour : null;
-        values.sale_minute = (mapping.sale_hour ? parseImportMinuteSlot(source[mapping.sale_hour], hour) : null)
-          ?? (mapping.sale_date ? parseImportMinuteSlot(source[mapping.sale_date], hour) : null);
+        // Lưu ĐÚNG phút trên file (khách 23/11/2026: "lấy đúng giờ chị up lên, đừng đổi giờ");
+        // 20–23/11 từng làm tròn xuống khung 15 phút nên file tải xuống lệch file đã up.
+        values.sale_minute = (mapping.sale_hour ? parseImportMinuteSlot(source[mapping.sale_hour], hour, 1) : null)
+          ?? (mapping.sale_date ? parseImportMinuteSlot(source[mapping.sale_date], hour, 1) : null);
       }
       // Phiếu kho: không có cột Giờ thì đọc giờ trong ô Ngày ("31/08/2026 15:30").
       if (values.transaction_time === null && template.fields.some((field) => field.field === "transaction_time") && mapping.transaction_date) {

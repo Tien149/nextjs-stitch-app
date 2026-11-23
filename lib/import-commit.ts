@@ -49,6 +49,13 @@ import { outputConversionRateProblem, resolveOutputConversionRate } from "@/lib/
 import { applyOpeningInventoryChange } from "@/lib/opening-inventory";
 
 /**
+ * Mốc bắt đầu lưu ĐÚNG phút bán (khách 23/11/2026). Dòng doanh thu có phút nạp trước mốc này mang
+ * mã tham chiếu tính theo khung 15 phút, nạp lại cùng ngày bằng file mới không bị nhận là trùng —
+ * nên chặn theo ngày (xem kiểm tra minuteDays).
+ */
+const EXACT_MINUTE_SINCE = new Date("2026-11-23T05:30:00Z");
+
+/**
  * Một dòng sao kê không đủ điều kiện lập chứng từ tự động.
  *
  * Trước đây mọi trường hợp như vậy đều ném lỗi thường và làm hỏng cả lô: file 580 dòng chỉ cần
@@ -449,7 +456,8 @@ export async function commitImport(input: CommitInput) {
           ". Những ngày này đã nằm trong hệ thống — chỉ nạp lại file của ngày đã xoá, hoặc xoá ngày đó trước khi nạp.",
         ].join(""));
       }
-      // Từ 20/11/2026 file có giờ:phút gộp theo khung 15 phút nên mã tham chiếu khác mã của lần
+      // Từ 23/11/2026 lưu ĐÚNG phút trên file (khách: "lấy đúng giờ chị up lên"); 20–23/11 lưu theo
+      // khung 15 phút. Từ 20/11/2026 file có giờ:phút gộp theo khung 15 phút nên mã tham chiếu khác mã của lần
       // nạp trước (gộp theo giờ). Nạp lại trùng ngày cũ thì kiểm tra theo mã ở trên KHÔNG bắt
       // được -> doanh thu ngày đó vào hai lần. Chặn theo ngày: ngày đã có dòng gộp theo giờ
       // (có giờ, chưa có phút) thì phải xoá ngày đó ở Sổ doanh thu trước khi nạp file có phút.
@@ -464,12 +472,18 @@ export async function commitImport(input: CommitInput) {
         const hourOnly = await tx.revenueImportRow.findMany({
           where: {
             saleHour: { not: null },
-            saleMinute: null,
-            // Ngày lưu nửa đêm UTC (file mới) hoặc nửa đêm giờ VN (file cũ, lùi 7 tiếng).
-            OR: [...minuteDays.values()].map((day) => ({
-              branchCode: day.branchCode,
-              saleDate: { gte: new Date(day.saleDate.getTime() - 7 * 3600_000), lt: new Date(day.saleDate.getTime() + 3600_000) },
-            })),
+            AND: [
+              // Gộp theo giờ (chưa có phút), hoặc nạp trước khi lưu đúng phút (khung 15 phút):
+              // mã tham chiếu của các dòng này khác mã file mới tính ra -> phải chặn theo ngày.
+              { OR: [{ saleMinute: null }, { createdAt: { lt: EXACT_MINUTE_SINCE } }] },
+              {
+                // Ngày lưu nửa đêm UTC (file mới) hoặc nửa đêm giờ VN (file cũ, lùi 7 tiếng).
+                OR: [...minuteDays.values()].map((day) => ({
+                  branchCode: day.branchCode,
+                  saleDate: { gte: new Date(day.saleDate.getTime() - 7 * 3600_000), lt: new Date(day.saleDate.getTime() + 3600_000) },
+                })),
+              },
+            ],
           },
           select: { branchCode: true, saleDate: true },
           distinct: ["branchCode", "saleDate"],

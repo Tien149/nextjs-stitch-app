@@ -118,7 +118,7 @@ test("file thô khai phí cà thẻ / phí app: map đúng cột và cộng dồ
   const file = fileFromRows("Import doanh thu", [
     ["Ngày", "Giờ bán", "Cửa hàng", "Mã hàng", "Tên hàng", "Số lượng", "Đơn vị tính", "Số khách", "Hình thức bán", "Nhóm doanh thu", "Nguồn tiền", "Doanh thu", "Giảm giá", "SVC", "Phí cà thẻ", "Phí bán hàng qua app", "VAT", "Tổng doanh thu", "Ghi chú"],
     ["01/08/2026", "12:00", "NME", "BBQ010", "Xúc Xích", 1, "PHAN", 2, "PNL_DT_GRAB", "REV_FOOD", "FDSGRABFOOD", 500000, 0, 25000, 0, 125000, 42000, 567000, "HD1"],
-    ["01/08/2026", "12:05", "NME", "BBQ010", "Xúc Xích", 1, "PHAN", 1, "PNL_DT_GRAB", "REV_FOOD", "FDSGRABFOOD", 100000, 0, 5000, 3000, 25000, 8400, 113400, "HD2"],
+    ["01/08/2026", "12:00", "NME", "BBQ010", "Xúc Xích", 1, "PHAN", 1, "PNL_DT_GRAB", "REV_FOOD", "FDSGRABFOOD", 100000, 0, 5000, 3000, 25000, 8400, 113400, "HD2"],
   ]);
 
   const parsed = await parseImportFile(file, template);

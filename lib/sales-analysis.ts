@@ -30,9 +30,8 @@ export const salesKindLabels: Record<SalesKind, string> = {
 export const NO_HOUR = "Không có giờ";
 
 /**
- * Phút được lưu theo khung 15 phút (lib/import-date.ts minuteSlot): file POS gộp món theo khung
- * giờ:phút này, gộp theo từng phút thì số dòng doanh thu phình lên gần bằng số dòng hoá đơn.
- * Mốc bắt đầu ca vì vậy chỉ chọn được 00 / 15 / 30 / 45.
+ * Mốc bắt đầu ca chọn theo bước 15 phút (00 / 15 / 30 / 45). Phút bán lưu ĐÚNG như file từ
+ * 23/11/2026 (trước đó 20–23/11 làm tròn khung 15 phút), chia ca theo phút thật.
  */
 export const SHIFT_SLOT_MINUTES = 15;
 
@@ -140,7 +139,7 @@ export type SalesCell = {
   kind: SalesKind;
   branchCode: string;
   hour: number | null;
-  /** Phút bắt đầu khung 15 phút; null = dòng import trước khi lưu phút (tính như phút 00). */
+  /** Phút bán (0–59); null = dòng import trước khi lưu phút (tính như phút 00). */
   minute: number | null;
   quantity: number;
   amount: number;

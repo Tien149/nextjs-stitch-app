@@ -374,8 +374,9 @@ model RevenueImportRow {
   /// NGÀY (UTC midnight) như mọi báo cáo đang dùng. Dùng để rã nguyên liệu tới đúng giờ chốt
   /// kiểm kê (khách chốt 28/09/2026) — lib/inventory-explosion.ts.
   saleHour        Int?
-  /// Phút bắt đầu khung 15 phút của giờ bán (0/15/30/45) khi file POS có giờ:phút; null = dòng
-  /// import trước 20/11/2026 hoặc file chỉ có giờ. Dùng chia ca theo mốc phút (ASA Trưa từ 10:30)
+  /// Phút bán đúng như file POS (0–59) khi file có giờ:phút — từ 23/11/2026; nạp 20–23/11 lưu
+  /// khung 15 phút (0/15/30/45, dữ liệu ASA đã sửa lại theo file gốc); null = dòng import trước
+  /// 20/11/2026 hoặc file chỉ có giờ. Dùng chia ca theo mốc phút (ASA Trưa từ 10:30)
   /// — báo cáo DT theo ca & món, ca khai ở SalesShiftConfig.
   saleMinute      Int?
   branchCode      String

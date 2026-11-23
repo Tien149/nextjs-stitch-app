@@ -112,9 +112,9 @@ export function parseImportTime(value: unknown): string | null {
 }
 
 /**
- * Phút bắt đầu khung 15 phút của một ô giờ ("10:37" -> 30), chỉ khi ô có PHÚT và đúng giờ đã đọc
- * (`hour`). Ô chỉ ghi giờ ("13") hay nửa đêm trơn -> null. Khung 15 phút: gộp món theo từng phút
- * làm số dòng doanh thu phình lên gần bằng số dòng hoá đơn (khách 20/11/2026, ca ASA từ 10:30).
+ * Phút của một ô giờ làm tròn xuống theo `slot` ("10:37", slot 15 -> 30; slot 1 -> 37), chỉ khi ô
+ * có PHÚT và đúng giờ đã đọc (`hour`). Ô chỉ ghi giờ ("13") hay nửa đêm trơn -> null. File doanh thu
+ * POS dùng slot 1 = đúng phút trên file (khách 23/11/2026: không được đổi giờ chị up lên).
  */
 export function parseImportMinuteSlot(value: unknown, hour: number | null, slot = 15): number | null {
   if (hour === null || hour === undefined) return null;
