@@ -121,18 +121,32 @@ function headerMatchesCandidate(header: string, candidate: string) {
 
 export function autoMapHeaders(headers: string[], template: ImportTemplateDefinition) {
   const mapping: Record<string, string> = {};
-  for (const field of template.fields) {
-    if (field.hiddenFromMapping) continue;
-    const candidates = [field.label, field.field, ...field.aliases];
-    const exactCandidates = [...candidates, ...(field.exactAliases || [])];
-    // Duyệt theo thứ tự tên trong template chứ không theo thứ tự cột trong file, và xét trùng
-    // khít trước khi xét trùng phần đầu. File POS có cả "Thành tiền", "Tổng tiền" lẫn
-    // "Tổng tiền (không bao gồm VAT)", nếu để thứ tự cột quyết định thì lấy nhầm cột.
+  const fields = template.fields.filter((field) => !field.hiddenFromMapping);
+  // Duyệt theo thứ tự tên trong template chứ không theo thứ tự cột trong file, và xét trùng
+  // khít trước khi xét trùng phần đầu. File POS có cả "Thành tiền", "Tổng tiền" lẫn
+  // "Tổng tiền (không bao gồm VAT)", nếu để thứ tự cột quyết định thì lấy nhầm cột.
+  //
+  // Vòng 1 xét trùng khít cho MỌI trường trước; vòng 2 (trùng phần đầu) chỉ còn được lấy cột
+  // chưa có trường nào nhận khít. Trước đây mỗi trường tự chạy cả hai vòng nên "Mã mặt hàng"
+  // (alias "ma hang") vớ luôn cột "Mã hàng thuế" đứng trước cột "Mã hàng hóa" -> hai trường
+  // cùng một cột, ô mã thuế trống thành lỗi "Mã mặt hàng là bắt buộc" (khách 23/11/2026).
+  const exactClaimed = new Set<string>();
+  for (const field of fields) {
+    const exactCandidates = [field.label, field.field, ...field.aliases, ...(field.exactAliases || [])];
     const matched = exactCandidates.reduce<string | undefined>(
       (found, candidate) => found || headers.find((header) => normalizeHeader(header) === normalizeHeader(candidate)),
       undefined,
-    ) || candidates.reduce<string | undefined>(
-      (found, candidate) => found || headers.find((header) => headerMatchesCandidate(header, candidate)),
+    );
+    if (matched) {
+      mapping[field.field] = matched;
+      exactClaimed.add(matched);
+    }
+  }
+  for (const field of fields) {
+    if (mapping[field.field]) continue;
+    const candidates = [field.label, field.field, ...field.aliases];
+    const matched = candidates.reduce<string | undefined>(
+      (found, candidate) => found || headers.find((header) => !exactClaimed.has(header) && headerMatchesCandidate(header, candidate)),
       undefined,
     );
     if (matched) mapping[field.field] = matched;

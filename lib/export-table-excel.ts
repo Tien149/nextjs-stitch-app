@@ -47,15 +47,22 @@ export function parseVietnameseNumber(text: string): number | null {
 /** Chữ hiển thị của một ô: bỏ icon và nút, riêng input/select lấy giá trị đang nhập. */
 function readCellText(cell: HTMLTableCellElement): string {
   const clone = cell.cloneNode(true) as HTMLElement;
-  for (const control of Array.from(clone.querySelectorAll("input, select, textarea"))) {
+  // Đọc giá trị ở control GỐC rồi thay vào bản sao theo đúng thứ tự: cloneNode không chép trạng
+  // thái đang chọn của <select> (React đặt thuộc tính selected trên option, không phải attribute),
+  // nên bản sao luôn đứng ở option đầu — cột Nhóm doanh thu của danh mục mặt hàng xuất ra trống
+  // dù trên màn đã gán (khách 23/11/2026). Ô nhập liệu cũng vậy với giá trị gõ chưa lưu.
+  const originals = Array.from(cell.querySelectorAll("input, select, textarea"));
+  Array.from(clone.querySelectorAll("input, select, textarea")).forEach((control, index) => {
+    const source = originals[index] || control;
     const value =
-      control instanceof HTMLSelectElement
-        ? control.selectedOptions[0]?.textContent || ""
-        : control instanceof HTMLInputElement && (control.type === "checkbox" || control.type === "radio")
-          ? control.checked ? "x" : ""
-          : (control as HTMLInputElement | HTMLTextAreaElement).value;
+      source instanceof HTMLSelectElement
+        // Ô chưa chọn gì (option rỗng "-- Chưa gán --") thì xuất ô trống, không xuất chữ nhắc.
+        ? source.value === "" ? "" : source.selectedOptions[0]?.textContent || ""
+        : source instanceof HTMLInputElement && (source.type === "checkbox" || source.type === "radio")
+          ? source.checked ? "x" : ""
+          : (source as HTMLInputElement | HTMLTextAreaElement).value;
     control.replaceWith(document.createTextNode(value));
-  }
+  });
   for (const noise of Array.from(clone.querySelectorAll("[data-no-export], button, .material-symbols-outlined"))) {
     noise.remove();
   }
