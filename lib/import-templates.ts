@@ -52,6 +52,11 @@ export type ImportFieldDefinition = {
    * khớp phần đầu thì vớ luôn cột "Khách hàng" (tên khách) rồi báo lỗi không phải số.
    */
   exactAliases?: string[];
+  /**
+   * File BẮT BUỘC có cột này nhưng ô được để trống (số trống = 0). Dùng cho cột tiền phí/thuế của
+   * file POS: khách bắt mọi cột phải có (23/11/2026) mà dòng không có phí thì ô vẫn để trống.
+   */
+  requiredColumn?: boolean;
   /** In ra cột Ghi chú của sheet "Huong dan" trong file mẫu — chỗ người dùng tra khi không biết điền gì. */
   note?: string;
 };
@@ -450,9 +455,10 @@ export const importTemplates: ImportTemplateDefinition[] = [
         field: "sale_hour",
         label: "Giờ bán",
         required: false,
+        requiredColumn: true,
         type: "hour",
         aliases: ["gio ban", "gio", "gio hoa don", "gio thanh toan", "sale hour", "sale time"],
-        note: "Không bắt buộc. Cột Thời gian có kèm giờ (31/08/2026 10:23) thì hệ thống tự đọc giờ, hoặc khai cột Giờ riêng. Có giờ thì rã nguyên liệu được tới đúng giờ chốt kiểm kê.",
+        note: "Bắt buộc có cột. Cột Thời gian có kèm giờ (31/08/2026 10:23) thì hệ thống tự đọc giờ, hoặc khai cột Giờ riêng. Có giờ thì rã nguyên liệu được tới đúng giờ chốt kiểm kê.",
       },
       {
         field: "branch_code",
@@ -465,7 +471,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       {
         field: "product_code",
         label: "Mã hàng",
-        required: false,
+        required: true,
         type: "text",
         aliases: ["ma hang", "ma mon", "ma mon pos", "ma mat hang", "ma san pham", "product code", "item code"],
         note: "Mã món bán ra — dòng có mã hàng + số lượng (nhóm Đồ ăn / Đồ uống) sẽ chờ Rã nguyên liệu bên Kho định lượng; mã chưa có trong danh mục thì hệ thống tự tạo thành phẩm theo Tên hàng và Đơn vị tính",
@@ -473,7 +479,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       {
         field: "product_name",
         label: "Tên hàng",
-        required: false,
+        required: true,
         type: "text",
         aliases: ["ten hang", "ten mon", "ten mat hang", "product name", "item name"],
         note: "Tên món — dùng khi hệ thống tự tạo mặt hàng thành phẩm mới",
@@ -489,7 +495,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       {
         field: "product_quantity",
         label: "Số lượng",
-        required: false,
+        required: true,
         type: "number",
         aliases: ["so luong", "so luong ban", "sl ban", "quantity", "qty"],
         note: "Số lượng bán — là số lượng cần rã định lượng (xuất bán)",
@@ -497,15 +503,16 @@ export const importTemplates: ImportTemplateDefinition[] = [
       {
         field: "unit",
         label: "Đơn vị tính",
-        required: false,
+        required: true,
         type: "text",
         aliases: ["don vi tinh", "dvt", "unit"],
-        note: "Phần, Ly, Món... — dùng khi hệ thống tự tạo mặt hàng mới",
+        note: "Bắt buộc, ghi MÃ ĐVT đã setup ở Danh mục mặt hàng (PHAN, LY, CHAI...) — phải khớp ĐVT của mã hàng; mã hàng mới thì dùng làm ĐVT khi hệ thống tự tạo mặt hàng",
       },
       {
         field: "guest_count",
         label: "Số khách",
         required: false,
+        requiredColumn: true,
         type: "integer",
         aliases: ["so khach", "luot khach", "so luot khach", "so nguoi", "guest count", "guests", "pax"],
         exactAliases: ["khach", "guest"],
@@ -524,18 +531,18 @@ export const importTemplates: ImportTemplateDefinition[] = [
       {
         field: "channel",
         label: "Hình thức bán",
-        required: false,
+        required: true,
         type: "text",
         aliases: ["hinh thuc ban", "hinh thuc", "nguon", "kenh ban", "kenh", "channel"],
-        note: "Tại chỗ, Grab, Mang về...",
+        note: "Bắt buộc, ghi MÃ Hạng mục P&L nhóm Nguồn doanh thu (PNL_DT_TAICHO, PNL_DT_GRAB, PNL_DT_MANGVE...) — không nhận tên Tại chỗ / Grab",
       },
       {
         field: "revenue_source",
         label: "Nhóm doanh thu",
-        required: false,
+        required: true,
         type: "text",
         aliases: ["nhom doanh thu", "nhom dt", "loai mon", "revenue group", "revenue source"],
-        note: "Nhóm doanh thu hoặc Loại món: Đồ ăn -> Doanh thu bếp, Đồ uống -> Doanh thu bar, Dịch vụ -> Doanh thu phụ thu (không theo dõi tồn kho). Ghi mã (REV_FOOD), tên danh mục hay chữ \"ĐỒ ĂN\"/\"ĐỒ UỐNG\"/\"DỊCH VỤ\" đều được — hệ thống tự quy về mã danh mục Thu. Để trống hoặc ghi chữ lạ thì lấy Nhóm doanh thu khai ở Danh mục mặt hàng theo mã hàng.",
+        note: "Bắt buộc, ghi MÃ nhóm doanh thu: REV_FOOD (bếp), REV_BAR (bar), REV_SERVICE (phụ thu) hoặc mã nhóm doanh thu khai ở danh mục Thu/Chi — không nhận chữ ĐỒ ĂN / ĐỒ UỐNG",
       },
       {
         // Trên file của khách, cột này ghi MÃ hoặc TÊN nguồn tiền trong danh mục
@@ -552,6 +559,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         field: "gross_amount",
         label: "Doanh thu",
         required: false,
+        requiredColumn: true,
         type: "number",
         aliases: ["doanh thu", "thanh tien", "doanh thu truoc thue"],
         note: "Doanh thu chưa gồm phí và thuế (cột Thành tiền của file POS). Doanh thu − Giảm giá lên P&L theo nhóm doanh thu (bếp / bar / phụ thu)",
@@ -560,6 +568,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         field: "discount_amount",
         label: "Giảm giá",
         required: false,
+        requiredColumn: true,
         type: "number",
         aliases: ["giam gia", "discount"],
         note: "Tiền giảm giá trên dòng",
@@ -568,6 +577,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         field: "fee_amount",
         label: "SVC",
         required: false,
+        requiredColumn: true,
         type: "number",
         aliases: ["svc", "phi dich vu", "phi phuc vu", "service charge"],
         note: "Phí dịch vụ — lên P&L thành dòng Doanh thu SVC (là doanh thu, không phải chi phí)",
@@ -576,6 +586,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         field: "card_fee_amount",
         label: "Phí cà thẻ",
         required: false,
+        requiredColumn: true,
         type: "number",
         aliases: ["phi ca the", "phi quet the", "phi the", "card fee"],
         note: "Phí máy POS/ngân hàng giữ lại trên dòng này — vào chi phí, tiền về giảm đúng số này",
@@ -584,6 +595,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         field: "app_fee_amount",
         label: "Phí bán hàng qua app",
         required: false,
+        requiredColumn: true,
         type: "number",
         aliases: ["phi ban hang qua app", "phi app", "phi grab", "phi san", "hoa hong app", "chiet khau app", "app fee", "commission"],
         note: "Hoa hồng Grab/ShopeeFood/Be giữ lại trên dòng này — vào chi phí, tiền về giảm đúng số này",
@@ -592,6 +604,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         field: "vat_amount",
         label: "Thuế",
         required: false,
+        requiredColumn: true,
         type: "number",
         aliases: ["thue gtgt", "thue vat", "tien thue", "vat"],
         note: "Tiền thuế GTGT (cột Thuế, không phải cột VAT %) — lên P&L thành dòng Doanh thu thuế GTGT",
@@ -611,6 +624,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         field: "note",
         label: "Ghi chú",
         required: false,
+        requiredColumn: true,
         type: "text",
         aliases: ["ghi chu", "note", "notes", "dien giai", "remark", "ghi chu them"],
         note: "Ghi chú tự do trên từng dòng, sửa lại được ở tab Sổ doanh thu",

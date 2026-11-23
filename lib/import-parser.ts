@@ -276,7 +276,7 @@ export async function parseImportFile(
   }
   const defaults = { ...(template.defaultValues || {}), ...(options.defaultValues || {}) };
   const missingFields = template.fields.filter(
-    (field) => field.required && !mapping[field.field] && defaults[field.field] === undefined,
+    (field) => (field.required || field.requiredColumn) && !mapping[field.field] && defaults[field.field] === undefined,
   );
 
   const parsedRows = candidate.sheet.rows

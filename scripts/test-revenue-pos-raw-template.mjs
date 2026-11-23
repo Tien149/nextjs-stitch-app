@@ -28,6 +28,8 @@ const customerHeaders = [
   "Tổng tiền (không bao gồm VAT)", "Hoa hồng", "Tổng tiền (bao gồm hoa hồng)", "Tên CTKM",
   "Mã voucher", "Tên khách", "Số khách", "Số điện thoại", "Nhân viên", "Tổng tiền",
   "Loại nguồn tiền", "Năm", "Tháng", "Ngày",
+  // Từ 23/11/2026 mọi cột của file thô (trừ Mã combo) bắt buộc phải có.
+  "Phí cà thẻ", "Phí bán hàng qua app", "Ghi chú",
 ];
 
 function customerRow({ product, name, group, pttt, quantity, unit, gross, fee, vat, total }) {
@@ -39,6 +41,7 @@ function customerRow({ product, name, group, pttt, quantity, unit, gross, fee, v
     gross + fee, 0, total, "",
     "", "", 4, "", "Thanh Hiền", total,
     "BANK - Tài khoản ngân hàng", 2026, 8, 1,
+    "", "", "FDS0001",
   ];
 }
 
@@ -93,23 +96,18 @@ test("file POS chi tiết 43 cột: map đúng cột, né các cột bẫy", asy
   assert.equal(new Set(keys).size, keys.length);
 });
 
-test("file thô đợt trước (Ngày/Nguồn tiền/Tổng doanh thu) vẫn đọc được", async () => {
+test("file thô thiếu cột (đợt trước chỉ có Ngày/Nguồn tiền/Tổng doanh thu): báo đúng cột thiếu — khách bắt buộc đủ cột 23/11/2026", async () => {
   const file = fileFromRows("Import doanh thu", [
     ["Ngày", "Cửa hàng", "Hình thức bán", "Nhóm doanh thu", "Nguồn tiền", "Doanh thu", "SVC", "VAT", "Tổng doanh thu"],
-    ["01/08/2026", "NME", "Grab", "REV_FOOD", "FDSGRABFOOD", 500000, 25000, 42000, 567000],
-    ["01/08/2026", "NME", "Grab", "REV_FOOD", "FDSGRABFOOD", 100000, 5000, 8400, 113400],
+    ["01/08/2026", "NME", "PNL_DT_GRAB", "REV_FOOD", "FDSGRABFOOD", 500000, 25000, 42000, 567000],
   ]);
 
   const parsed = await parseImportFile(file, template);
-
-  assert.equal(parsed.mapping.sale_date, "Ngày");
-  assert.equal(parsed.mapping.payment_method, "Nguồn tiền");
-  assert.equal(parsed.mapping.vat_amount, "VAT");
-  assert.equal(parsed.mapping.net_amount, "Tổng doanh thu");
-  assert.equal(parsed.errorRows, 0, JSON.stringify(parsed.rows.flatMap((row) => row.errors)));
-  assert.equal(parsed.rows.length, 1, "không có mã hàng thì gộp về một dòng mỗi nguồn tiền như trước");
-  assert.equal(parsed.rows[0].values.net_amount, 680400);
-  assert.equal(parsed.rows[0].values.product_code, null);
+  const errors = parsed.rows.flatMap((row) => row.errors);
+  for (const label of ["Giờ bán", "Mã hàng", "Tên hàng", "Số lượng", "Đơn vị tính", "Số khách", "Giảm giá", "Phí cà thẻ", "Phí bán hàng qua app", "Ghi chú"]) {
+    assert.ok(errors.includes(`Không tìm thấy cột ${label}`), `phải báo thiếu cột ${label}: ${JSON.stringify(errors)}`);
+  }
+  assert.ok(!errors.includes("Không tìm thấy cột Mã combo"), "Mã combo là cột duy nhất không bắt buộc");
 });
 
 /**
@@ -118,9 +116,9 @@ test("file thô đợt trước (Ngày/Nguồn tiền/Tổng doanh thu) vẫn đ
  */
 test("file thô khai phí cà thẻ / phí app: map đúng cột và cộng dồn khi gộp dòng", async () => {
   const file = fileFromRows("Import doanh thu", [
-    ["Ngày", "Cửa hàng", "Hình thức bán", "Nhóm doanh thu", "Nguồn tiền", "Doanh thu", "SVC", "Phí cà thẻ", "Phí bán hàng qua app", "VAT", "Tổng doanh thu"],
-    ["01/08/2026", "NME", "Grab", "REV_FOOD", "FDSGRABFOOD", 500000, 25000, 0, 125000, 42000, 567000],
-    ["01/08/2026", "NME", "Grab", "REV_FOOD", "FDSGRABFOOD", 100000, 5000, 3000, 25000, 8400, 113400],
+    ["Ngày", "Giờ bán", "Cửa hàng", "Mã hàng", "Tên hàng", "Số lượng", "Đơn vị tính", "Số khách", "Hình thức bán", "Nhóm doanh thu", "Nguồn tiền", "Doanh thu", "Giảm giá", "SVC", "Phí cà thẻ", "Phí bán hàng qua app", "VAT", "Tổng doanh thu", "Ghi chú"],
+    ["01/08/2026", "12:00", "NME", "BBQ010", "Xúc Xích", 1, "PHAN", 2, "PNL_DT_GRAB", "REV_FOOD", "FDSGRABFOOD", 500000, 0, 25000, 0, 125000, 42000, 567000, "HD1"],
+    ["01/08/2026", "12:05", "NME", "BBQ010", "Xúc Xích", 1, "PHAN", 1, "PNL_DT_GRAB", "REV_FOOD", "FDSGRABFOOD", 100000, 0, 5000, 3000, 25000, 8400, 113400, "HD2"],
   ]);
 
   const parsed = await parseImportFile(file, template);

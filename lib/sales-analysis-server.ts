@@ -108,9 +108,21 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
     codes.length > 0
       ? prisma.inventoryItem.findMany({ where: { code: { in: codes } }, select: { code: true, name: true, revenueGroup: true, itemType: true, goodsGroup: true } })
       : Promise.resolve([] as Array<{ code: string; name: string; revenueGroup: string | null; itemType: string; goodsGroup: string | null }>),
-    prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY", deletedAt: null }, select: { code: true, name: true } }),
+    prisma.masterDataItem.findMany({ where: { type: { in: ["REVENUE_EXPENSE_CATEGORY", "PNL_ITEM"] }, deletedAt: null }, select: { type: true, code: true, name: true, group: true } }),
   ]);
-  const categoryName = new Map(categories.map((category) => [category.code.toUpperCase(), category.name]));
+  // Hình thức bán: file mới ghi MÃ (PNL_DT_TAICHO — bắt buộc từ 23/11/2026), file cũ ghi chữ
+  // ("Tại chỗ", "TẠI CHỖ"). Gom về một tên hiển thị để báo cáo không tách hai dòng cho cùng kênh.
+  const channelItems = categories.filter((item) => item.type === "PNL_ITEM" && (item.group || "").toUpperCase() === "REVENUE_SOURCE");
+  const channelKey = (value: string) => value.normalize("NFC").trim().toLowerCase();
+  const channelLabelOf = (name: string) => name.replace(/^DT\s+/i, "").trim() || name;
+  const channelByCode = new Map(channelItems.map((item) => [item.code.toUpperCase(), channelLabelOf(item.name)]));
+  const channelByName = new Map(channelItems.map((item) => [channelKey(channelLabelOf(item.name)), channelLabelOf(item.name)]));
+  const channelLabel = (raw: string | null) => {
+    const value = (raw || "").trim();
+    if (!value) return "Không ghi kênh";
+    return channelByCode.get(value.toUpperCase()) || channelByName.get(channelKey(value)) || value;
+  };
+  const categoryName = new Map(categories.filter((category) => category.type === "REVENUE_EXPENSE_CATEGORY").map((category) => [category.code.toUpperCase(), category.name]));
   const itemByCode = new Map(items.map((item) => [item.code, item]));
 
   const kindOfText = (value: string | null | undefined): SalesKind | null => {
@@ -159,7 +171,7 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
   for (const group of visitGroups) {
     if (group._count.guestCount > 0) hasGuestData = true;
     const date = vietnamBusinessDayKey(group.saleDate);
-    const channel = (group.channel || "").trim() || "Không ghi kênh";
+    const channel = channelLabel(group.channel);
     const hour = group.saleHour ?? null;
     const minute = hour === null ? null : group.saleMinute ?? null;
     const key = `${date}|${group.branchCode}|${hour ?? ""}|${minute ?? ""}|${channel}`;

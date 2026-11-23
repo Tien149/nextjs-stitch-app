@@ -12,7 +12,7 @@ import { resolveOpeningAsset } from "@/lib/opening-asset";
 import { branchGoLiveDays, isBeforeGoLive } from "@/lib/wallet-go-live";
 import { normalizeCashflowCategoryType, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
-import { loadItemRevenueGroupResolver, loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
+import { loadItemRevenueGroupResolver, loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, REVENUE_PNL_GROUP_FALLBACKS, revenueKindFromText, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { bankStatementSuspectKey, groupBankStatementRows, type BankStatementImportGroup } from "@/lib/bank-statement-import";
 import { isPeriodLocked } from "@/lib/phase3";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -1366,6 +1366,32 @@ export async function validateImportResult(
     ? await loadItemRevenueGroupResolver(prisma as unknown as CategoryLookupClient)
     : null;
   const revenueReferenceRows = new Map<string, ParsedImportRow>();
+  /**
+   * File POS thô (REVENUE_POS_RAW_V1): Hình thức bán, Nhóm doanh thu, Đơn vị tính phải ghi đúng
+   * MÃ đã setup trong hệ thống, không nhận tên ("Tại chỗ", "Grab", "Phần") — khách chốt 23/11/2026.
+   * - Hình thức bán: mã Hạng mục P&L nhóm Nguồn doanh thu (PNL_DT_TAICHO, PNL_DT_GRAB...).
+   * - Nhóm doanh thu: mã nhóm Bếp / Bar / Phụ thu (danh mục Thu/Chi nhóm doanh thu đang hoạt
+   *   động + mã chuẩn REV_FOOD / REV_BAR / REV_SERVICE mà mặt hàng đang gắn).
+   * - Đơn vị tính: ĐVT tồn hoặc ĐVT quy đổi của chính mã hàng; mã chưa có thì phải là ĐVT đã
+   *   dùng ở danh mục mặt hàng.
+   */
+  const strictRevenueCodes = importType === "REVENUE_POS" && options.templateCode === "REVENUE_POS_RAW_V1";
+  const channelCodes = new Set(strictRevenueCodes
+    ? masterItems.filter((item) => item.type === "PNL_ITEM" && text(item.group).toUpperCase() === "REVENUE_SOURCE" && item.status === "ACTIVE").map((item) => item.code.toUpperCase())
+    : []);
+  const revenueGroupCodes = new Set(strictRevenueCodes
+    ? [
+        ...Object.values(REVENUE_PNL_GROUP_FALLBACKS).map((group) => group.code.toUpperCase()),
+        ...masterItems
+          .filter((item) => item.type === "REVENUE_EXPENSE_CATEGORY" && text(item.group).toUpperCase() === "REVENUE_SOURCE" && item.status === "ACTIVE"
+            && revenueKindFromText(`${item.code} ${item.name}`))
+          .map((item) => item.code.toUpperCase()),
+      ]
+    : []);
+  const knownUnits = new Set(strictRevenueCodes
+    ? inventoryItems.flatMap((item) => [item.unit, ...item.unitConversions.map((conversion) => conversion.unitCode)]).map((unit) => text(unit).toUpperCase()).filter(Boolean)
+    : []);
+  const codeList = (codes: Set<string>) => [...codes].sort().join(", ") || "chưa setup mã nào";
   const importAssetCodes = new Set<string>();
   for (const row of result.rows) {
     if (branchTypes.includes(importType)) validateBranch(row, session, masterItems);
@@ -1650,6 +1676,27 @@ export async function validateImportResult(
         }
       } else {
         row.values.pnl_item_code = null;
+      }
+    }
+    if (importType === "REVENUE_POS" && strictRevenueCodes) {
+      const channelInput = text(row.values.channel);
+      if (channelInput) {
+        if (!channelCodes.has(channelInput.toUpperCase())) addError(row, `Hình thức bán [${channelInput}] phải ghi MÃ trong danh mục (Hạng mục P&L nhóm Nguồn doanh thu): ${codeList(channelCodes)}`);
+        else row.values.channel = channelInput.toUpperCase();
+      }
+      const groupInput = text(row.values.revenue_source);
+      if (groupInput) {
+        if (!revenueGroupCodes.has(groupInput.toUpperCase())) addError(row, `Nhóm doanh thu [${groupInput}] phải ghi MÃ nhóm doanh thu: ${codeList(revenueGroupCodes)}`);
+        else row.values.revenue_source = groupInput.toUpperCase();
+      }
+      const unitInput = text(row.values.unit);
+      if (unitInput) {
+        const unitCode = unitInput.toUpperCase();
+        const item = inventoryItems.find((candidate) => candidate.code.toUpperCase() === text(row.values.product_code).toUpperCase());
+        const itemUnits = item ? [item.unit, ...item.unitConversions.map((conversion) => conversion.unitCode)].map((unit) => text(unit).toUpperCase()) : [];
+        if (item && !itemUnits.includes(unitCode)) addError(row, `Đơn vị tính [${unitInput}] không khớp mã ĐVT của ${item.code} trong danh mục mặt hàng: ${[...new Set(itemUnits)].join(", ")}`);
+        else if (!item && !knownUnits.has(unitCode)) addError(row, `Đơn vị tính [${unitInput}] chưa có trong danh mục mặt hàng — ghi MÃ ĐVT (VD PHAN, LY, CHAI)`);
+        else row.values.unit = unitCode;
       }
     }
     if (importType === "REVENUE_POS") {
