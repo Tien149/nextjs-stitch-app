@@ -3,10 +3,12 @@
  *
  * File POS để mỗi món một dòng; cột Số khách thường lặp lại trên mọi dòng của cùng hoá đơn. Hệ
  * thống gộp món theo ngày × giờ × kênh × nguồn tiền × mã món rồi CỘNG các cột số, nên phải dồn
- * số khách về MỘT dòng mỗi hoá đơn trước khi gộp: dòng đầu tiên của hoá đơn mang số khách (lớn
- * nhất ghi trên các dòng của hoá đơn đó) và 1 hoá đơn, các dòng sau mang 0.
+ * số khách về MỘT dòng mỗi hoá đơn trước khi gộp: dòng đầu tiên của hoá đơn (theo thứ tự trong
+ * file) mang số khách CỦA DÒNG ĐÓ và 1 hoá đơn, các dòng sau mang 0 — đúng COUNTIFS(Ngày, Ghi chú)
+ * lấy dòng đầu tiên mà khách dùng trên Excel (23/11/2026; trước đó lấy số lớn nhất).
  *
- * Chỉ chạy khi file có cột Số hoá đơn. Dòng không ghi số hoá đơn giữ nguyên số khách như file.
+ * Hoá đơn nhận theo cột Số hoá đơn, hoặc cột Ghi chú khi file không có cột Số hoá đơn (xem
+ * import-parser). Dòng không ghi số hoá đơn giữ nguyên số khách như file.
  * File thuần (không import gì) để test bằng node.
  */
 
@@ -23,10 +25,10 @@ function guestNumber(value: unknown) {
   return Number.isFinite(number) ? number : null;
 }
 
-export function spreadBillGuestCounts<T extends RowLike>(rows: T[]): T[] {
+export function spreadBillGuestCounts<T extends RowLike>(rows: T[], billField = "bill_code"): T[] {
   const bills = new Map<string, { first: T; guests: number | null }>();
   for (const row of rows) {
-    const bill = keyPart(row.values.bill_code);
+    const bill = keyPart(row.values[billField]);
     if (!bill) continue;
     // Số hoá đơn chỉ duy nhất trong một cửa hàng và một ngày.
     const key = [keyPart(row.values.sale_date), keyPart(row.values.branch_code), bill].join("|");
@@ -36,11 +38,12 @@ export function spreadBillGuestCounts<T extends RowLike>(rows: T[]): T[] {
       bills.set(key, { first: row, guests });
       continue;
     }
-    if (guests !== null && (current.guests === null || guests > current.guests)) current.guests = guests;
+    // Dòng đầu bỏ trống số khách thì lấy dòng kế tiếp có ghi.
+    if (current.guests === null && guests !== null) current.guests = guests;
   }
   const firstRows = new Map<T, number | null>([...bills.values()].map((bill) => [bill.first, bill.guests]));
   return rows.map((row) => {
-    if (!keyPart(row.values.bill_code)) return row;
+    if (!keyPart(row.values[billField])) return row;
     const isFirst = firstRows.has(row);
     const guests = isFirst ? firstRows.get(row) ?? null : null;
     return {

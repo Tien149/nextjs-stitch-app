@@ -333,7 +333,10 @@ export async function parseImportFile(
 
   // Số khách / số hoá đơn tính theo HOÁ ĐƠN: dồn về một dòng mỗi hoá đơn trước khi gộp món,
   // không thì hoá đơn 5 món ghi "4 khách" trên cả 5 dòng thành 20 khách.
-  const billSpread = mapping.bill_code ? spreadBillGuestCounts(parsedRows) : parsedRows;
+  // Số hoá đơn lấy từ cột Số hoá đơn; file không có cột đó nhưng có Số khách thì cột Ghi chú chính là
+  // số hoá đơn (file POS của ASA, khách chốt 23/11/2026: đếm theo Ngày + Ghi chú, lấy dòng đầu tiên).
+  const billField = mapping.bill_code ? "bill_code" : mapping.guest_count && mapping.note ? "note" : "";
+  const billSpread = billField ? spreadBillGuestCounts(parsedRows, billField) : parsedRows;
   const rows = template.aggregate ? aggregateParsedRows(billSpread, template.aggregate) : billSpread;
 
   return {

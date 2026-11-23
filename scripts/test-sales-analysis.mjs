@@ -83,6 +83,15 @@ test("số khách theo hoá đơn: ghi lặp trên mọi dòng món chỉ tính 
   assert.deepEqual(out.map((r) => r.values.order_count), [1, 0, 0, 1, 0, undefined]);
 });
 
+test("số khách theo Ngày + Ghi chú (file ASA): lấy số khách của DÒNG ĐẦU TIÊN mỗi hoá đơn, tách theo ngày", () => {
+  const d1 = new Date("2026-11-01T00:00:00Z");
+  const d2 = new Date("2026-11-02T00:00:00Z");
+  const row = (day, note, guests) => ({ values: { sale_date: day, branch_code: "ASA", note, guest_count: guests } });
+  const out = spreadBillGuestCounts([row(d1, "ASA0017", 2), row(d1, "ASA0017", 3), row(d2, "ASA0017", 5), row(d1, "ASA0018", 1)], "note");
+  assert.deepEqual(out.map((r) => r.values.guest_count), [2, 0, 5, 1]);
+  assert.deepEqual(out.map((r) => r.values.order_count), [1, 0, 1, 1]);
+});
+
 test("lượt khách: chia ca theo cửa hàng, DT/khách bỏ kênh không ghi khách (Grab)", () => {
   const v = (date, branchCode, hour, minute, channel, guests, bills, amount) => ({ date, branchCode, hour, minute, channel, guests, bills, amount, total: amount });
   const summary = summarizeVisits([

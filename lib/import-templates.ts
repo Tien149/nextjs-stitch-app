@@ -509,7 +509,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         type: "integer",
         aliases: ["so khach", "luot khach", "so luot khach", "so nguoi", "guest count", "guests", "pax"],
         exactAliases: ["khach", "guest"],
-        note: "Không bắt buộc. Số khách của hoá đơn — lên báo cáo Lượt khách (Báo cáo & BI > DT theo ca & món). Có cột Số hoá đơn thì ghi số khách trên mọi dòng của hoá đơn cũng được, hệ thống chỉ đếm một lần; KHÔNG có cột Số hoá đơn thì chỉ ghi ở MỘT dòng của mỗi hoá đơn, các dòng món khác để trống, nếu không khách bị cộng trùng.",
+        note: "Không bắt buộc. Số khách của hoá đơn — lên báo cáo Lượt khách (Báo cáo & BI > DT theo ca & món). Ghi lặp trên mọi dòng món của hoá đơn cũng được: hệ thống nhận hoá đơn theo Ngày + cột Số hoá đơn (không có cột Số hoá đơn thì theo cột Ghi chú) và chỉ lấy số khách ở DÒNG ĐẦU TIÊN của mỗi hoá đơn.",
       },
       {
         field: "bill_code",
@@ -519,7 +519,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         // Viết có chữ "đ": normalizeHeader bỏ hẳn "đ" ("Hóa đơn" -> "hoa on"), alias "hoa don" không bao giờ khớp.
         aliases: ["mã hoá đơn", "số bill", "mã bill", "số đơn hàng", "mã đơn hàng", "bill no", "invoice no", "order no", "order id"],
         exactAliases: ["hoá đơn", "bill"],
-        note: "Không bắt buộc. Có cột này thì hệ thống đếm được số hoá đơn và mỗi hoá đơn chỉ tính số khách một lần.",
+        note: "Không bắt buộc. Có cột này thì hệ thống đếm được số hoá đơn và mỗi hoá đơn chỉ tính số khách một lần. Không có cột này mà có Số khách thì cột Ghi chú được hiểu là số hoá đơn.",
       },
       {
         field: "channel",
