@@ -13,7 +13,7 @@ import { isTransferDestination } from "@/lib/warehouse-scope";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
 import { goodsGroupKey, normalizeGoodsGroup } from "@/lib/goods-group";
 import { recipeValidity, validityInMonth, vnDay, type RecipeValidity } from "@/lib/recipe-validity";
-import { canPerformMenuAction, canOpenPath, SESSION_KEY, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
+import { canPerformMenuAction, canOpenPath, isAccountingRole, SESSION_KEY, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
 import { ImportLauncher } from "@/components/ImportLauncher";
 import { UnitPicker } from "@/components/UnitPicker";
 import { useMenuTab } from "@/lib/menu-tab-event";
@@ -682,6 +682,8 @@ export default function InventoryPage() {
   const canDelete = user ? canPerformMenuAction(user, href, "delete") : false;
   /** Kế toán: duyệt / trả lại / mở lại phiếu kiểm kê (nhà hàng chỉ Gửi duyệt và sửa). */
   const canApprove = user ? canPerformMenuAction(user, href, "approve") : false;
+  /** Khung Tính giá vốn bình quân tháng: chỉ kế toán thấy (khách 23/11/2026), bếp/BD tick Định lượng thì ẩn. */
+  const canRunMonthlyCost = user ? isAccountingRole(user) : false;
   // Vận hành (không có tab Chế biến, không quyền duyệt) chỉ thấy màn Nhập kiểm kê.
   const canProcessStocktake = canApprove || canSeeExplosion;
   const stocktakeStepView: "count" | "process" = !canProcessStocktake ? "count" : stocktakeStep ?? (canCreate ? "count" : "process");
@@ -4380,7 +4382,7 @@ export default function InventoryPage() {
       )}
 
       {/* Tính giá vốn bình quân cả tháng theo từng kho — thay nút "Tính giá" cũ (13/10/2026). */}
-      {active === "recipes" && recipeView === "cost" && (
+      {active === "recipes" && recipeView === "cost" && canRunMonthlyCost && (
         <MonthlyCostPanel headers={getSessionHeaders} canApply={canApprove} onApplied={() => void loadData()} />
       )}
 

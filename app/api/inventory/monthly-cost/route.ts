@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
+import { requireMenuAccess, requireMenuAction, type ApiAuthResult } from "@/lib/api-auth";
+import { isAccountingRole } from "@/lib/auth-demo";
 import { writeAuditLog } from "@/lib/audit-log";
 import { MonthlyCostError, applyMonthlyCost, monthlyCostStatus, previewMonthlyCost } from "@/lib/inventory-monthly-cost-db";
 import { resyncOpenStocktakes } from "@/lib/stocktake-resync";
@@ -7,12 +8,18 @@ import { resyncOpenStocktakes } from "@/lib/stocktake-resync";
 /**
  * Tính giá vốn bình quân cả tháng theo từng kho — xem lib/inventory-monthly-cost-db.ts.
  * GET trạng thái từng tháng · POST { action: "PREVIEW" | "APPLY", fromPeriod, toPeriod? }.
- * Chạy thử ai mở được Kho cũng xem được; ghi thật là việc của kế toán (quyền Duyệt ở Kho).
+ * Chỉ vai trò kế toán (Admin / "Kế toán...") — khách 23/11/2026: bếp, BD được tick tab Định lượng
+ * nhưng không được xem hay chạy, kể cả Head Chef có quyền Duyệt. Ghi thật cần thêm quyền Duyệt ở Kho.
  */
 const menuHref = "/inventory";
 
+function onlyAccounting(auth: ApiAuthResult): ApiAuthResult {
+  if (!auth.ok || isAccountingRole(auth.session)) return auth;
+  return { ok: false, response: NextResponse.json({ error: "Chỉ kế toán được tính giá vốn tháng" }, { status: 403 }) };
+}
+
 export async function GET(request: Request) {
-  const auth = requireMenuAccess(request, menuHref);
+  const auth = onlyAccounting(requireMenuAccess(request, menuHref));
   if (!auth.ok) return auth.response;
   try {
     const status = await monthlyCostStatus();
@@ -26,7 +33,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   const action = String(body.action || "PREVIEW").toUpperCase();
-  const auth = action === "APPLY" ? requireMenuAction(request, menuHref, "approve") : requireMenuAccess(request, menuHref);
+  const auth = onlyAccounting(action === "APPLY" ? requireMenuAction(request, menuHref, "approve") : requireMenuAccess(request, menuHref));
   if (!auth.ok) return auth.response;
   const fromPeriod = typeof body.fromPeriod === "string" && body.fromPeriod ? body.fromPeriod : null;
   const toPeriod = typeof body.toPeriod === "string" && body.toPeriod ? body.toPeriod : null;

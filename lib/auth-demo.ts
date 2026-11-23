@@ -610,6 +610,19 @@ function sessionActions(subject: ActionSubject) {
   return Array.isArray(subject.actions) && subject.actions.length > 0 ? subject.actions : null;
 }
 
+/**
+ * Vai trò kế toán: Admin hoặc tên vai trò bắt đầu bằng "Kế toán" (Kế toán tổng hợp, Kế toán công
+ * nợ...). Dùng cho phần chỉ kế toán được thấy dù vai trò khác cũng được tick cùng màn — ví dụ khung
+ * Tính giá vốn bình quân tháng ở tab Định lượng (khách 23/11/2026: bếp/BD được tick Định lượng
+ * nhưng không được thấy, kể cả Head Chef có quyền Duyệt).
+ */
+export function isAccountingRole(subject: ActionSubject) {
+  const role = subjectRole(subject);
+  if (!role) return false;
+  if (role === "Admin") return true;
+  return role.normalize("NFC").trim().toLocaleLowerCase("vi").startsWith("kế toán");
+}
+
 export function canPerformAction(subject: ActionSubject, action: AppAction) {
   const configured = sessionActions(subject);
   if (configured) return configured.includes(action);

@@ -12,7 +12,7 @@ import {
   SESSION_KEY,
 } from "@/lib/auth-demo";
 
-type ApiAuthResult =
+export type ApiAuthResult =
   | { ok: true; session: DemoSession }
   | { ok: false; response: NextResponse<{ error: string }> };
 
