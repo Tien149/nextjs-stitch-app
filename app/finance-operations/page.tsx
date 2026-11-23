@@ -485,6 +485,7 @@ export default function FinanceOperationsPage() {
 
   // Bấm mục menu khác của cùng trang (Sổ quỹ -> Trích trước & Phân bổ...): đổi màn tại chỗ.
   useMenuTab(href, (tab) => {
+    if (!tab) return;
     setActive(tab);
     setMessage("");
   });

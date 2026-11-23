@@ -54,7 +54,14 @@ export const MENU_GROUPS: MenuLayoutGroup[] = [
     id: "stock",
     label: "Kho & Mua hàng",
     icon: "inventory_2",
-    sections: [{ links: [{ kind: "menu", href: "/procurement" }, { kind: "menu", href: "/inventory" }] }],
+    sections: [{
+      links: [
+        { kind: "menu", href: "/procurement" },
+        { kind: "menu", href: "/inventory" },
+        // Tab Mặt hàng của Kho tách ra mục riêng (khách 23/11/2026), quyền vẫn là tab "items" của /inventory.
+        { kind: "tab", base: "/inventory", tab: "items", name: "Danh sách mặt hàng", icon: "category" },
+      ],
+    }],
   },
   {
     id: "assets",

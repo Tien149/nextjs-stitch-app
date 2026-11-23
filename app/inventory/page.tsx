@@ -16,6 +16,7 @@ import { recipeValidity, validityInMonth, vnDay, type RecipeValidity } from "@/l
 import { canPerformMenuAction, canOpenPath, SESSION_KEY, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
 import { ImportLauncher } from "@/components/ImportLauncher";
 import { UnitPicker } from "@/components/UnitPicker";
+import { useMenuTab } from "@/lib/menu-tab-event";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
@@ -226,6 +227,41 @@ function buildStocktakeRows(warehouseCode: string, balances: Balance[], fallback
     unitCost: "",
     reason: "",
   }));
+}
+
+/**
+ * Tỷ lệ quy đổi tự điền khi chọn ĐVT mua (khách 23/11/2026: "chỗ này phải lấy được số qua luôn"):
+ * 1) mặt hàng đã có ĐVT này -> đúng tỷ lệ đang khai; 2) mã ĐVT bắt đầu bằng số ("1400GR",
+ * "650GR" — ĐVT mẻ định lượng) -> số đó; 3) tỷ lệ hay dùng nhất của ĐVT này ở các mã cùng ĐVT tồn.
+ * Không ra số nào thì trả null (giữ ô như cũ). Người dùng vẫn sửa tay được.
+ */
+function suggestConversionRate(items: Item[], item: Item | undefined, unitCode: string): number | null {
+  const code = unitCode.trim().toUpperCase();
+  if (!code) return null;
+  const own = item?.unitConversions?.find((unit) => unit.unitCode.trim().toUpperCase() === code);
+  if (own && own.conversionRate > 0) return own.conversionRate;
+  const leading = code.match(/^(\d+(?:[.,]\d+)?)/);
+  if (leading) {
+    const value = Number(leading[1].replace(",", "."));
+    if (Number.isFinite(value) && value >= 1) return value;
+  }
+  const stockUnit = item?.unit.trim().toUpperCase();
+  const counts = new Map<number, number>();
+  for (const other of items) {
+    if (stockUnit && other.unit.trim().toUpperCase() !== stockUnit) continue;
+    for (const unit of other.unitConversions || []) {
+      if (unit.unitCode.trim().toUpperCase() === code && unit.conversionRate > 0) counts.set(unit.conversionRate, (counts.get(unit.conversionRate) || 0) + 1);
+    }
+  }
+  let best: number | null = null;
+  let bestCount = 0;
+  for (const [rate, count] of counts) {
+    if (count > bestCount) {
+      best = rate;
+      bestCount = count;
+    }
+  }
+  return best;
 }
 
 /**
@@ -569,6 +605,8 @@ export default function InventoryPage() {
     return () => window.clearTimeout(timer);
   }, [user]);
 
+  /** Tab nhỏ trong màn Danh sách mặt hàng: danh mục hay ĐVT quy đổi (khách 23/11/2026). */
+  const [itemsView, setItemsView] = useState<"list" | "units">("list");
   // Form Nhập/Xuất dùng chung state: đổi tab thì đưa Loại về đúng chiều của tab đó.
   const switchTab = (tab: string) => {
     setActive(tab);
@@ -579,6 +617,13 @@ export default function InventoryPage() {
       setStockForm((form) => MANUAL_OUTBOUND_TYPES.includes(form.transactionType) ? form : { ...form, transactionType: "XUAT_KHAC" });
     }
   };
+  // Bấm qua lại "Kho & Định lượng" (mục trần) và "Danh sách mặt hàng" (?tab=items) — cùng một trang.
+  useMenuTab("/inventory", (tab) => {
+    const target = tab || visibleTabs.find((item) => item.id !== "items")?.id || "stock";
+    if (target === "items") setItemsView("list");
+    switchTab(target);
+  });
+
   // Link "/inventory?tab=..." (link import cũ chuyển về, 23/11/2026) mở đúng tab; link chứng từ có
   // ?code= thì để khối dưới lo. Tab ngoài quyền thì effect "tab mặc định" ở trên tự đưa về tab được phép.
   useEffect(() => {
@@ -662,6 +707,20 @@ export default function InventoryPage() {
   const selectedStockUnit = stockUnits.find((unit) => unit.unitCode === stockForm.inputUnitCode) || stockUnits[0];
   /** Mặt hàng đang chọn ở form "Cập nhật ĐVT quy đổi", để soi ngay ĐVT mua hiện có của nó. */
   const conversionItem = data.items.find((item) => item.id === conversionForm.itemId);
+  const [unitSearch, setUnitSearch] = useState("");
+  /** Mỗi ĐVT mua (khác ĐVT tồn kho) của mỗi mã một dòng, xếp theo tên hàng. */
+  const conversionRows = useMemo(() => [...data.items]
+    .sort((a, b) => a.name.localeCompare(b.name, "vi") || a.code.localeCompare(b.code))
+    .flatMap((item) => (item.unitConversions || [])
+      .filter((unit) => unit.unitCode.trim().toUpperCase() !== item.unit.trim().toUpperCase())
+      .sort((a, b) => a.unitCode.localeCompare(b.unitCode))
+      .map((unit) => ({ itemId: item.id, code: item.code, name: item.name, unitCode: unit.unitCode, conversionRate: unit.conversionRate, stockUnit: item.unit.toUpperCase() }))), [data.items]);
+  const shownConversionRows = useMemo(() => {
+    const query = unitSearch.trim().toLowerCase();
+    if (!query) return conversionRows;
+    return conversionRows.filter((row) => [row.code, row.name, row.unitCode, row.stockUnit].some((value) => value.toLowerCase().includes(query)));
+  }, [conversionRows, unitSearch]);
+  const conversionRowLimit = useRowLimit(100, unitSearch);
   /** Mọi ĐVT đang có trong danh mục (ĐVT tồn + ĐVT mua) cho ô chọn ĐVT mua. */
   const unitCodeOptions = useMemo(
     () => data.items.flatMap((item) => [item.unit, ...(item.unitConversions || []).map((conversion) => conversion.unitCode)]).filter(Boolean),
@@ -1294,13 +1353,7 @@ export default function InventoryPage() {
   const exportUnitConversions = async () => {
     const XLSX = await import("xlsx");
     const rows: Array<Array<string | number>> = [["Mã hàng", "Tên hàng", "Mã ĐVT quy đổi", "ĐVT tồn kho", "Hệ số quy đổi"]];
-    const sorted = [...filteredItems].sort((a, b) => a.name.localeCompare(b.name, "vi") || a.code.localeCompare(b.code));
-    for (const item of sorted) {
-      const conversions = (item.unitConversions || [])
-        .filter((unit) => unit.unitCode.trim().toUpperCase() !== item.unit.trim().toUpperCase())
-        .sort((a, b) => a.unitCode.localeCompare(b.unitCode));
-      for (const unit of conversions) rows.push([item.code, item.name, unit.unitCode, item.unit.toUpperCase(), unit.conversionRate]);
-    }
+    for (const row of shownConversionRows) rows.push([row.code, row.name, row.unitCode, row.stockUnit, row.conversionRate]);
     const sheet = XLSX.utils.aoa_to_sheet(rows);
     sheet["!cols"] = [{ wch: 16 }, { wch: 40 }, { wch: 22 }, { wch: 12 }, { wch: 14 }];
     const workbook = XLSX.utils.book_new();
@@ -2541,13 +2594,13 @@ export default function InventoryPage() {
   
   return (
     <ModuleFrame
-      title="Kho & Định lượng"
-      subtitle="Giai đoạn 3 • Quản lý kho hàng, tính giá bình quân, công thức định lượng và hủy hàng"
+      title={active === "items" ? "Danh sách mặt hàng" : "Kho & Định lượng"}
+      subtitle={active === "items" ? "Danh mục mặt hàng và ĐVT quy đổi dùng chung cho Kho, Mua hàng và Định lượng" : "Giai đoạn 3 • Quản lý kho hàng, tính giá bình quân, công thức định lượng và hủy hàng"}
       role={user?.role}
       contentClassName="max-w-[1680px]"
     >
-      {/* Operational Summary Cards */}
-      <StickyFilterBar>
+      {/* Operational Summary Cards — màn Danh sách mặt hàng (mục menu riêng) không cần thẻ số & hàng tab Kho. */}
+      {active !== "items" && <StickyFilterBar>
       {/* Điện thoại: thẻ gọn (vận hành dùng điện thoại 100% — khách 24/10/2026), máy tính giữ như cũ. */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4 mb-2 md:mb-4">
         <div className="bg-white border border-slate-200 rounded-xl px-3 py-2 md:p-4 shadow-sm">
@@ -2581,14 +2634,15 @@ export default function InventoryPage() {
       </div>
 
       <div className="flex items-end gap-2">
-        <div className="min-w-0 flex-1"><ModuleTabs active={active} onChange={switchTab} tabs={visibleTabs} /></div>
+        {/* Tab Mặt hàng đã thành mục menu "Danh sách mặt hàng" (khách 23/11/2026). */}
+        <div className="min-w-0 flex-1"><ModuleTabs active={active} onChange={switchTab} tabs={visibleTabs.filter((tab) => tab.id !== "items")} /></div>
         {INVENTORY_IMPORTS[active] && (
           <div className="mb-1 shrink-0">
             <ImportLauncher key={active} tabIds={INVENTORY_IMPORTS[active]} compact onClosed={() => void loadData()} />
           </div>
         )}
       </div>
-      </StickyFilterBar>
+      </StickyFilterBar>}
       {busy > 0 && (
         <div className="fixed inset-0 z-[75] flex items-center justify-center bg-white/50 backdrop-blur-[1px]" aria-busy="true" role="status">
           <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4 text-sm font-bold text-slate-700 shadow-xl">
@@ -2680,6 +2734,145 @@ export default function InventoryPage() {
       )}
 
       {active === "items" && (
+        // Màn "Danh sách mặt hàng" tách khỏi Kho & Định lượng thành mục menu riêng, ĐVT quy đổi là tab
+        // riêng trong màn (khách 23/11/2026).
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-2 border-b border-slate-200">
+          <div className="flex gap-1">
+            {([["list", "Danh mục mặt hàng", "category"], ["units", "ĐVT quy đổi", "swap_horiz"]] as const).map(([id, label, icon]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setItemsView(id)}
+                className={`flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-sm font-bold ${itemsView === id ? "border-blue-600 text-blue-700" : "border-transparent text-slate-500 hover:text-slate-800"}`}
+              >
+                <span className="material-symbols-outlined text-lg">{icon}</span>{label}
+              </button>
+            ))}
+          </div>
+          <div className="mb-1.5">
+            <ImportLauncher key={itemsView} tabIds={INVENTORY_IMPORTS.items} compact onClosed={() => void loadData()} />
+          </div>
+        </div>
+      )}
+
+      {active === "items" && itemsView === "units" && (
+        <div className="grid grid-cols-1 *:min-w-0 gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+          {canCreate ? (
+            <div className="space-y-4">
+            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "UPSERT_UNIT_CONVERSION", ...conversionForm }, conversionSavedMessage()); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+              <h2 className="font-bold text-slate-800">Cập nhật ĐVT quy đổi</h2>
+              {/* Khung này sửa LẺ từng mã. Người cần khai vài trăm mã đứng đúng ở đây và không
+                  có gì chỉ sang đường đi file Excel, nên kết luận hệ thống không cho đẩy file
+                  (phản hồi 19/09/2026). Nói thẳng đường đi ngay tại chỗ. */}
+              {canOpenImports ? (
+                <p className="text-[11px] leading-5 text-slate-500">
+                  Khung này khai lẻ từng mã. Nhiều mã một lúc thì{" "}
+                  bấm <b>Import Excel</b> ở cuối hàng tab (Danh mục mặt hàng hoặc Cập nhật bổ sung mặt hàng)
+                  {" "}— tải file mẫu, điền cột ĐVT mua và Tỷ lệ quy đổi, mã đã có thì cập nhật chứ không tạo trùng.
+                </p>
+              ) : null}
+              <Input label="Mặt hàng">
+                <ItemSelect
+                  items={data.items}
+                  value={conversionForm.itemId}
+                  onChange={(itemId) => {
+                    // Đổi mặt hàng khi đã chọn ĐVT: tính lại tỷ lệ theo mặt hàng mới (mã đó có sẵn ĐVT này thì lấy đúng số đã khai).
+                    const suggested = conversionForm.purchaseUnit ? suggestConversionRate(data.items, data.items.find((item) => item.id === itemId), conversionForm.purchaseUnit) : null;
+                    setConversionForm({ ...conversionForm, itemId, conversionRate: suggested ? String(suggested) : conversionForm.conversionRate });
+                  }}
+                />
+              </Input>
+              {/* Không có ô này thì bấm Lưu xong màn hình y hệt lúc trước: bảng danh mục nằm xa
+                  bên dưới, người khai không biết vừa ghi được gì. */}
+              {conversionItem && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-5 text-slate-600">
+                  <div>ĐVT tồn kho: <b className="text-slate-800">{conversionItem.unit}</b></div>
+                  <div>
+                    ĐVT mua đang có:{" "}
+                    {purchaseConversionLabel(conversionItem)
+                      ? <b className="text-slate-800">{purchaseConversionLabel(conversionItem)}</b>
+                      : <span className="text-amber-700 font-bold">chưa khai</span>}
+                  </div>
+                  {/* Từng ĐVT một dòng kèm nút Xoá để gỡ ĐVT khai nhầm (khách hỏi 28/10/2026). */}
+                  {(conversionItem.unitConversions || []).length > 0 && (
+                    <ul className="mt-1.5 space-y-1 border-t border-slate-200 pt-1.5">
+                      {(conversionItem.unitConversions || []).map((conversion) => (
+                        <li key={conversion.id} className="flex items-center justify-between gap-2">
+                          <span>1 {conversion.unitName || conversion.unitCode} = {qty(conversion.conversionRate)} {conversionItem.unit}</span>
+                          {canDelete && (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 font-bold text-rose-700 hover:bg-rose-50"
+                              onClick={() => void deleteUnitConversion(conversionItem, conversion)}
+                              title="Xoá ĐVT mua này"
+                            >
+                              <span className="material-symbols-outlined text-sm">delete</span>Xoá
+                            </button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-3">
+                {/* Chọn từ danh sách ĐVT đã có, chưa có mới thêm (khách 23/11/2026). Bọc <div> chứ không
+                    phải <label> (Input): bấm vào khoảng trống của khung xổ sẽ kích nút mở/đóng. */}
+                <div className="block min-w-0 text-xs font-bold text-slate-600">
+                  ĐVT mua
+                  <UnitPicker
+                    value={conversionForm.purchaseUnit}
+                    units={unitCodeOptions}
+                    onChange={(purchaseUnit) => {
+                      const suggested = suggestConversionRate(data.items, conversionItem, purchaseUnit);
+                      setConversionForm({ ...conversionForm, purchaseUnit, conversionRate: suggested ? String(suggested) : conversionForm.conversionRate });
+                    }}
+                  />
+                </div>
+                <Input label="Tỷ lệ quy đổi">
+                  <input type="number" min="1" step="0.001" className="control" value={conversionForm.conversionRate} onChange={(e) => setConversionForm({ ...conversionForm, conversionRate: e.target.value })} />
+                </Input>
+              </div>
+              <Input label="Ghi chú">
+                <input className="control" value={conversionForm.note} onChange={(e) => setConversionForm({ ...conversionForm, note: e.target.value })} />
+              </Input>
+              <button className="primary-button w-full">
+                <span className="material-symbols-outlined text-lg">sync_alt</span>Lưu quy đổi
+              </button>
+            </form>
+            </div>
+          ) : <div className="hidden lg:block" />}
+          <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden" data-export-root>
+            <div className="flex flex-wrap items-end justify-between gap-3 px-5 py-4">
+              <div>
+                <h2 className="font-bold text-slate-800">ĐVT quy đổi</h2>
+                <p className="text-[11px] text-slate-500">Mỗi ĐVT mua một dòng: 1 ĐVT mua = hệ số × ĐVT tồn kho. {conversionRows.length} dòng / {new Set(conversionRows.map((row) => row.itemId)).size} mã.</p>
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                <input className="control !w-64" placeholder="Tìm mã, tên hàng hoặc ĐVT..." value={unitSearch} onChange={(e) => setUnitSearch(e.target.value)} />
+                <button type="button" className="secondary-button" onClick={() => void exportUnitConversions()} title="Mỗi ĐVT quy đổi một dòng, theo ô tìm đang gõ">
+                  <span className="material-symbols-outlined text-lg">download</span>
+                  Xuất Excel ({shownConversionRows.length} dòng)
+                </button>
+              </div>
+            </div>
+            <Table headers={[{ label: "Mã hàng" }, { label: "Tên hàng" }, { label: "ĐVT mua" }, { label: "Hệ số", align: "right" }, { label: "ĐVT tồn kho" }]}>
+              {shownConversionRows.slice(0, conversionRowLimit.limit).map((row) => (
+                <tr key={`${row.itemId}-${row.unitCode}`} className="border-t border-slate-100 hover:bg-slate-50">
+                  <Cell>{row.code}</Cell>
+                  <Cell>{row.name}</Cell>
+                  <Cell><b>{row.unitCode}</b></Cell>
+                  <Cell right>{qty(row.conversionRate)}</Cell>
+                  <Cell>{row.stockUnit}</Cell>
+                </tr>
+              ))}
+            </Table>
+            <ShowMoreRows shown={Math.min(conversionRowLimit.limit, shownConversionRows.length)} total={shownConversionRows.length} step={100} onMore={conversionRowLimit.more} onAll={conversionRowLimit.all} unit="dòng" />
+          </div>
+        </div>
+      )}
+
+      {active === "items" && itemsView === "list" && (
         <div className="grid grid-cols-1 *:min-w-0 gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
           {canCreate && (
             <div className="space-y-4">
@@ -2766,72 +2959,6 @@ export default function InventoryPage() {
                 <span className="material-symbols-outlined text-lg">add</span>Thêm mặt hàng
               </button>
             </form>
-            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "UPSERT_UNIT_CONVERSION", ...conversionForm }, conversionSavedMessage()); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
-              <h2 className="font-bold text-slate-800">Cập nhật ĐVT quy đổi</h2>
-              {/* Khung này sửa LẺ từng mã. Người cần khai vài trăm mã đứng đúng ở đây và không
-                  có gì chỉ sang đường đi file Excel, nên kết luận hệ thống không cho đẩy file
-                  (phản hồi 19/09/2026). Nói thẳng đường đi ngay tại chỗ. */}
-              {canOpenImports ? (
-                <p className="text-[11px] leading-5 text-slate-500">
-                  Khung này khai lẻ từng mã. Nhiều mã một lúc thì{" "}
-                  bấm <b>Import Excel</b> ở cuối hàng tab (Danh mục mặt hàng hoặc Cập nhật bổ sung mặt hàng)
-                  {" "}— tải file mẫu, điền cột ĐVT mua và Tỷ lệ quy đổi, mã đã có thì cập nhật chứ không tạo trùng.
-                </p>
-              ) : null}
-              <Input label="Mặt hàng">
-                <ItemSelect items={data.items} value={conversionForm.itemId} onChange={(itemId) => setConversionForm({ ...conversionForm, itemId })} />
-              </Input>
-              {/* Không có ô này thì bấm Lưu xong màn hình y hệt lúc trước: bảng danh mục nằm xa
-                  bên dưới, người khai không biết vừa ghi được gì. */}
-              {conversionItem && (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-5 text-slate-600">
-                  <div>ĐVT tồn kho: <b className="text-slate-800">{conversionItem.unit}</b></div>
-                  <div>
-                    ĐVT mua đang có:{" "}
-                    {purchaseConversionLabel(conversionItem)
-                      ? <b className="text-slate-800">{purchaseConversionLabel(conversionItem)}</b>
-                      : <span className="text-amber-700 font-bold">chưa khai</span>}
-                  </div>
-                  {/* Từng ĐVT một dòng kèm nút Xoá để gỡ ĐVT khai nhầm (khách hỏi 28/10/2026). */}
-                  {(conversionItem.unitConversions || []).length > 0 && (
-                    <ul className="mt-1.5 space-y-1 border-t border-slate-200 pt-1.5">
-                      {(conversionItem.unitConversions || []).map((conversion) => (
-                        <li key={conversion.id} className="flex items-center justify-between gap-2">
-                          <span>1 {conversion.unitName || conversion.unitCode} = {qty(conversion.conversionRate)} {conversionItem.unit}</span>
-                          {canDelete && (
-                            <button
-                              type="button"
-                              className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 font-bold text-rose-700 hover:bg-rose-50"
-                              onClick={() => void deleteUnitConversion(conversionItem, conversion)}
-                              title="Xoá ĐVT mua này"
-                            >
-                              <span className="material-symbols-outlined text-sm">delete</span>Xoá
-                            </button>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
-              <div className="grid grid-cols-2 gap-3">
-                {/* Chọn từ danh sách ĐVT đã có, chưa có mới thêm (khách 23/11/2026). Bọc <div> chứ không
-                    phải <label> (Input): bấm vào khoảng trống của khung xổ sẽ kích nút mở/đóng. */}
-                <div className="block min-w-0 text-xs font-bold text-slate-600">
-                  ĐVT mua
-                  <UnitPicker value={conversionForm.purchaseUnit} units={unitCodeOptions} onChange={(purchaseUnit) => setConversionForm({ ...conversionForm, purchaseUnit })} />
-                </div>
-                <Input label="Tỷ lệ quy đổi">
-                  <input type="number" min="1" step="0.001" className="control" value={conversionForm.conversionRate} onChange={(e) => setConversionForm({ ...conversionForm, conversionRate: e.target.value })} />
-                </Input>
-              </div>
-              <Input label="Ghi chú">
-                <input className="control" value={conversionForm.note} onChange={(e) => setConversionForm({ ...conversionForm, note: e.target.value })} />
-              </Input>
-              <button className="primary-button w-full">
-                <span className="material-symbols-outlined text-lg">sync_alt</span>Lưu quy đổi
-              </button>
-            </form>
             </div>
           )}
           
@@ -2891,12 +3018,6 @@ export default function InventoryPage() {
                 <> · <span className="text-rose-700 font-bold">{inactiveItemCount} mã đang Ngưng</span> — mã Ngưng bị chặn ở mọi file import BOM / nhập xuất kho.</>
               )}
             </p>
-            <div className="px-5 pb-3">
-              <button type="button" className="secondary-button" onClick={() => void exportUnitConversions()} title="Mỗi ĐVT quy đổi một dòng, theo bộ lọc đang xem">
-                <span className="material-symbols-outlined text-lg">swap_horiz</span>
-                Xuất ĐVT quy đổi ({filteredItems.length} mã)
-              </button>
-            </div>
             {canEditItem && inactiveFilteredItems.length > 0 && (
               <div className="px-5 pb-3">
                 <button

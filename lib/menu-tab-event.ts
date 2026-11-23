@@ -11,6 +11,7 @@ export function announceMenuTab(path: string, tab: string) {
   window.dispatchEvent(new CustomEvent(MENU_TAB_EVENT, { detail: { path, tab } }));
 }
 
+/** `onTab("")` = bấm mục trần của trang (không kèm ?tab=). */
 export function useMenuTab(path: string, onTab: (tab: string) => void) {
   const handler = useRef(onTab);
   useEffect(() => {
@@ -19,7 +20,7 @@ export function useMenuTab(path: string, onTab: (tab: string) => void) {
   useEffect(() => {
     const listener = (event: Event) => {
       const detail = (event as CustomEvent<{ path?: string; tab?: string }>).detail;
-      if (detail?.path === path && detail.tab) handler.current(detail.tab);
+      if (detail?.path === path) handler.current(detail.tab || "");
     };
     window.addEventListener(MENU_TAB_EVENT, listener);
     return () => window.removeEventListener(MENU_TAB_EVENT, listener);

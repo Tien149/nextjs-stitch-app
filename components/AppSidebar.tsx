@@ -120,8 +120,8 @@ export function AppSidebar({ onNavigate, inDrawer = false }: { onNavigate?: () =
       onClick={() => {
         const { path, query } = splitHref(link.href);
         setSearch(query ? `?${query}` : "");
-        const tab = new URLSearchParams(query).get("tab");
-        if (tab && path === pathname) announceMenuTab(path, tab);
+        // Cùng trang: báo trang đổi màn ("" = mục trần, trang tự về tab mặc định).
+        if (path === pathname) announceMenuTab(path, new URLSearchParams(query).get("tab") || "");
         onNavigate?.();
       }}
       className={`w-full flex items-center ${nested ? "pl-9 pr-4 py-2" : "px-6 py-3"} text-left transition-all active:scale-[0.98] duration-150 ${
