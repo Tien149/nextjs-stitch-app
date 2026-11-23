@@ -11,6 +11,7 @@ import { getPayrollBudgetReport, getPnlHistoryEditor, getPnlMatrix, getRevenueTr
 import { headcountToStored, isPnlHistoryChannelMetric, isPnlHistoryHeadcountMetric, isPnlHistoryPeriod, PNL_HISTORY_HEADCOUNT_PREFIX, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX } from "@/lib/pnl-history";
 import { getPnlNotes, savePnlNote, toPnlNoteKind } from "@/lib/pnl-note";
 import { getSalesAnalysis, saveSalesItemNote, saveSalesShiftConfig } from "@/lib/sales-analysis-server";
+import { getDailyPnl } from "@/lib/daily-pnl-server";
 import { apiError, assertPeriodOpen, businessError, cleanText, findClosedPeriod, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { createCashierCashMatcher, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -1299,6 +1300,7 @@ export async function GET(request: Request) {
     }
     if (type === "revenue-settlement") return NextResponse.json(await getRevenueSettlementReport(period, branchCode));
     if (type === "sales-analysis") return NextResponse.json(await getSalesAnalysis(period, branchCode));
+    if (type === "daily-pnl") return NextResponse.json(await getDailyPnl(period, branchCode));
     if (type === "revenue-ledger") {
       return NextResponse.json(await getRevenueLedger(
         period,

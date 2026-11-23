@@ -386,6 +386,7 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
     { id: "revenue-settlement", label: "Tiền về đủ chưa" },
     { id: "activity", label: "Kỳ & Log" },
     { id: "pnl", label: "Hoạch định P&L" },
+    { id: "daily-pnl", label: "Báo cáo theo ngày" },
     { id: "yoy", label: "Biến động YoY" },
     { id: "cashflow", label: "Dự báo dòng tiền" },
     { id: "balance", label: "Bảng cân đối" },
@@ -477,7 +478,7 @@ export function allowedSubTabs(session: DemoSession | null | undefined, path: st
 /** Biểu tượng hiển thị của từng tab, tách khỏi khai báo quyền để giữ moduleTabs gọn. */
 export const moduleTabIcons: Record<string, string> = {
   dashboard: "dashboard", operations: "fact_check", budget: "price_check", "payroll-budget": "groups", "daily-cash": "receipt", "cash-source": "savings", "revenue-ledger": "point_of_sale", "sales-analysis": "restaurant_menu", "revenue-settlement": "rule",
-  activity: "history", pnl: "finance", yoy: "query_stats", cashflow: "timeline", balance: "account_balance",
+  activity: "history", pnl: "finance", "daily-pnl": "calendar_view_day", yoy: "query_stats", cashflow: "timeline", balance: "account_balance",
   cashbook: "account_balance_wallet", accruals: "calendar_month", expenses: "payments", closing: "lock",
   requests: "assignment", quotes: "compare_arrows", "price-lists": "sell", orders: "local_shipping", templates: "playlist_add_check",
   stock: "inventory", transactions: "swap_horiz", inbound: "download", outbound: "upload", transfer: "sync_alt", items: "category", recipes: "menu_book",
@@ -540,7 +541,8 @@ const MODULE_TAB_FAMILIES: Record<string, Record<string, string[]>> = {
   "/procurement": { quotes: ["price-lists"] },
   // Báo cáo Doanh thu theo ca & món (20/11/2026) đọc cùng dòng import với Sổ doanh thu — ai xem
   // được Sổ doanh thu thì xem được báo cáo này, khỏi phải tick lại cho từng vai trò.
-  "/reports": { "revenue-ledger": ["sales-analysis"] },
+  // Báo cáo theo ngày (23/11/2026) đọc số P&L tháng — ai xem được Hoạch định P&L thì xem được.
+  "/reports": { "revenue-ledger": ["sales-analysis"], pnl: ["daily-pnl"] },
 };
 
 export function allowedMenuTabs(session: DemoSession | null | undefined, path: string) {
