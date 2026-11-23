@@ -9,7 +9,7 @@ const NME = [{ name: "Sáng", from: "10:00" }, { name: "Tối", from: "15:00" }]
 const ASA = [{ name: "Sáng", from: "00:00" }, { name: "Trưa", from: "10:30" }, { name: "Tối", from: "15:00" }];
 const configs = { NME, ASA };
 const names = orderedShiftNames(configs, ["ASA", "NME"]);
-const cell = (code, kind, hour, quantity, amount, extra = {}) => ({ code, kind, branchCode: "ASA", hour, minute: null, quantity, amount, total: amount, rows: 1, ...extra });
+const cell = (code, kind, hour, quantity, amount, extra = {}) => ({ code, kind, branchCode: "ASA", hour, minute: null, quantity, amount, rows: 1, ...extra });
 
 test("ca theo từng nhà hàng: ASA Trưa từ 10:30, NME chỉ Sáng/Tối; trước ca đầu tính vào ca cuối", () => {
   assert.equal(shiftNameAt(ASA, 10, 15), "Sáng");
@@ -93,7 +93,7 @@ test("số khách theo Ngày + Ghi chú (file ASA): lấy số khách của DÒN
 });
 
 test("lượt khách: chia ca theo cửa hàng, DT/khách bỏ kênh không ghi khách (Grab)", () => {
-  const v = (date, branchCode, hour, minute, channel, guests, bills, amount) => ({ date, branchCode, hour, minute, channel, guests, bills, amount, total: amount });
+  const v = (date, branchCode, hour, minute, channel, guests, bills, amount) => ({ date, branchCode, hour, minute, channel, guests, bills, amount });
   const summary = summarizeVisits([
     v("2026-11-01", "ASA", 10, 30, "Tại chỗ", 10, 4, 2_000_000),
     v("2026-11-01", "NME", 19, 0, "Tại chỗ", 30, 10, 9_000_000),

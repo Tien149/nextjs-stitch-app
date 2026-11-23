@@ -92,13 +92,13 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
     prisma.revenueImportRow.groupBy({
       by: ["saleDate", "branchCode", "saleHour", "saleMinute", "channel"],
       where: scope,
-      _sum: { guestCount: true, orderCount: true, grossAmount: true, discountAmount: true, netAmount: true },
+      _sum: { guestCount: true, orderCount: true, netAmount: true },
       _count: { guestCount: true },
     }),
     prisma.revenueImportRow.groupBy({
       by: ["productCode", "revenueSource", "branchCode", "saleHour", "saleMinute"],
       where: scope,
-      _sum: { productQuantity: true, grossAmount: true, discountAmount: true, netAmount: true },
+      _sum: { productQuantity: true, netAmount: true },
       _count: { _all: true },
     }),
   ]);
@@ -143,8 +143,6 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
       || kindOfText(item?.revenueGroup)
       || (item && isSurchargeItemText(item.name) ? "SERVICE" : null)
       || "OTHER";
-    const gross = group._sum.grossAmount || 0;
-    const discount = group._sum.discountAmount || 0;
     return {
       code,
       kind,
@@ -152,8 +150,8 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
       hour: group.saleHour ?? null,
       minute: group.saleHour === null ? null : group.saleMinute ?? null,
       quantity: group._sum.productQuantity || 0,
-      amount: gross - discount,
-      total: group._sum.netAmount || 0,
+      // Doanh thu sau thuế (gồm SVC + thuế) — khách chốt 23/11/2026, cùng số Doanh thu P&L.
+      amount: group._sum.netAmount || 0,
       rows: group._count._all,
     };
   });
@@ -175,11 +173,10 @@ export async function getSalesAnalysis(period: string, branchCode: string): Prom
     const hour = group.saleHour ?? null;
     const minute = hour === null ? null : group.saleMinute ?? null;
     const key = `${date}|${group.branchCode}|${hour ?? ""}|${minute ?? ""}|${channel}`;
-    const current = visitMap.get(key) || { date, branchCode: group.branchCode, hour, minute, channel, guests: 0, bills: 0, amount: 0, total: 0 };
+    const current = visitMap.get(key) || { date, branchCode: group.branchCode, hour, minute, channel, guests: 0, bills: 0, amount: 0 };
     current.guests += group._sum.guestCount || 0;
     current.bills += group._sum.orderCount || 0;
-    current.amount += (group._sum.grossAmount || 0) - (group._sum.discountAmount || 0);
-    current.total += group._sum.netAmount || 0;
+    current.amount += group._sum.netAmount || 0;
     visitMap.set(key, current);
   }
   const [shiftConfigs, noteRows] = await Promise.all([

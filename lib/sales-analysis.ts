@@ -9,11 +9,9 @@
  * `lib/sales-analysis-server.ts`. Phần chia ca nằm ở đây, chạy được cả phía trình duyệt: sửa ca
  * xong là tính lại ngay. File thuần (không Prisma) để test bằng node.
  *
- * Hai con số tiền:
- * - `amount` = doanh thu bán món = thành tiền − giảm giá, CHƯA gồm SVC và thuế GTGT. Dùng để
- *   xếp hạng món (SVC/thuế chia theo hoá đơn, không nói gì về món).
- * - `total` = cột Doanh thu (netAmount) của dòng import = món − giảm giá + SVC + thuế, cùng số
- *   với dòng Doanh thu của P&L.
+ * Tiền: `amount` = cột Doanh thu (netAmount) của dòng import = món − giảm giá + SVC + thuế, tức
+ * doanh thu SAU THUẾ, cùng số với dòng Doanh thu của P&L. Khách chốt 23/11/2026 dùng số này cho
+ * mọi bảng của tab (trước đó tab xếp hạng theo thành tiền − giảm giá, chưa SVC + thuế).
  */
 
 export type SalesKind = "FOOD" | "DRINK" | "SERVICE" | "OTHER";
@@ -142,18 +140,17 @@ export type SalesCell = {
   /** Phút bán (0–59); null = dòng import trước khi lưu phút (tính như phút 00). */
   minute: number | null;
   quantity: number;
+  /** Doanh thu sau thuế (cột Doanh thu của file, gồm SVC + thuế). */
   amount: number;
-  total: number;
   /** Số dòng import gom vào ô — để báo bao nhiêu dòng không có giờ. */
   rows: number;
 };
 
-export type SalesMoney = { quantity: number; amount: number; total: number; rows: number };
-const emptyMoney = (): SalesMoney => ({ quantity: 0, amount: 0, total: 0, rows: 0 });
-function addMoney(target: SalesMoney, cell: Pick<SalesCell, "quantity" | "amount" | "total" | "rows">) {
+export type SalesMoney = { quantity: number; amount: number; rows: number };
+const emptyMoney = (): SalesMoney => ({ quantity: 0, amount: 0, rows: 0 });
+function addMoney(target: SalesMoney, cell: Pick<SalesCell, "quantity" | "amount" | "rows">) {
   target.quantity += cell.quantity;
   target.amount += cell.amount;
-  target.total += cell.total;
   target.rows += cell.rows;
 }
 
@@ -244,7 +241,7 @@ export function rankSalesItems(items: SalesItemSummary[], options: { by: RankBy;
 
 /**
  * Lượt khách (khách 20/11/2026): ô gom theo ngày × cửa hàng × giờ:phút × kênh bán. `guests` = cột
- * Số khách, `bills` = số hoá đơn (chỉ có khi file có cột Số hoá đơn), `amount` = doanh thu món.
+ * Số khách, `bills` = số hoá đơn (chỉ có khi file có cột Số hoá đơn), `amount` = doanh thu sau thuế.
  */
 export type VisitCell = {
   date: string;
@@ -255,10 +252,9 @@ export type VisitCell = {
   guests: number;
   bills: number;
   amount: number;
-  total: number;
 };
-export type VisitMoney = { guests: number; bills: number; amount: number; total: number; /** DT món của kênh có khách — mẫu số DT/khách. */ guestAmount: number };
-const emptyVisit = (): VisitMoney => ({ guests: 0, bills: 0, amount: 0, total: 0, guestAmount: 0 });
+export type VisitMoney = { guests: number; bills: number; amount: number; /** Doanh thu của kênh có khách — tử số DT/khách. */ guestAmount: number };
+const emptyVisit = (): VisitMoney => ({ guests: 0, bills: 0, amount: 0, guestAmount: 0 });
 
 export type VisitSummary = {
   total: VisitMoney;
@@ -280,7 +276,6 @@ export function summarizeVisits(cells: VisitCell[], configs: ShiftConfigs, shift
     target.guests += cell.guests;
     target.bills += cell.bills;
     target.amount += cell.amount;
-    target.total += cell.total;
     if (guestChannels.has(cell.channel)) target.guestAmount += cell.amount;
   };
   const makeShiftTable = () => {

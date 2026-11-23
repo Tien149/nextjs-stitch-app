@@ -17,7 +17,7 @@ import { filterCashierCashSources, filterMoneySources, moneySourceDebugLabel, mo
 import CopyableText from "@/components/CopyableText";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { toFileSlug } from "@/lib/export-table-excel";
-import StickyFilterBar from "@/components/StickyFilterBar";
+import StickyFilterBar, { StickyFilterSlot } from "@/components/StickyFilterBar";
 import { shiftLabel, shiftLabels } from "@/lib/shifts";
 import { cashDepositRoundingExpense, roundCashDepositAmount } from "@/lib/cash-deposit";
 import { buildDailyCashSummaryRows } from "@/lib/daily-cash-receipts";
@@ -921,11 +921,15 @@ export default function ReportsPage() {
         </button>
       </div>
       <div className="mb-3" />
-      <ModuleTabs
-        active={active}
-        onChange={handleTabChange}
-        tabs={visibleTabs}
-      />
+      {/* Bọc chung để thanh tab vẫn sát đáy khi chỗ trống rỗng; tab DT theo ca & món gửi hàng lọc Nhóm doanh thu vào chỗ trống. */}
+      <div className="[&>:first-child]:mb-0">
+        <ModuleTabs
+          active={active}
+          onChange={handleTabChange}
+          tabs={visibleTabs}
+        />
+        <StickyFilterSlot />
+      </div>
       </StickyFilterBar>
 
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
