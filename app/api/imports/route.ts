@@ -242,7 +242,7 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
     // Dòng Grab có phí app, dòng quẹt thẻ có phí cà thẻ: hai cột phí là CHI PHÍ (tiền sàn giữ
     // lại), khác hẳn cột SVC là doanh thu — mẫu phải cho thấy rõ để khách khỏi nhập lẫn.
     return [
-      { sale_date: new Date("2026-08-01T00:00:00Z"), sale_hour: "10:15", branch_code: "NME", product_code: "BBQ010", product_name: "Xúc Xích Nướng Củi (2Pcs)", product_quantity: 1, unit: "PHAN", guest_count: 2, channel: "PNL_DT_TAICHO", revenue_source: "REV_FOOD", payment_method: "FDS - Quẹt Thẻ Vietinbank", gross_amount: 150000, discount_amount: 0, fee_amount: 7500, card_fee_amount: 2600, app_fee_amount: 0, vat_amount: 12600, net_amount: 170100, note: "HD-0001" },
+      { sale_date: new Date("2026-08-01T00:00:00Z"), sale_hour: "10:15", branch_code: "NME", product_code: "BBQ010", product_name: "Xúc Xích Nướng Củi (2Pcs)", product_quantity: 1, unit: "PHAN", guest_count: 2, channel: "PNL_DT_TAICHO", revenue_source: "REV_BEP", payment_method: "FDS - Quẹt Thẻ Vietinbank", gross_amount: 150000, discount_amount: 0, fee_amount: 7500, card_fee_amount: 2600, app_fee_amount: 0, vat_amount: 12600, net_amount: 170100, note: "HD-0001" },
       { sale_date: new Date("2026-08-01T00:00:00Z"), sale_hour: "11:40", branch_code: "NME", product_code: "CF012", product_name: "Cà Phê Latte", product_quantity: 2, unit: "LY", guest_count: 1, channel: "PNL_DT_GRAB", revenue_source: "REV_BAR", payment_method: "FDSGRABFOOD", gross_amount: 110000, discount_amount: 0, fee_amount: 5500, card_fee_amount: 0, app_fee_amount: 27500, vat_amount: 9240, net_amount: 124740, note: "HD-0002" },
     ];
   }

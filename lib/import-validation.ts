@@ -12,6 +12,7 @@ import { resolveOpeningAsset } from "@/lib/opening-asset";
 import { branchGoLiveDays, isBeforeGoLive } from "@/lib/wallet-go-live";
 import { normalizeCashflowCategoryType, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
+import { REVENUE_COMPONENT_CATEGORIES } from "@/lib/revenue-pos-journal";
 import { loadItemRevenueGroupResolver, loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, REVENUE_PNL_GROUP_FALLBACKS, revenueKindFromText, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { bankStatementSuspectKey, groupBankStatementRows, type BankStatementImportGroup } from "@/lib/bank-statement-import";
 import { isPeriodLocked } from "@/lib/phase3";
@@ -1318,7 +1319,7 @@ export async function validateImportResult(
     throw new Error(`Loại danh mục yêu cầu [${expectedMasterType}] không được hỗ trợ import`);
   }
   const masterItems = await prisma.masterDataItem.findMany({
-    where: { type: { in: ["BRANCH", "MONEY_SOURCE", "PARTNER", "PNL_ITEM", "REVENUE_EXPENSE_CATEGORY", "WAREHOUSE", "INVENTORY_ITEM_GROUP", "ASSET_GROUP", "DEPARTMENT"] } },
+    where: { type: { in: ["BRANCH", "MONEY_SOURCE", "PARTNER", "PNL_ITEM", "PNL_GROUP", "REVENUE_EXPENSE_CATEGORY", "WAREHOUSE", "INVENTORY_ITEM_GROUP", "ASSET_GROUP", "DEPARTMENT"] } },
     select: { type: true, code: true, name: true, group: true, partnerType: true, branch: true, status: true, accountNo: true, settlementBankCode: true },
   });
   const inventoryItems = ["OPENING_BALANCE", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE", "REVENUE_POS", "INVENTORY_ITEM", "PRODUCTION", "WASTE"].includes(importType)
@@ -1370,8 +1371,8 @@ export async function validateImportResult(
    * File POS thô (REVENUE_POS_RAW_V1): Hình thức bán, Nhóm doanh thu, Đơn vị tính phải ghi đúng
    * MÃ đã setup trong hệ thống, không nhận tên ("Tại chỗ", "Grab", "Phần") — khách chốt 23/11/2026.
    * - Hình thức bán: mã Hạng mục P&L nhóm Nguồn doanh thu (PNL_DT_TAICHO, PNL_DT_GRAB...).
-   * - Nhóm doanh thu: mã nhóm Bếp / Bar / Phụ thu (danh mục Thu/Chi nhóm doanh thu đang hoạt
-   *   động + mã chuẩn REV_FOOD / REV_BAR / REV_SERVICE mà mặt hàng đang gắn).
+   * - Nhóm doanh thu: mã Nhóm hạng mục P&L nhóm Nguồn doanh thu khách setup (REV_BEP, REV_BAR,
+   *   REV_COMBO, REV_PHU), trừ REV_SVC / REV_VAT.
    * - Đơn vị tính: ĐVT tồn hoặc ĐVT quy đổi của chính mã hàng; mã chưa có thì phải là ĐVT đã
    *   dùng ở danh mục mặt hàng.
    */
@@ -1379,15 +1380,22 @@ export async function validateImportResult(
   const channelCodes = new Set(strictRevenueCodes
     ? masterItems.filter((item) => item.type === "PNL_ITEM" && text(item.group).toUpperCase() === "REVENUE_SOURCE" && item.status === "ACTIVE").map((item) => item.code.toUpperCase())
     : []);
-  const revenueGroupCodes = new Set(strictRevenueCodes
-    ? [
+  // Nhóm doanh thu khách setup ở Nhóm hạng mục P&L nhóm Nguồn doanh thu (REV_BEP, REV_BAR, REV_COMBO,
+  // REV_PHU — khách 23/11/2026: "REV_FOOD không có tạo mã, nó đang REV_BEP"). Bỏ REV_SVC / REV_VAT
+  // vì đó là cột SVC / Thuế riêng trên file. Chưa setup nhóm nào thì mới dùng bộ mã cũ.
+  const componentCodes = new Set(REVENUE_COMPONENT_CATEGORIES.map((component) => component.code.toUpperCase()));
+  const setupRevenueGroups = masterItems
+    .filter((item) => item.type === "PNL_GROUP" && text(item.group).toUpperCase() === "REVENUE_SOURCE" && item.status === "ACTIVE" && !componentCodes.has(item.code.toUpperCase()))
+    .map((item) => item.code.toUpperCase());
+  const revenueGroupCodes = new Set(!strictRevenueCodes ? [] : setupRevenueGroups.length > 0
+    ? setupRevenueGroups
+    : [
         ...Object.values(REVENUE_PNL_GROUP_FALLBACKS).map((group) => group.code.toUpperCase()),
         ...masterItems
           .filter((item) => item.type === "REVENUE_EXPENSE_CATEGORY" && text(item.group).toUpperCase() === "REVENUE_SOURCE" && item.status === "ACTIVE"
             && revenueKindFromText(`${item.code} ${item.name}`))
           .map((item) => item.code.toUpperCase()),
-      ]
-    : []);
+      ]);
   const knownUnits = new Set(strictRevenueCodes
     ? inventoryItems.flatMap((item) => [item.unit, ...item.unitConversions.map((conversion) => conversion.unitCode)]).map((unit) => text(unit).toUpperCase()).filter(Boolean)
     : []);

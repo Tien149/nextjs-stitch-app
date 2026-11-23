@@ -107,7 +107,8 @@ export function revenueKindFromText(value: unknown): RevenueKind | null {
   if (food) return "FOOD";
   if (drink) return "DRINK";
   // "Dịch vụ", "Phụ thu", "Service charge"... — chỉ khi không dính chữ ăn/uống nào.
-  if (/\bDICH VU\b|\bPHU THU\b|SERVICE|SURCHARGE/.test(text)) return "SERVICE";
+  // "REV_PHU" là mã nhóm "DT Phụ Thu" khách setup ở Nhóm hạng mục P&L (23/11/2026).
+  if (/\bDICH VU\b|\bPHU THU\b|\bREV PHU\b|SERVICE|SURCHARGE/.test(text)) return "SERVICE";
   return null;
 }
 

@@ -542,7 +542,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         required: true,
         type: "text",
         aliases: ["nhom doanh thu", "nhom dt", "loai mon", "revenue group", "revenue source"],
-        note: "Bắt buộc, ghi MÃ nhóm doanh thu: REV_FOOD (bếp), REV_BAR (bar), REV_SERVICE (phụ thu) hoặc mã nhóm doanh thu khai ở danh mục Thu/Chi — không nhận chữ ĐỒ ĂN / ĐỒ UỐNG",
+        note: "Bắt buộc, ghi MÃ Nhóm hạng mục P&L nhóm Nguồn doanh thu đã setup: REV_BEP (DT Bếp), REV_BAR (DT Bar), REV_COMBO (DT Combo), REV_PHU (DT Phụ thu) — không nhận chữ ĐỒ ĂN / ĐỒ UỐNG",
       },
       {
         // Trên file của khách, cột này ghi MÃ hoặc TÊN nguồn tiền trong danh mục
