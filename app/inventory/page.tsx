@@ -15,6 +15,7 @@ import { goodsGroupKey, normalizeGoodsGroup } from "@/lib/goods-group";
 import { recipeValidity, validityInMonth, vnDay, type RecipeValidity } from "@/lib/recipe-validity";
 import { canPerformMenuAction, canOpenPath, SESSION_KEY, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
 import { ImportLauncher } from "@/components/ImportLauncher";
+import { UnitPicker } from "@/components/UnitPicker";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
@@ -447,7 +448,7 @@ export default function InventoryPage() {
     },
   );
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
-  const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
+  const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "", conversionRate: "", note: "" });
   const [supplierPrices, setSupplierPrices] = useState<{ key: string; prices: Array<{ itemId: string; unitCode: string; unitPrice: number; vatRate: number | null; stockUnitPrice: number; priceListCode: string; effectiveFrom: string; effectiveTo: string | null }> }>({ key: "", prices: [] });
   const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", discountRate: "", discountAmount: "", purchaseCost: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "", lineNote: "", allocationMonths: "", pnlItemCode: "", transactionDate: today(), transactionTime: "" });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
@@ -661,6 +662,11 @@ export default function InventoryPage() {
   const selectedStockUnit = stockUnits.find((unit) => unit.unitCode === stockForm.inputUnitCode) || stockUnits[0];
   /** Mặt hàng đang chọn ở form "Cập nhật ĐVT quy đổi", để soi ngay ĐVT mua hiện có của nó. */
   const conversionItem = data.items.find((item) => item.id === conversionForm.itemId);
+  /** Mọi ĐVT đang có trong danh mục (ĐVT tồn + ĐVT mua) cho ô chọn ĐVT mua. */
+  const unitCodeOptions = useMemo(
+    () => data.items.flatMap((item) => [item.unit, ...(item.unitConversions || []).map((conversion) => conversion.unitCode)]).filter(Boolean),
+    [data.items],
+  );
   /**
    * Câu báo sau khi lưu quy đổi. Nói thẳng vừa ghi được gì, vì khai ĐVT mua TRÙNG ĐVT tồn kho
    * thì bảng danh mục không đổi một chữ nào (không có gì để quy đổi) — người khai tưởng nút
@@ -2809,9 +2815,12 @@ export default function InventoryPage() {
                 </div>
               )}
               <div className="grid grid-cols-2 gap-3">
-                <Input label="ĐVT mua">
-                  <input className="control" value={conversionForm.purchaseUnit} onChange={(e) => setConversionForm({ ...conversionForm, purchaseUnit: e.target.value })} />
-                </Input>
+                {/* Chọn từ danh sách ĐVT đã có, chưa có mới thêm (khách 23/11/2026). Bọc <div> chứ không
+                    phải <label> (Input): bấm vào khoảng trống của khung xổ sẽ kích nút mở/đóng. */}
+                <div className="block min-w-0 text-xs font-bold text-slate-600">
+                  ĐVT mua
+                  <UnitPicker value={conversionForm.purchaseUnit} units={unitCodeOptions} onChange={(purchaseUnit) => setConversionForm({ ...conversionForm, purchaseUnit })} />
+                </div>
                 <Input label="Tỷ lệ quy đổi">
                   <input type="number" min="1" step="0.001" className="control" value={conversionForm.conversionRate} onChange={(e) => setConversionForm({ ...conversionForm, conversionRate: e.target.value })} />
                 </Input>

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { normalizeUnitCode } from "@/lib/unit-code";
 import { prismaDateRange, vnRangeBounds, vnToday } from "@/lib/date-range";
 import { loadActivePrices } from "@/lib/supplier-price-list-db";
 import { Prisma } from "@prisma/custom-client";
@@ -240,23 +241,30 @@ function editableRecipeLines(value: unknown) {
   return lines;
 }
 
-async function createOrUpdateConversion(itemId: string, purchaseUnit: string, conversionRate: number, note?: string) {
+async function createOrUpdateConversion(itemId: string, purchaseUnit: string, conversionRate: number, note?: string, options: { normalizeCode?: boolean } = {}) {
   if (!purchaseUnit && !conversionRate) return null;
   if (!purchaseUnit) businessError("ĐVT mua là bắt buộc khi khai báo quy đổi");
   if (!Number.isFinite(conversionRate) || conversionRate <= 0) businessError("Tỷ lệ quy đổi phải lớn hơn 0");
   if (conversionRate < 1) businessError("Tỷ lệ quy đổi phải tính từ ĐVT mua về ĐVT cơ bản và không được nhỏ hơn 1");
-  const unitCode = purchaseUnit.toUpperCase();
+  // Mã chuẩn hoá (bỏ dấu, viết hoa, bỏ khoảng trắng — khách 23/11/2026). Mặt hàng đã có ĐVT mua
+  // trùng mã sau chuẩn hoá (dòng cũ "THÙNG") thì sửa đúng dòng đó, không đẻ thêm "THUNG".
+  // Chỉ áp cho ĐVT MUA; dòng ĐVT cơ bản giữ đúng chữ ĐVT tồn viết hoa như cũ (nhiều chỗ so
+  // unitCode với item.unit.toUpperCase(), "MÓN" mà thành "MON" là lệch).
+  const normalizedCode = options.normalizeCode ? normalizeUnitCode(purchaseUnit) : purchaseUnit.toUpperCase();
+  const existingConversions = options.normalizeCode ? await prisma.itemUnitConversion.findMany({ where: { itemId }, select: { unitCode: true } }) : [];
+  const unitCode = existingConversions.find((conversion) => normalizeUnitCode(conversion.unitCode) === normalizedCode)?.unitCode || normalizedCode;
+  if (!unitCode) businessError("ĐVT mua là bắt buộc khi khai báo quy đổi");
   if (unitCode.length > 32) businessError("ĐVT mua không được vượt quá 32 ký tự");
   // "1 KG = 1000 KG" là khai sai (đúng ra ĐVT tồn là G). Chặn tại đây để không đẻ thêm dữ liệu
   // hỏng — thứ đã làm 1.277 mặt hàng trong danh mục nhân sai số lượng gấp 1000 lần.
   const owner = await prisma.inventoryItem.findUnique({ where: { id: itemId }, select: { unit: true, code: true } });
-  if (owner && unitCode === owner.unit.trim().toUpperCase() && conversionRate !== 1) {
+  if (owner && (unitCode === owner.unit.trim().toUpperCase() || normalizeUnitCode(unitCode) === normalizeUnitCode(owner.unit)) && conversionRate !== 1) {
     businessError(`ĐVT mua [${purchaseUnit}] trùng ĐVT tồn kho của ${owner.code} nên tỷ lệ quy đổi phải là 1. Nếu ý bạn là "1 ${purchaseUnit} = ${conversionRate} đơn vị nhỏ hơn" thì hãy sửa ĐVT tồn kho của mặt hàng thành đơn vị nhỏ đó (ví dụ ĐVT tồn G, ĐVT mua KG, tỷ lệ 1000).`);
   }
   return prisma.itemUnitConversion.upsert({
     where: { itemId_unitCode: { itemId, unitCode } },
-    create: { itemId, unitCode, unitName: purchaseUnit, conversionRate, isDefaultPurchase: conversionRate > 1, note: note || null },
-    update: { unitName: purchaseUnit, conversionRate, isDefaultPurchase: conversionRate > 1, note: note || null },
+    create: { itemId, unitCode, unitName: options.normalizeCode ? unitCode : purchaseUnit, conversionRate, isDefaultPurchase: conversionRate > 1, note: note || null },
+    update: { ...(options.normalizeCode ? {} : { unitName: purchaseUnit }), conversionRate, isDefaultPurchase: conversionRate > 1, note: note || null },
   });
 }
 
@@ -1580,7 +1588,7 @@ export async function POST(request: Request) {
         },
       });
       await createOrUpdateConversion(item.id, unit, 1, "ĐVT cơ bản");
-      if (purchaseUnit) await createOrUpdateConversion(item.id, purchaseUnit, conversionRate, cleanText(body.conversionNote));
+      if (purchaseUnit) await createOrUpdateConversion(item.id, purchaseUnit, conversionRate, cleanText(body.conversionNote), { normalizeCode: true });
       const result = await prisma.inventoryItem.findUnique({ where: { id: item.id }, include: { unitConversions: true } });
       return NextResponse.json(result, { status: 201 });
     }
@@ -1592,7 +1600,7 @@ export async function POST(request: Request) {
       if (!itemId) businessError("Mặt hàng là bắt buộc");
       const item = await prisma.inventoryItem.findUnique({ where: { id: itemId } });
       if (!item) businessError("Không tìm thấy mặt hàng");
-      const conversion = await createOrUpdateConversion(itemId, purchaseUnit, conversionRate, cleanText(body.note));
+      const conversion = await createOrUpdateConversion(itemId, purchaseUnit, conversionRate, cleanText(body.note), { normalizeCode: true });
       return NextResponse.json(conversion, { status: 201 });
     }
 
@@ -3032,7 +3040,7 @@ export async function PATCH(request: Request) {
         await createOrUpdateConversion(itemId, unit, 1, "ĐVT cơ bản");
       }
       if (body.purchaseUnit !== undefined && cleanText(body.purchaseUnit)) {
-        await createOrUpdateConversion(itemId, cleanText(body.purchaseUnit), toNumber(body.conversionRate), cleanText(body.conversionNote));
+        await createOrUpdateConversion(itemId, cleanText(body.purchaseUnit), toNumber(body.conversionRate), cleanText(body.conversionNote), { normalizeCode: true });
       }
 
       await writeAuditLog({ session: auth.session, module: menuHref, action: "UPDATE_ITEM", entityType: "InventoryItem", entityId: result.id, entityCode: result.code, metadata: { changedFields: Object.keys(body).filter((field) => field !== "action" && field !== "itemId" && field !== "id"), postedLines, onHand } });
