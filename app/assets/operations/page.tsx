@@ -5,6 +5,7 @@ import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { FilterApplyButton } from "@/components/FilterApplyButton";
 import { inDateRange, type DateRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
+import { ImportLauncher } from "@/components/ImportLauncher";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel } from "@/lib/branch-labels";
@@ -906,7 +907,7 @@ export default function AssetOperationsPage() {
               )}
 
               <div className="flex items-center justify-between gap-3">
-                <a className="text-sm font-bold text-blue-700" href="/imports?tab=asset-stocktake">Hoặc import file kiểm kê Excel</a>
+                <ImportLauncher tabIds={["asset-stocktake"]} label="Hoặc import file kiểm kê Excel" compact onClosed={() => void loadData()} />
                 <button className="primary-button" disabled={!stocktakeBranch || stocktakeRows.length === 0}>{editingSession ? "Lưu & gửi lại" : "Gửi duyệt"}</button>
               </div>
             </form>

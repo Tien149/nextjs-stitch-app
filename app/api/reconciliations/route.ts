@@ -806,7 +806,7 @@ export async function GET(request: Request) {
               targetHref: currentMatch.targetType === "VOUCHER"
                 ? `/open/${encodeURIComponent(currentMatch.targetCode)}`
                 : currentMatch.targetType === "REVENUE_POS"
-                  ? "/imports?tab=revenue"
+                  ? "/reports?tab=revenue-ledger"
                   : transferHref,
             }
           : null,

@@ -10,6 +10,8 @@ import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
 import { allowedSubTabs, canCreateCashDeposit as canCreateCashDepositSlip, canPerformMenuAction, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
+import { useMenuTab } from "@/lib/menu-tab-event";
+import { ImportLauncher } from "@/components/ImportLauncher";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterCashierCashSources, filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, stripMoneySourceLabel, type MoneySourceOption } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
@@ -473,6 +475,12 @@ export default function ReportsPage() {
     }
   };
 
+  // Bấm mục menu khác trỏ vào cùng trang Báo cáo (Thu chi ngày -> Dòng tiền...): đổi tab tại chỗ,
+  // trước đây trang chỉ đọc ?tab= lúc mở nên đứng yên ở tab cũ.
+  useMenuTab(href, (tab) => {
+    if (reportTabs.some((item) => item.id === tab)) handleTabChange(tab);
+  });
+
   const printDailyCashReport = () => {
     const originalTitle = document.title;
     const restoreTitle = () => {
@@ -899,6 +907,9 @@ export default function ReportsPage() {
                 Bỏ lọc
               </button>
             )}
+            <div className="self-end ml-auto">
+              <ImportLauncher tabIds={["revenue-raw", "revenue"]} label="Import doanh thu" compact onClosed={() => void loadData()} />
+            </div>
           </>
         )}
         <FilterApplyButton dirty={filtersDirty} onApply={applyReportFilters} />

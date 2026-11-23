@@ -13,7 +13,8 @@ import { isTransferDestination } from "@/lib/warehouse-scope";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
 import { goodsGroupKey, normalizeGoodsGroup } from "@/lib/goods-group";
 import { recipeValidity, validityInMonth, vnDay, type RecipeValidity } from "@/lib/recipe-validity";
-import { canPerformMenuAction, canOpenPath, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
+import { canPerformMenuAction, canOpenPath, SESSION_KEY, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
+import { ImportLauncher } from "@/components/ImportLauncher";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
@@ -225,6 +226,21 @@ function buildStocktakeRows(warehouseCode: string, balances: Balance[], fallback
     reason: "",
   }));
 }
+
+/**
+ * Loại import theo tab Kho (khách 23/11/2026: import đặt ngay trên màn nghiệp vụ thay vì menu
+ * Import dữ liệu). Tab không có trong bảng thì không có nút.
+ */
+const INVENTORY_IMPORTS: Record<string, string[]> = {
+  items: ["inventory-item", "inventory-item-update"],
+  inbound: ["inventory-transaction"],
+  outbound: ["inventory-transaction"],
+  transfer: ["inventory-transaction"],
+  recipes: ["bom"],
+  production: ["production"],
+  stocktake: ["stocktake"],
+  waste: ["waste"],
+};
 
 export default function InventoryPage() {
   const href = "/inventory";
@@ -562,6 +578,16 @@ export default function InventoryPage() {
       setStockForm((form) => MANUAL_OUTBOUND_TYPES.includes(form.transactionType) ? form : { ...form, transactionType: "XUAT_KHAC" });
     }
   };
+  // Link "/inventory?tab=..." (link import cũ chuyển về, 23/11/2026) mở đúng tab; link chứng từ có
+  // ?code= thì để khối dưới lo. Tab ngoài quyền thì effect "tab mặc định" ở trên tự đưa về tab được phép.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get("tab") || "";
+    if (!tab || params.get("code") || !(moduleTabs["/inventory"] || []).some((item) => item.id === tab)) return;
+    const timer = window.setTimeout(() => setActive(tab), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   // Link chứng từ từ màn khác: mở đúng tab Nhập / Xuất / Điều chuyển, lọc đúng ngày + số phiếu.
   useEffect(() => {
     const focus = readDocFocus();
@@ -2548,7 +2574,14 @@ export default function InventoryPage() {
         </div>
       </div>
 
-      <ModuleTabs active={active} onChange={switchTab} tabs={visibleTabs} />
+      <div className="flex items-end gap-2">
+        <div className="min-w-0 flex-1"><ModuleTabs active={active} onChange={switchTab} tabs={visibleTabs} /></div>
+        {INVENTORY_IMPORTS[active] && (
+          <div className="mb-1 shrink-0">
+            <ImportLauncher key={active} tabIds={INVENTORY_IMPORTS[active]} compact onClosed={() => void loadData()} />
+          </div>
+        )}
+      </div>
       </StickyFilterBar>
       {busy > 0 && (
         <div className="fixed inset-0 z-[75] flex items-center justify-center bg-white/50 backdrop-blur-[1px]" aria-busy="true" role="status">
@@ -2568,7 +2601,8 @@ export default function InventoryPage() {
       {message && <p ref={messageRef} className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
       {sectionLoading && <p className="mb-4 px-4 py-2 rounded-lg border border-slate-200 bg-slate-50 text-xs text-slate-500">Đang tải dữ liệu của tab này...</p>}
 
-      {/* Bỏ khung nhắc import file khỏi mọi tab Kho & Định lượng (khách 24/10/2026) — import ở menu Import dữ liệu. */}
+      {/* Bỏ khung nhắc import file khỏi mọi tab Kho & Định lượng (khách 24/10/2026). Từ 23/11/2026 import
+          là nút "Import Excel" cuối hàng tab (INVENTORY_IMPORTS). */}
 
       {active === "stock" && (
         <div className="mb-5 flex flex-wrap gap-2 border-b border-slate-200">
@@ -2734,9 +2768,7 @@ export default function InventoryPage() {
               {canOpenImports ? (
                 <p className="text-[11px] leading-5 text-slate-500">
                   Khung này khai lẻ từng mã. Nhiều mã một lúc thì{" "}
-                  <a className="font-bold text-blue-700 hover:underline" href="/imports?tab=inventory-item">
-                    khai hàng loạt bằng file Excel
-                  </a>
+                  bấm <b>Import Excel</b> ở cuối hàng tab (Danh mục mặt hàng hoặc Cập nhật bổ sung mặt hàng)
                   {" "}— tải file mẫu, điền cột ĐVT mua và Tỷ lệ quy đổi, mã đã có thì cập nhật chứ không tạo trùng.
                 </p>
               ) : null}

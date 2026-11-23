@@ -9,6 +9,7 @@ import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSIO
 import { logout } from "@/lib/session-client";
 import { MonthInput } from "@/components/DateInput";
 import CopyableText from "@/components/CopyableText";
+import { ImportLauncher } from "@/components/ImportLauncher";
 import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 type MasterDataItem = {
@@ -1063,13 +1064,7 @@ export default function SettingsPage() {
                     </button>
                   )}
 
-                  <button
-                    onClick={() => router.push(`/imports?tab=master-data&masterType=${activeType}`)}
-                    className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">upload_file</span>
-                    Import
-                  </button>
+                  <ImportLauncher tabIds={["master-data"]} masterType={activeType} label="Import" compact onClosed={() => void loadItems()} />
 
                   <button
                     onClick={() => void exportDanhMuc()}

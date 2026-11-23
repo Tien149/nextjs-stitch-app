@@ -303,7 +303,7 @@ export default function PayrollBudgetTab({
                   </div>
                   <div className="flex gap-3 items-start">
                     <span className="mt-0.5 w-6 h-6 shrink-0 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center">2</span>
-                    <p><b>Import bảng lương</b> các tháng {data.year} ở menu <a href="/imports/payroll" className="text-blue-700 font-bold underline-offset-2 hover:underline">Import → Bảng lương ↗</a> — ra cột <b>Lương thực tế</b>.</p>
+                    <p><b>Import bảng lương</b> các tháng {data.year} ở mục <a href="/payroll-costs" className="text-blue-700 font-bold underline-offset-2 hover:underline">Chi phí lương nhân viên ↗</a> — ra cột <b>Lương thực tế</b>.</p>
                   </div>
                 </div>
                 <p className="mt-4 text-xs text-slate-400">Làm xong một trong hai là chart bắt đầu hiện; đủ cả hai mới so sánh được.</p>
@@ -397,7 +397,7 @@ export default function PayrollBudgetTab({
             <p className="font-bold text-slate-600">Biến động số lượng nhân sự — chưa có dữ liệu</p>
             <p className="text-sm text-slate-400 mt-0.5">
               Chart và bảng nhân sự lấy từ file bảng lương. Import các tháng {data.year} ở{" "}
-              <a href="/imports/payroll" className="text-blue-700 font-bold underline-offset-2 hover:underline">Import → Bảng lương ↗</a> là hai khối này tự hiện.
+              <a href="/payroll-costs" className="text-blue-700 font-bold underline-offset-2 hover:underline">Chi phí lương nhân viên ↗</a> là hai khối này tự hiện.
             </p>
           </div>
         </section>

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ImportLauncher } from "@/components/ImportLauncher";
 import { appMenuItems, canAccessMenu, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { DateInput } from "@/components/DateInput";
 import { MoneyInput } from "@/components/MoneyInput";
@@ -495,7 +496,7 @@ export default function BankStatementLedgerPage() {
     <header className="border-b border-slate-200 bg-white px-6 py-4 shadow-sm">
       <div className="mx-auto flex max-w-[1800px] items-center justify-between gap-4">
         <div><h1 className="text-xl font-bold">Sổ sao kê ngân hàng</h1><p className="text-xs text-slate-500">Dữ liệu tích lũy theo các file đã Commit; mỗi dòng truy vết được về chứng từ nguồn.</p></div>
-        <button onClick={() => router.push("/imports?tab=bank-statements")} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700">Import sao kê bổ sung</button>
+        <ImportLauncher tabIds={["bank-statements"]} label="Import sao kê" onClosed={() => void loadRows()} />
       </div>
     </header>
 

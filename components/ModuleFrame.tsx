@@ -13,6 +13,7 @@ export function ModuleFrame({
   contentClassName = "max-w-7xl",
   backHref,
   backLabel = "Quay lại",
+  headerActions,
   children,
 }: {
   title: string;
@@ -24,6 +25,8 @@ export function ModuleFrame({
   /** Màn con (ví dụ Vận hành tài sản mở từ Tài sản): có thì hiện nút quay về màn cha. */
   backHref?: string;
   backLabel?: string;
+  /** Nút bên phải đầu trang, VD "Import Excel" (components/ImportLauncher). */
+  headerActions?: ReactNode;
   children: ReactNode;
 }) {
   const [isLocked, setIsLocked] = useState(false);
@@ -83,6 +86,7 @@ export function ModuleFrame({
         </div>
 
         <div className="flex items-center gap-3">
+          {headerActions}
           {onChangeBranch && branchCode && (
             <div className="relative">
               <select

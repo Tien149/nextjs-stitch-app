@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { isEquityOpeningType, openingDifferenceOf } from "@/lib/balance-sheet";
 import { formatPeriodCount } from "@/lib/period-count";
 import ExportExcelButton from "@/components/ExportExcelButton";
+import { ImportLauncher } from "@/components/ImportLauncher";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { periodInRange, type DateRange } from "@/lib/date-range";
 import { useRouter } from "next/navigation";
@@ -558,18 +559,15 @@ export default function OpeningBalancesPage() {
         </div>
         <div className="flex items-center gap-3">
           {canManageOpeningBalances && (
-            <button
-              type="button"
-              // Đang nhập Tài sản/CCDC thì mở thẳng mẫu "CCDC đầu kỳ" (nguyên giá, đã phân bổ, còn lại).
-              // Mẫu số dư chuẩn dùng Đơn giá + Số tiền, khách đi từ nút này sang mẫu chuẩn và hỏi
-              // "cột Số tiền điền gì" (26/09/2026).
-              onClick={() => router.push(isAssetType ? "/imports?tab=opening-asset-tool" : "/imports?tab=opening-balance")}
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-blue-700"
-              title={isAssetType ? "Import danh sách tài sản / CCDC đầu kỳ đang phân bổ dở" : "Import số dư đầu kỳ bằng Excel"}
-            >
-              <span className="material-symbols-outlined text-[18px]">upload_file</span>
-              {isAssetType ? "Import CCDC đầu kỳ" : "Import Excel"}
-            </button>
+            // Đang nhập Tài sản/CCDC thì mở thẳng mẫu "CCDC đầu kỳ" (nguyên giá, đã phân bổ, còn lại).
+            // Mẫu số dư chuẩn dùng Đơn giá + Số tiền, khách đi từ nút này sang mẫu chuẩn và hỏi
+            // "cột Số tiền điền gì" (26/09/2026).
+            <ImportLauncher
+              tabIds={[isAssetType ? "opening-asset-tool" : "opening-balance"]}
+              autoOpenTabIds={["opening-balance", "opening-asset-tool"]}
+              label={isAssetType ? "Import CCDC đầu kỳ" : "Import Excel"}
+              onClosed={() => void loadBalances()}
+            />
           )}
           <div className="hidden sm:block text-right">
             <p className="text-xs font-bold text-slate-900">{user?.name}</p>

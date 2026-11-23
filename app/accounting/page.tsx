@@ -281,10 +281,10 @@ export default function AccountingPage() {
         router.push("/vouchers");
         break;
       case "REVENUE_POS":
-        router.push("/imports/revenue");
+        router.push("/reports?tab=revenue-ledger");
         break;
       case "BANK_STATEMENT":
-        router.push("/imports/bank-statements");
+        router.push("/reconciliations");
         break;
       case "DEPOSIT_HISTORY":
         if (sourceCode?.trim()) {
@@ -298,7 +298,7 @@ export default function AccountingPage() {
       case "MONEY_TRANSFER":
       case "MONEY_TRANSFER_COUNTERPART":
       case "MONEY_TRANSFER_FEE":
-        router.push("/finance-operations");
+        router.push("/finance-operations?tab=cashbook");
         break;
       case "ASSET_ACQUISITION":
         router.push("/assets");
@@ -313,13 +313,13 @@ export default function AccountingPage() {
         router.push("/assets/operations");
         break;
       case "ACCRUAL":
-        router.push("/finance-operations");
+        router.push("/finance-operations?tab=accruals");
         break;
       case "PAYROLL":
-        router.push("/imports/payroll");
+        router.push("/payroll-costs?tab=payroll");
         break;
       case "PAYROLL_DEPARTMENT":
-        router.push("/imports?tab=payroll-department");
+        router.push("/payroll-costs");
         break;
       case "CASHBOOK_ADJUSTMENT":
         router.push("/finance-operations?tab=cashbook");

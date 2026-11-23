@@ -114,8 +114,11 @@ export const appMenuItems: AppMenuItem[] = [
     href: "/reports?tab=cashflow",
     roles: ["Admin", "Kế toán tổng hợp", "Quản lý"],
   },
+  // Từ 23/11/2026 (đợt 2) không còn hiện ở menu: chỉ là QUYỀN dùng nút "Import Excel" trên các màn
+  // nghiệp vụ (components/ImportLauncher, lib/menu-layout.ts PERMISSION_ONLY_HREFS). Giữ href để
+  // vai trò đã tick không phải tick lại và /api/imports vẫn gác theo mục này.
   {
-    name: "Import dữ liệu",
+    name: "Import dữ liệu (nút Import trên các màn)",
     icon: "upload_file",
     href: "/imports",
     roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ"],
@@ -190,12 +193,8 @@ export const appMenuItems: AppMenuItem[] = [
     href: "/assets/operations?tab=stocktake",
     roles: ["Admin", "Kế toán tổng hợp", "Quản lý"],
   },
-  {
-    name: "Công việc",
-    icon: "task_alt",
-    href: "/work-management",
-    roles: ["Admin", "Kế toán tổng hợp", "Quản lý", "Viewer"],
-  },
+  // "Công việc" (/work-management) gỡ khỏi menu 23/11/2026: khách đã chuyển việc này sang phần
+  // mềm khác. Trang, API và dữ liệu cũ vẫn giữ (báo cáo Vận hành, phiếu bảo trì tài sản còn đọc).
   {
     name: "Thu chi ngày",
     icon: "receipt",
@@ -343,9 +342,10 @@ export function getDefaultRouteForRole(subject: DemoRole | DemoSession | string)
   const dashboard = appMenuItems.find((item) => item.href === "/" && item.name === "Dashboard");
   if (dashboard && canAccessMenu(session || role, dashboard) && canViewFinancialDashboard(role)) return "/";
   if (role === "Kế toán công nợ") return "/debts";
-  if (role === "Viewer") return "/work-management";
-  const firstAllowed = appMenuItems.find((item) => item.href !== "/" && canAccessMenu(session || role, item));
-  return firstAllowed?.href || "/work-management";
+  // "/imports" chỉ còn là quyền (không có màn) — không lấy làm trang mở đầu.
+  const firstAllowed = appMenuItems.find((item) => item.href !== "/" && item.href !== "/imports" && canAccessMenu(session || role, item));
+  // Không còn mục nào: trang Dashboard tự coi là phiên không hợp lệ và đưa về đăng nhập.
+  return firstAllowed?.href || "/login";
 }
 
 export function findDemoUser(userIdOrEmail: string) {

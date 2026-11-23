@@ -85,6 +85,11 @@ type ImportUploadPageProps = {
   requiresBranch?: boolean;
   navigation?: ReactNode;
   expectedMasterType?: string;
+  /**
+   * Mở trong khung nổi ngay trên màn nghiệp vụ (components/ImportLauncher, 23/11/2026): nút đã
+   * lọc quyền trước nên không đẩy về trang chủ, và có nút Đóng để quay lại màn đang làm.
+   */
+  onClose?: () => void;
 };
 
 /** Lấy lịch sử import theo trang; khớp trần BATCH_LIST_MAX_LIMIT của /api/imports. */
@@ -331,8 +336,10 @@ export default function ImportUploadPage({
   requiresBranch = false,
   navigation,
   expectedMasterType = "",
+  onClose,
 }: ImportUploadPageProps) {
   const router = useRouter();
+  const embedded = Boolean(onClose);
   const [user, setUser] = useState<DemoSession | null>(null);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [file, setFile] = useState<File | null>(null);
@@ -395,7 +402,7 @@ export default function ImportUploadPage({
       router.push(`/login?next=${menuHref}`);
       return;
     }
-    if (!menu || !canAccessMenu(session.role, menu)) {
+    if (!embedded && (!menu || !canAccessMenu(session.role, menu))) {
       router.push("/");
       return;
     }
@@ -406,7 +413,7 @@ export default function ImportUploadPage({
       }
       setIsCheckingAuth(false);
     }, 0);
-  }, [menuHref, router]);
+  }, [embedded, menuHref, router]);
 
   useEffect(() => {
     if (isCheckingAuth || !requiresBranch) return;
@@ -1122,9 +1129,20 @@ export default function ImportUploadPage({
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-800">
+    <div className={`${onClose ? "min-h-full" : "min-h-screen"} bg-slate-100 text-slate-800`}>
       <header className="sticky top-0 z-20 bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-3">
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50"
+              title="Đóng khung import, quay lại màn đang làm"
+            >
+              <span className="material-symbols-outlined text-base">arrow_back</span>
+              Đóng
+            </button>
+          )}
           <div>
             <h1 className="text-lg font-bold">{title}</h1>
             <p className="text-xs text-slate-500">{subtitle}</p>

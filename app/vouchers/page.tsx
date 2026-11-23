@@ -5,6 +5,7 @@ import { formatPeriodCount } from "@/lib/period-count";
 import { useRouter } from "next/navigation";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
+import { ImportLauncher } from "@/components/ImportLauncher";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, updateDynamicBranches } from "@/lib/branch-labels";
 import { branchCodeFromInternalPartner } from "@/lib/cost-reallocation";
@@ -1162,6 +1163,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       branchCode={branchCode}
       onChangeBranch={handleBranchChange}
       contentClassName="max-w-[1600px]"
+      headerActions={<ImportLauncher tabIds={["receipt", "payment"]} onClosed={() => void loadVouchers(branchCode, appliedFilters, 1)} />}
     >
       <div className="space-y-6">
         {/* Operational Summary Cards */}

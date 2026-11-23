@@ -7,6 +7,7 @@ import ExportExcelButton from "@/components/ExportExcelButton";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, updateDynamicBranches, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, filterModuleTabs, isCashierSubject } from "@/lib/auth-demo";
+import { useMenuTab } from "@/lib/menu-tab-event";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterCashierCashSources, filterMoneySources, isGrabMoneySource, moneySourceDebugLabel, moneySourceDisplayName, summaryMoneySourceGroups } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
@@ -145,6 +146,13 @@ const transferSourceOptions = (sources: MasterDataOption[], transfer: MoneyTrans
       return true;
     })
     .map((source) => ({ source, branch })));
+};
+/** Tiêu đề theo màn — mỗi tab giờ là một mục menu riêng nên đầu trang phải nói đúng màn đang mở. */
+const screenTitles: Record<string, { title: string; subtitle: string }> = {
+  cashbook: { title: "Sổ quỹ", subtitle: "Sổ quỹ theo nguồn tiền: thu, chi, điều tiền và số dư từng ngày" },
+  accruals: { title: "Trích trước & Phân bổ", subtitle: "Chi phí trả trước, lịch phân bổ theo kỳ và ghi nhận phân bổ" },
+  expenses: { title: "Tổng hợp chi phí", subtitle: "Chi phí trong kỳ theo nguồn ghi nhận và hạng mục P&L" },
+  closing: { title: "Khóa sổ kỳ kế toán", subtitle: "Kiểm tra cuối kỳ và khóa / mở khóa kỳ kế toán" },
 };
 const cashDepositTargetLabels: Record<string, string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
@@ -474,6 +482,12 @@ export default function FinanceOperationsPage() {
       if (linkedTransfer) applyTransferFiltersNow({ transferQuery: linkedTransfer });
     }, 0);
   }, [applyMainFiltersNow, applyTransferFiltersNow]);
+
+  // Bấm mục menu khác của cùng trang (Sổ quỹ -> Trích trước & Phân bổ...): đổi màn tại chỗ.
+  useMenuTab(href, (tab) => {
+    setActive(tab);
+    setMessage("");
+  });
 
   // Tab mặc định có thể nằm ngoài quyền -> chuyển về tab đầu tiên được phép.
   useEffect(() => {
@@ -1067,10 +1081,10 @@ export default function FinanceOperationsPage() {
         <div className="flex items-center gap-4">
           <div>
             <h1 className="text-xl font-bold bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 bg-clip-text text-transparent">
-              Sổ quỹ & Cuối kỳ
+              {(screenTitles[active] || screenTitles.cashbook).title}
             </h1>
             <p className="text-xs text-slate-500 font-medium">
-              Phân hệ Giai đoạn 3 • Quản lý dòng tiền Sổ quỹ, trích trước chi phí và khóa sổ kỳ kế toán
+              {(screenTitles[active] || screenTitles.cashbook).subtitle}
             </p>
           </div>
         </div>
@@ -1199,26 +1213,8 @@ export default function FinanceOperationsPage() {
           </section>
         </StickyFilterBar>
 
-        {/* Tab Navigation */}
-        <nav className="flex gap-1.5 border-b border-slate-200 overflow-x-auto">
-          {visibleTabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => {
-                setActive(tab.id);
-                setMessage("");
-              }}
-              className={`px-5 py-3 text-sm font-bold whitespace-nowrap border-b-2 flex items-center gap-2 transition-all duration-150 ${active === tab.id
-                  ? "border-indigo-600 text-indigo-700"
-                  : "border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300"
-                }`}
-            >
-              <span className="material-symbols-outlined text-lg">{tab.icon}</span>
-              {tab.label}
-            </button>
-          ))}
-        </nav>
+        {/* Không còn thanh tab: từ 23/11/2026 mỗi tab là một mục menu riêng (Sổ quỹ ở nhóm Tiền; Trích
+            trước & Phân bổ, Tổng hợp chi phí, Khóa sổ ở nhóm Chi phí & Công nợ — lib/menu-layout.ts). */}
 
         {/* Notification Banner */}
         {message && (

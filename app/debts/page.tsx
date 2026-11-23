@@ -6,6 +6,7 @@ import { formatPeriodCount } from "@/lib/period-count";
 import { ADVANCE_SETTLEMENT_DEBT_TYPE, isAdvanceSettlementDebt } from "@/lib/employee-advance";
 import { PROFIT_DISTRIBUTION_DEBT_TYPE, isProfitDistributionDebt } from "@/lib/profit-distribution";
 import ExportExcelButton from "@/components/ExportExcelButton";
+import { ImportLauncher } from "@/components/ImportLauncher";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { DateInput, MonthInput } from "@/components/DateInput";
@@ -866,6 +867,7 @@ export default function DebtsPage() {
               Chuyển công nợ
             </button>
           )}
+          <ImportLauncher tabIds={["debt-receivable", "debt-payable", "debt-internal"]} onClosed={() => void loadRows()} />
           <BranchScopeSelect session={user} value={filters.draft.branchScope} onChange={(value) => filters.update({ branchScope: value })} />
           <p className="hidden text-xs font-bold text-slate-500 sm:block">{user?.role}</p>
         </div>

@@ -7,6 +7,7 @@ import { formatPeriodCount } from "@/lib/period-count";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import type { DateRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
+import { ImportLauncher } from "@/components/ImportLauncher";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
@@ -768,6 +769,7 @@ export default function AssetsPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <ImportLauncher tabIds={["assets"]} onClosed={() => void loadAssets()} />
           <button
             onClick={() => router.push("/assets/operations")}
             className="rounded-lg bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 text-sm font-bold inline-flex items-center gap-2 transition-colors shadow-sm"
