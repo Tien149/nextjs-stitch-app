@@ -1,3 +1,4 @@
+import { getRevenueSourceExport } from "@/lib/revenue-source-export";
 import { NextResponse } from "next/server";
 import { prismaDateRange } from "@/lib/date-range";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
@@ -1263,7 +1264,7 @@ export async function GET(request: Request) {
     // (Thu chi ngày) vừa là nguồn số của bảng "Đối chiếu tiền vào đã đủ chưa" nằm ở đầu tab
     // Tiền về đủ chưa (chuyển sang 05/09/2026), nên ai có MỘT TRONG HAI tab đều gọi được.
     // "revenue-ledger-detail" là phần xoè chi tiết của chính tab Sổ doanh thu, không phải tab riêng.
-    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "pnl-note": "pnl", "pnl-history": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement", "revenue-ledger-detail": "revenue-ledger", "revenue-day-rows": "revenue-ledger", "revenue-explosion-check": "revenue-ledger", "revenue-import-export": "revenue-ledger" };
+    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "pnl-note": "pnl", "pnl-history": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement", "revenue-ledger-detail": "revenue-ledger", "revenue-day-rows": "revenue-ledger", "revenue-explosion-check": "revenue-ledger", "revenue-import-export": "revenue-ledger", "revenue-source-export": "revenue-ledger" };
     const containerTab = subViewTab[type] || type;
     // Biến động doanh thu cùng kỳ còn nằm trên Dashboard của Hoạch định P&L (khách 22/10/2026).
     const alsoAllowed = type === "revenue-trend" && permittedTabs?.includes("pnl");
@@ -1320,6 +1321,21 @@ export async function GET(request: Request) {
       const to = cleanText(params.get("to"));
       if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return NextResponse.json({ error: "Thiếu khoảng ngày cần xuất" }, { status: 400 });
       return NextResponse.json(await getRevenueImportExport(from, to, branchCode));
+    }
+    if (type === "revenue-source-export") {
+      const from = cleanText(params.get("from"));
+      const to = cleanText(params.get("to"));
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return NextResponse.json({ error: "Thiếu khoảng ngày cần xuất" }, { status: 400 });
+      const result = await getRevenueSourceExport(from, to, branchCode);
+      return new Response(new Uint8Array(result.buffer), {
+        headers: {
+          "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "Content-Disposition": `attachment; filename="doanh_thu_file_goc_${branchCode}_${from}_${to}.xlsx"`,
+          "X-Line-Count": String(result.lineCount),
+          "X-Missing-Rows": String(result.missingRows),
+          "X-Truncated": result.truncated ? "1" : "0",
+        },
+      });
     }
     if (type === "revenue-explosion-check") {
       const from = cleanText(params.get("from"));

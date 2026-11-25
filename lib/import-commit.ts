@@ -6,7 +6,7 @@ import { assertPeriodOpen as assertAccountingPeriodOpen, buildAllocationSchedule
 import { ensureDefaultAccounts } from "@/lib/accounting";
 import { INVENTORY_ITEM_UPDATE_TEMPLATE, isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { normalizeGoodsGroup } from "@/lib/goods-group";
-import { parseImportDate, type ParsedImportRow } from "@/lib/import-parser";
+import { parseImportDate, sourceLinesOf, type ParsedImportRow } from "@/lib/import-parser";
 import { withVietnamTime } from "@/lib/import-date";
 import { latestKnownUnitCost, normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
 import { parseVatRate } from "@/lib/inventory-vat";
@@ -240,6 +240,8 @@ type CommitInput = {
   mapping: Record<string, string>;
   rows: ParsedImportRow[];
   expectedMasterType?: string;
+  /** Dòng tiêu đề nguyên văn của file — lưu cùng dòng gốc doanh thu POS để xuất lại y như lúc nạp. */
+  sourceHeaders?: string[];
 };
 
 type RollbackInput = {
@@ -660,6 +662,7 @@ export async function commitImport(input: CommitInput) {
         validRows: input.rows.length,
         errorRows: 0,
         mappingJson: JSON.stringify(input.mapping),
+        sourceHeadersJson: input.importType === "REVENUE_POS" && input.sourceHeaders ? JSON.stringify(input.sourceHeaders) : null,
         committedAt: new Date(),
       },
     });
@@ -1260,6 +1263,8 @@ export async function commitImport(input: CommitInput) {
       // Nhóm doanh thu khai "không theo dõi tồn kho" (phụ thu, dịch vụ...): dòng bán ra không
       // rút gì khỏi kho nên không được vào hàng chờ rã nguyên liệu, cũng không tự sinh mặt hàng.
       const nonInventoryGroups = await loadNonInventoryRevenueGroups(tx as unknown as Prisma.TransactionClient);
+      // Dòng gốc của file (mỗi dòng file một bản ghi, đúng thứ tự) — xuất lại y như lúc nạp.
+      const sourceLines: Array<{ importBatchId: string; revenueRowId: string; rowNumber: number; cellsJson: string }> = [];
       for (const row of input.rows) {
         const productCode = asText(row.values.product_code).toUpperCase();
         const productQuantity = asNumber(row.values.product_quantity);
@@ -1303,6 +1308,9 @@ export async function commitImport(input: CommitInput) {
             departmentCode: resolveRevenueDepartment({ productCode, revenueSource }),
           },
         });
+        for (const line of sourceLinesOf(row)) {
+          sourceLines.push({ importBatchId: batch.id, revenueRowId: revenueRow.id, rowNumber: line.rowNumber, cellsJson: JSON.stringify(line.cells) });
+        }
 
         // Mã của nhóm không theo dõi tồn kho (ET040 phụ thu dịch vụ...) không phải mặt hàng kho,
         // tạo ra chỉ làm bẩn danh mục và đẻ thêm dòng "thành phẩm thiếu nhóm doanh thu".
@@ -1331,6 +1339,9 @@ export async function commitImport(input: CommitInput) {
         // nút "Rã nguyên liệu" tab Chế biến: rã theo định lượng BTP → TP → combo rồi mới
         // sinh phiếu xuất chế biến / nhập chế biến / xuất bán — nhờ vậy một file doanh thu
         // vừa lên doanh thu vừa đủ dữ liệu chế biến, không phải import thêm lần nào.
+      }
+      for (let start = 0; start < sourceLines.length; start += 2000) {
+        await tx.revenueImportSourceLine.createMany({ data: sourceLines.slice(start, start + 2000) });
       }
     }
 

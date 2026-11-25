@@ -191,6 +191,8 @@ model ImportBatch {
   errorRows    Int       @default(0)
   mappingJson  String?
   errorJson    String?
+  /// Dòng tiêu đề NGUYÊN VĂN của file (mọi cột, đúng thứ tự) — xuất lại file doanh thu y như lúc nạp.
+  sourceHeadersJson String?
   committedAt  DateTime?
   rolledBackAt DateTime?
   rolledBackBy String?
@@ -413,6 +415,7 @@ model RevenueImportRow {
   createdAt       DateTime @default(now())
 
   importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+  sourceLines RevenueImportSourceLine[]
 
   deletedAt DateTime?
   deletedBy String?
@@ -426,6 +429,24 @@ model RevenueImportRow {
   @@index([inventoryStatus])
   @@index([departmentCode])
   @@index([deletedAt])
+}
+
+/// Dòng gốc của file doanh thu POS — mỗi dòng file một bản ghi, đúng thứ tự (khách 25/11/2026:
+/// đẩy lên 10.000 dòng thì xuất xuống cũng 10.000 dòng). RevenueImportRow vẫn là dòng đã gộp để
+/// rã nguyên liệu / báo cáo; dòng gốc chỉ để xem và xuất lại, xoá dòng gộp thì dòng gốc đi theo.
+model RevenueImportSourceLine {
+  id            String @id @default(uuid())
+  importBatchId String
+  revenueRowId  String
+  /// Số dòng trong file (1 = dòng đầu sheet) — thứ tự xuất lại.
+  rowNumber     Int
+  /// Mảng ô theo cột của file: chuỗi / số / null, số có định dạng riêng là { v, z }.
+  cellsJson     String
+
+  revenueRow RevenueImportRow @relation(fields: [revenueRowId], references: [id], onDelete: Cascade)
+
+  @@index([revenueRowId])
+  @@index([importBatchId, rowNumber])
 }
 
 model FinancialVoucher {

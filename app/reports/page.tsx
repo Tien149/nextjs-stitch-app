@@ -3120,6 +3120,45 @@ function RevenueImportRowsSection({ data, branchCode, moneySources, canEdit, can
     }
   };
 
+  const [exportingSource, setExportingSource] = useState(false);
+  /**
+   * Xuất ĐÚNG file gốc đã nạp (khách 25/11/2026): đủ số dòng, đúng thứ tự dòng và cột như lúc đẩy
+   * lên. File dựng ở máy chủ (giữ định dạng ngày giờ của ô gốc).
+   */
+  const exportSourceFile = async () => {
+    setExportingSource(true);
+    setNotice(null);
+    try {
+      const params = new URLSearchParams({ type: "revenue-source-export", from: data.dateFrom, to: data.dateTo, branchCode });
+      const response = await fetch(`/api/reports?${params.toString()}`);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { error?: string };
+        setNotice({ tone: "error", text: payload.error || "Không xuất được file doanh thu" });
+        return;
+      }
+      const lineCount = Number(response.headers.get("X-Line-Count") || 0);
+      const missingRows = Number(response.headers.get("X-Missing-Rows") || 0);
+      const truncated = response.headers.get("X-Truncated") === "1";
+      if (lineCount === 0) {
+        setNotice({ tone: "error", text: "Khoảng ngày này chưa có dòng gốc — doanh thu nạp trước 25/11/2026 hệ thống chỉ lưu bản đã gộp. Dùng nút \"Xuất bản đã gộp\", hoặc xoá ngày rồi nạp lại file gốc." });
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `doanh_thu_file_goc_${branchCode}_${data.dateFrom}_${data.dateTo}.xlsx`;
+      link.click();
+      URL.revokeObjectURL(url);
+      const notes = [`Đã xuất ${lineCount.toLocaleString("vi-VN")} dòng đúng như file đã nạp.`];
+      if (missingRows > 0) notes.push(`${missingRows.toLocaleString("vi-VN")} dòng doanh thu nạp trước 25/11/2026 không có dòng gốc nên không nằm trong file — xoá ngày đó rồi nạp lại file gốc nếu cần.`);
+      if (truncated) notes.push("Khoảng ngày quá nhiều dòng — file bị cắt, chia nhỏ khoảng ngày để xuất đủ.");
+      setNotice({ tone: missingRows > 0 || truncated ? "error" : "ok", text: notes.join(" ") });
+    } finally {
+      setExportingSource(false);
+    }
+  };
+
   return (
     <section className="table-panel">
       <PanelHeader
@@ -3128,11 +3167,15 @@ function RevenueImportRowsSection({ data, branchCode, moneySources, canEdit, can
         exportFileName="doanh_thu_tung_ngay"
       />
       <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-slate-100" data-no-export>
+        <button type="button" className="primary-button !min-h-8 !py-1" disabled={exportingSource || days.length === 0} onClick={() => void exportSourceFile()}>
+          <span className="material-symbols-outlined text-[16px]">file_download</span>
+          {exportingSource ? "Đang xuất…" : "Xuất đúng file gốc"}
+        </button>
         <button type="button" className="secondary-button !min-h-8 !py-1" disabled={exporting || days.length === 0} onClick={() => void exportImportFile()}>
           <span className="material-symbols-outlined text-[16px]">file_download</span>
-          {exporting ? "Đang xuất…" : "Xuất file như lúc import"}
+          {exporting ? "Đang xuất…" : "Xuất bản đã gộp"}
         </button>
-        <span className="text-xs text-slate-500">Đúng cột file mẫu import doanh thu POS, theo khoảng ngày & cửa hàng đang lọc — sửa rồi nạp lại được (mỗi dòng là một dòng đã gộp).</span>
+        <span className="text-xs text-slate-500">Theo khoảng ngày & cửa hàng đang lọc. <b>Xuất đúng file gốc</b>: đủ số dòng, đúng thứ tự dòng & cột như lúc nạp (áp dụng file nạp từ 25/11/2026). <b>Bản đã gộp</b>: mỗi dòng là một dòng đã gộp theo mẫu import. Cả hai sửa rồi nạp lại được.</span>
       </div>
       {notice && (
         <p className={`mx-5 mb-3 rounded-lg border px-3 py-2 text-sm ${notice.tone === "ok" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-rose-200 bg-rose-50 text-rose-700"}`}>{notice.text}</p>

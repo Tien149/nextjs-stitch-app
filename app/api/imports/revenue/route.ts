@@ -85,6 +85,7 @@ export async function POST(request: Request) {
         uploadedBy: auth.session.name,
         mapping: parsed.mapping,
         rows: parsed.rows,
+        sourceHeaders: parsed.headers,
       });
 
       return NextResponse.json({ batch, preview: parsed }, { status: 201 });

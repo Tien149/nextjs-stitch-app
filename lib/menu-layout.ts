@@ -51,11 +51,11 @@ export const MENU_GROUPS: MenuLayoutGroup[] = [
       {
         label: "Báo cáo",
         links: [
+          // Tiền về đủ chưa chuyển từ hàng tab Báo cáo & BI về đây, đứng đầu trước Sổ quỹ (khách 25/11/2026).
+          { kind: "tab", base: "/reports", tab: "revenue-settlement", name: "Tiền về đủ chưa", icon: "rule" },
           { kind: "tab", base: FINANCE, tab: "cashbook", name: "Sổ quỹ", icon: "account_balance_wallet" },
           { kind: "menu", href: "/reports?tab=cashflow" },
           { kind: "menu", href: "/reports?tab=cash-source" },
-          // Tiền về đủ chưa chuyển từ hàng tab Báo cáo & BI về đây (khách 25/11/2026).
-          { kind: "tab", base: "/reports", tab: "revenue-settlement", name: "Tiền về đủ chưa", icon: "rule" },
         ],
       },
     ],

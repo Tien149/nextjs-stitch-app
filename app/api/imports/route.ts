@@ -589,6 +589,7 @@ export async function POST(request: Request) {
         fileChecksum,
         mapping: parsed.mapping,
         rows: parsed.rows,
+        sourceHeaders: parsed.headers,
         expectedMasterType: expectedMasterType || undefined,
       });
       await resyncStocktakesForImport(importType, auth.session.name);

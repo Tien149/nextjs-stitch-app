@@ -40,7 +40,44 @@ export type ParseImportOptions = {
 type SheetRows = {
   name: string;
   rows: Array<Array<string | number | boolean | Date | null>>;
+  /** Sheet gốc + toạ độ ô đầu của vùng dữ liệu — để đọc lại định dạng ô (ngày giờ) khi lưu dòng gốc. */
+  sheet?: XLSX.WorkSheet;
+  origin?: { r: number; c: number };
 };
+
+/**
+ * Ô của dòng gốc trong file doanh thu (khách 25/11/2026: "đẩy lên 10.000 dòng thì xuất xuống
+ * cũng 10.000 dòng, đúng thứ tự"). Số có định dạng riêng (ngày giờ, %) giữ cả định dạng để xuất
+ * lại ra đúng hiển thị như file gốc.
+ */
+export type SourceCell = string | number | boolean | null | { v: number; z: string };
+export type SourceLine = { rowNumber: number; cells: SourceCell[] };
+
+/**
+ * Các dòng gốc của file đã dồn vào một dòng (sau khi gộp). Khoá Symbol nên JSON (preview trả về
+ * trình duyệt) không mang theo, còn `{ ...row }` (gộp, sửa tay, chia lượt khách) vẫn giữ.
+ */
+export const SOURCE_LINES: unique symbol = Symbol("sourceLines");
+export type WithSourceLines = { [SOURCE_LINES]?: SourceLine[] };
+
+export function sourceLinesOf(row: ParsedImportRow): SourceLine[] {
+  return (row as ParsedImportRow & WithSourceLines)[SOURCE_LINES] || [];
+}
+
+function readSourceCells(sheet: SheetRows, rowIndex: number, row: Array<unknown>): SourceCell[] {
+  const cells: SourceCell[] = row.map((value, columnIndex) => {
+    if (value === "" || value === undefined || value === null) return null;
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value === "number" && sheet.sheet && sheet.origin) {
+      const cell = sheet.sheet[XLSX.utils.encode_cell({ r: sheet.origin.r + rowIndex, c: sheet.origin.c + columnIndex })] as XLSX.CellObject | undefined;
+      const format = typeof cell?.z === "string" ? cell.z : "";
+      if (format && format !== "General") return { v: value, z: format };
+    }
+    return value as SourceCell;
+  });
+  while (cells.length > 0 && cells[cells.length - 1] === null) cells.pop();
+  return cells;
+}
 
 function parseNumber(value: unknown) {
   if (value === null || value === undefined || value === "") return 0;
@@ -163,6 +200,7 @@ export function autoMapHeaders(headers: string[], template: ImportTemplateDefini
 function aggregateParsedRows(rows: ParsedImportRow[], config: { by: string[]; sum: string[] }) {
   const groups = new Map<string, ParsedImportRow>();
   for (const row of rows) {
+    const lines = sourceLinesOf(row);
     const key = config.by
       .map((field) => {
         const value = row.values[field];
@@ -171,8 +209,14 @@ function aggregateParsedRows(rows: ParsedImportRow[], config: { by: string[]; su
       .join("|");
     const current = groups.get(key);
     if (!current) {
-      groups.set(key, { ...row, values: { ...row.values }, rawValues: { ...row.rawValues }, errors: [...row.errors] });
+      const merged: ParsedImportRow & WithSourceLines = { ...row, values: { ...row.values }, rawValues: { ...row.rawValues }, errors: [...row.errors] };
+      if (lines.length > 0) merged[SOURCE_LINES] = [...lines];
+      groups.set(key, merged);
       continue;
+    }
+    if (lines.length > 0) {
+      const target = current as ParsedImportRow & WithSourceLines;
+      target[SOURCE_LINES] = [...(target[SOURCE_LINES] || []), ...lines];
     }
     for (const field of config.sum) {
       current.values[field] = Number(current.values[field] || 0) + Number(row.values[field] || 0);
@@ -187,9 +231,15 @@ function aggregateParsedRows(rows: ParsedImportRow[], config: { by: string[]; su
 function readWorkbook(buffer: ArrayBuffer): SheetRows[] {
   // Giữ ngày Excel ở dạng serial để SSF.parse_date_code xử lý theo lịch Excel.
   // cellDates=true có thể dịch lùi một ngày theo timezone máy chủ (UTC vs Asia/Saigon).
-  const workbook = XLSX.read(buffer, { type: "array", cellDates: false });
+  // cellNF: giữ mã định dạng ô (z) để lưu dòng gốc file doanh thu đúng hiển thị ngày giờ.
+  const workbook = XLSX.read(buffer, { type: "array", cellDates: false, cellNF: true });
   return workbook.SheetNames.map((name) => ({
     name,
+    sheet: workbook.Sheets[name],
+    origin: (() => {
+      const ref = workbook.Sheets[name]["!ref"];
+      return ref ? XLSX.utils.decode_range(ref).s : { r: 0, c: 0 };
+    })(),
     rows: XLSX.utils.sheet_to_json<Array<string | number | boolean | Date | null>>(workbook.Sheets[name], {
       header: 1,
       raw: true,
@@ -338,13 +388,18 @@ export async function parseImportFile(
         values.transaction_time = parseImportTime(source[mapping.transaction_date]);
       }
 
-      return {
+      const parsed: ParsedImportRow & WithSourceLines = {
         sheetName: candidate.sheet.name,
         rowNumber: sourceIndex + 1,
         rawValues: source,
         values,
         errors,
       };
+      // Doanh thu POS: giữ nguyên dòng của file (mọi cột, đúng thứ tự) để xuất lại y như lúc nạp.
+      if (template.importType === "REVENUE_POS") {
+        parsed[SOURCE_LINES] = [{ rowNumber: sourceIndex + 1, cells: readSourceCells(candidate.sheet, sourceIndex, row) }];
+      }
+      return parsed;
     });
 
   // Số khách / số hoá đơn tính theo HOÁ ĐƠN: dồn về một dòng mỗi hoá đơn trước khi gộp món,
