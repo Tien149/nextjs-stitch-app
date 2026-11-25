@@ -3,8 +3,8 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 /**
  * Đăng nhập HRM bằng tài khoản phần mềm kế toán (HRM chạy ở /hr, xem hrm/docs/adr/0003).
  *
- * Cookie phiên `user_session` của app này là JSON KHÔNG ký, nên không dùng nó để chứng minh danh tính
- * với HRM. Thay vào đó, lúc đăng nhập thành công server phát thêm cookie `hrm_sso_proof` có chữ ký
+ * Cookie phiên `user_session` có chữ ký từ 25/11/2026 (lib/session-token) nhưng vẫn giữ cookie chứng
+ * thực riêng cho HRM. Thay vào đó, lúc đăng nhập thành công server phát thêm cookie `hrm_sso_proof` có chữ ký
  * (chỉ gửi kèm tới /api/hrm-sso); route SSO chỉ phát vé khi cookie này khớp với user trong phiên.
  */
 

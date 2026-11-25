@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { branchAccessLabel } from "@/lib/branch-labels";
+import { hashPassword, needsRehash, verifyPassword } from "@/lib/password-hash";
 import { prisma } from "@/lib/prisma";
 import { SESSION_MAX_AGE_DEFAULT, SESSION_MAX_AGE_REMEMBER, setSessionCookie } from "@/lib/session-cookie";
 import { HRM_PROOF_COOKIE, HRM_PROOF_PATH, hrmSsoSecret, signProof } from "@/lib/hrm-sso";
@@ -76,11 +77,19 @@ export async function POST(request: Request) {
     }
 
     if (dbUser) {
-      if (dbUser.password.trim() !== normalizedPassword) {
+      if (!(await verifyPassword(normalizedPassword, dbUser.password))) {
         return NextResponse.json(
           { error: "Tài khoản hoặc mật khẩu không đúng." },
           { status: 401 }
         );
+      }
+      // Mật khẩu cũ còn lưu chữ thường: đăng nhập đúng thì băm lại luôn (lib/password-hash).
+      if (needsRehash(dbUser.password)) {
+        try {
+          await prisma.user.update({ where: { id: dbUser.id }, data: { password: await hashPassword(normalizedPassword) } });
+        } catch (rehashError) {
+          console.error("Không băm lại được mật khẩu cũ khi đăng nhập:", rehashError);
+        }
       }
 
       const allowedBranches = dbUser.branchAccesses?.map((b) => b.branchCode) || [];

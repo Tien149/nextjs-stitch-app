@@ -1,5 +1,6 @@
 import type { NextResponse } from "next/server";
 import { SESSION_KEY } from "@/lib/auth-demo";
+import { signSessionValue } from "@/lib/session-token";
 
 // Tuổi thọ cookie phiên. Trước đây client tự đặt 1 giờ nên cookie chết trong khi
 // localStorage vẫn còn, dẫn tới màn hình mở được nhưng mọi API trả 401.
@@ -16,10 +17,11 @@ const baseCookieOptions = {
   path: "/",
 };
 
-export function setSessionCookie(response: NextResponse, value: string, rememberMe: boolean) {
+/** `sessionJson` là JSON của phiên — cookie lưu bản có chữ ký (lib/session-token). */
+export function setSessionCookie(response: NextResponse, sessionJson: string, rememberMe: boolean) {
   response.cookies.set({
     ...baseCookieOptions,
-    value,
+    value: signSessionValue(sessionJson),
     maxAge: rememberMe ? SESSION_MAX_AGE_REMEMBER : SESSION_MAX_AGE_DEFAULT,
   });
 }

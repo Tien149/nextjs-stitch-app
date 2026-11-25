@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
+import { hashPassword, withoutPassword } from "@/lib/password-hash";
 import { prisma } from "@/lib/prisma";
 import { softDeleteRecord } from "@/lib/soft-delete";
 
@@ -64,7 +65,8 @@ export async function GET(request: Request) {
       }),
     ]);
 
-    return NextResponse.json({ users, roles });
+    // Không trả cột mật khẩu (kể cả dạng băm) về trình duyệt.
+    return NextResponse.json({ users: users.map(withoutPassword), roles });
   } catch (error) {
     console.error("Error fetching permissions data:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -132,7 +134,7 @@ export async function POST(request: Request) {
       const newUser = await prisma.user.create({
         data: {
           email: email.trim().toLowerCase(),
-          password: password.trim(),
+          password: await hashPassword(password.trim()),
           name: name.trim(),
           phone: phone ? phone.trim() : null,
           position: position ? position.trim() : null,
@@ -155,7 +157,7 @@ export async function POST(request: Request) {
         },
       });
 
-      return NextResponse.json(newUser, { status: 201 });
+      return NextResponse.json(withoutPassword(newUser), { status: 201 });
     }
 
     return NextResponse.json({ error: "Hành động không hợp lệ" }, { status: 400 });
@@ -312,7 +314,7 @@ export async function PATCH(request: Request) {
           phone: phone ? String(phone).trim() : null,
           position: position ? String(position).trim() : null,
           roleId,
-          ...(password && String(password).trim() ? { password: String(password).trim() } : {}),
+          ...(password && String(password).trim() ? { password: await hashPassword(String(password).trim()) } : {}),
         },
       });
 

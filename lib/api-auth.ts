@@ -11,6 +11,8 @@ import {
   type DemoSession,
   SESSION_KEY,
 } from "@/lib/auth-demo";
+import { SESSION_MAX_AGE_REMEMBER } from "@/lib/session-cookie";
+import { verifySessionValue } from "@/lib/session-token";
 
 export type ApiAuthResult =
   | { ok: true; session: DemoSession }
@@ -27,13 +29,22 @@ function getCookieValue(request: Request, name: string) {
   return cookie.slice(name.length + 1);
 }
 
-function parseSession(rawValue: string): DemoSession | null {
-  if (!rawValue) return null;
+/**
+ * Đọc phiên từ cookie CÓ CHỮ KÝ (lib/session-token). Cookie bị sửa tay, cookie cũ chưa ký, hay
+ * phiên quá hạn tối đa (tính từ lúc đăng nhập) đều bị từ chối.
+ */
+export function parseSession(rawValue: string | null | undefined): DemoSession | null {
+  const json = verifySessionValue(rawValue);
+  if (!json) return null;
 
   try {
-    const parsed = JSON.parse(decodeURIComponent(rawValue)) as Partial<DemoSession>;
+    const parsed = JSON.parse(json) as Partial<DemoSession>;
 
     if (!parsed.id || !parsed.name || !parsed.role || !parsed.branch || !parsed.email || !parsed.loginAt) {
+      return null;
+    }
+    const loginAt = Date.parse(parsed.loginAt);
+    if (!Number.isFinite(loginAt) || Date.now() - loginAt > SESSION_MAX_AGE_REMEMBER * 1000 || loginAt > Date.now() + 60_000) {
       return null;
     }
 
@@ -64,11 +75,9 @@ export function forbidden(message = "Khong du quyen thuc hien thao tac nay") {
 }
 
 export function getRequestSession(request: Request): ApiAuthResult {
-  const cookieSession = getCookieValue(request, SESSION_KEY);
-  const headerSession = request.headers.get("x-demo-session") || "";
-  const authHeader = request.headers.get("authorization") || "";
-  const bearerToken = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : "";
-  const session = parseSession(cookieSession || headerSession || bearerToken);
+  // Chỉ tin cookie httpOnly có chữ ký. Header x-demo-session / Bearer (JSON tự khai từ
+  // localStorage) từng được nhận làm phiên — ai cũng tự xưng Admin được — nên đã bỏ.
+  const session = parseSession(getCookieValue(request, SESSION_KEY));
 
   if (!session) {
     return { ok: false, response: unauthorized() };

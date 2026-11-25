@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { SESSION_KEY } from "@/lib/auth-demo";
+import { parseSession } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { SESSION_MAX_AGE_REMEMBER } from "@/lib/session-cookie";
 import { HRM_PROOF_COOKIE, hrmSsoSecret, issueHrmTicket, safeHrmNext, verifyProof } from "@/lib/hrm-sso";
@@ -33,13 +34,7 @@ export async function GET(request: NextRequest) {
   };
 
   // Chỉ đọc cookie (không nhận header/bearer như các API khác) và bắt buộc có cookie chứng thực có chữ ký.
-  let sessionId = "";
-  try {
-    const raw = request.cookies.get(SESSION_KEY)?.value;
-    sessionId = raw ? String(JSON.parse(decodeURIComponent(raw)).id || "") : "";
-  } catch {
-    sessionId = "";
-  }
+  const sessionId = parseSession(request.cookies.get(SESSION_KEY)?.value)?.id || "";
   const provenId = verifyProof(secret, request.cookies.get(HRM_PROOF_COOKIE)?.value, SESSION_MAX_AGE_REMEMBER);
   if (!sessionId || !provenId || provenId !== sessionId) return toLogin();
 
