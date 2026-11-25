@@ -1,5 +1,6 @@
 import { allowedMenuTabs, appMenuItems, canAccessMenu, menuBasePath, type DemoSession } from "@/lib/auth-demo";
 import { permittedImportTabs } from "@/lib/import-tabs";
+import { REPORT_TAB_GROUPS } from "@/lib/report-tab-groups";
 
 /**
  * Bố cục menu bên trái theo nhóm (khách 23/11/2026). CHỈ là cách xếp hiển thị:
@@ -17,12 +18,19 @@ import { permittedImportTabs } from "@/lib/import-tabs";
 export type MenuLayoutLink =
   | { kind: "menu"; href: string }
   | { kind: "tab"; base: string; tab: string; name: string; icon: string }
+  /** Một nhóm tab của cùng trang (Báo cáo & BI 5 nhóm): hiện khi được ít nhất một tab, mở tab đầu tiên được phép. */
+  | { kind: "tabGroup"; base: string; tabs: string[]; name: string; icon: string }
   | { kind: "import"; href: string; name: string; icon: string; importTabs: string[] };
 
 export type MenuLayoutSection = { label?: string; links: MenuLayoutLink[] };
 export type MenuLayoutGroup = { id: string; label: string; icon: string; sections: MenuLayoutSection[] };
 
 const FINANCE = "/finance-operations";
+
+function reportGroupLink(id: string): MenuLayoutLink {
+  const group = REPORT_TAB_GROUPS.find((item) => item.id === id)!;
+  return { kind: "tabGroup", base: "/reports", tabs: group.tabs, name: group.label, icon: group.icon };
+}
 
 export const MENU_TOP_LINKS: MenuLayoutLink[] = [{ kind: "menu", href: "/" }];
 
@@ -46,6 +54,8 @@ export const MENU_GROUPS: MenuLayoutGroup[] = [
           { kind: "tab", base: FINANCE, tab: "cashbook", name: "Sổ quỹ", icon: "account_balance_wallet" },
           { kind: "menu", href: "/reports?tab=cashflow" },
           { kind: "menu", href: "/reports?tab=cash-source" },
+          // Tiền về đủ chưa chuyển từ hàng tab Báo cáo & BI về đây (khách 25/11/2026).
+          { kind: "tab", base: "/reports", tab: "revenue-settlement", name: "Tiền về đủ chưa", icon: "rule" },
         ],
       },
     ],
@@ -91,7 +101,11 @@ export const MENU_GROUPS: MenuLayoutGroup[] = [
     id: "reports",
     label: "Báo cáo & BI",
     icon: "monitoring",
-    sections: [{ links: [{ kind: "menu", href: "/opening-balances" }, { kind: "menu", href: "/reports" }] }],
+    // 5 nhóm báo cáo (khách 25/11/2026) — lib/report-tab-groups. Số dư đầu kỳ vào Báo cáo tài chính.
+    sections: [
+      { links: REPORT_TAB_GROUPS.filter((group) => group.id !== "finance").map((group) => reportGroupLink(group.id)) },
+      { label: "Báo cáo tài chính", links: [{ kind: "tab", base: "/reports", tab: "balance", name: "Bảng cân đối", icon: "balance" }, { kind: "menu", href: "/opening-balances" }] },
+    ],
   },
   {
     id: "settings",
@@ -128,6 +142,14 @@ function resolveLink(session: DemoSession, link: MenuLayoutLink): ResolvedMenuLi
     const href = `${link.base}?tab=${link.tab}`;
     return { key: href, name: link.name, icon: link.icon, href };
   }
+  if (link.kind === "tabGroup") {
+    const base = appMenuItems.find((menu) => menu.href === link.base);
+    if (!base || !canAccessMenu(session, base)) return null;
+    const tabs = allowedMenuTabs(session, link.base);
+    const first = link.tabs.find((tab) => !tabs || tabs.includes(tab));
+    if (!first) return null;
+    return { key: `${link.base}#${link.name}`, name: link.name, icon: link.icon, href: `${link.base}?tab=${first}` };
+  }
   const allowed = permittedImportTabs(session).map((tab) => tab.id);
   if (!link.importTabs.some((tab) => allowed.includes(tab))) return null;
   return { key: link.href, name: link.name, icon: link.icon, href: link.href };
@@ -144,7 +166,7 @@ function placedMenuHrefs() {
   const placed = new Set<string>(PERMISSION_ONLY_HREFS);
   const visit = (link: MenuLayoutLink) => {
     if (link.kind === "menu") placed.add(link.href);
-    if (link.kind === "tab") placed.add(link.base);
+    if (link.kind === "tab" || link.kind === "tabGroup") placed.add(link.base);
   };
   MENU_TOP_LINKS.forEach(visit);
   MENU_GROUPS.forEach((group) => group.sections.forEach((section) => section.links.forEach(visit)));

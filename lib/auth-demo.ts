@@ -375,21 +375,23 @@ export function createDemoSession(user: DemoUser): DemoSession {
  */
 export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = {
   "/reports": [
+    // Xếp theo 5 nhóm Báo cáo & BI (lib/report-tab-groups, khách 25/11/2026), rồi tới các tab
+    // hiện ở chỗ khác của menu. Thứ tự này là thứ tự trên màn Phân quyền và tab mặc định.
     { id: "dashboard", label: "Điều hành" },
     { id: "operations", label: "Vận hành" },
     { id: "budget", label: "Ngân sách" },
     { id: "payroll-budget", label: "Ngân sách nhân sự" },
-    { id: "daily-cash", label: "Thu chi ngày" },
-    { id: "cash-source", label: "Nguồn tiền" },
     { id: "revenue-ledger", label: "Sổ doanh thu" },
     { id: "sales-analysis", label: "DT theo ca & món" },
-    { id: "revenue-settlement", label: "Tiền về đủ chưa" },
-    { id: "activity", label: "Kỳ & Log" },
     { id: "pnl", label: "Hoạch định P&L" },
     { id: "daily-pnl", label: "Báo cáo theo ngày" },
     { id: "yoy", label: "Biến động YoY" },
-    { id: "cashflow", label: "Dự báo dòng tiền" },
     { id: "balance", label: "Bảng cân đối" },
+    { id: "daily-cash", label: "Thu chi ngày" },
+    { id: "cash-source", label: "Nguồn tiền" },
+    { id: "cashflow", label: "Dự báo dòng tiền" },
+    { id: "revenue-settlement", label: "Tiền về đủ chưa" },
+    { id: "activity", label: "Kỳ & Log" },
   ],
   "/finance-operations": [
     { id: "cashbook", label: "Sổ quỹ dòng tiền" },

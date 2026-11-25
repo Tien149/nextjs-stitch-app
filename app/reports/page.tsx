@@ -11,6 +11,7 @@ import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
 import { allowedSubTabs, canCreateCashDeposit as canCreateCashDepositSlip, canPerformMenuAction, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
 import { useMenuTab } from "@/lib/menu-tab-event";
+import { reportTabGroupOf } from "@/lib/report-tab-groups";
 import { ImportLauncher } from "@/components/ImportLauncher";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterCashierCashSources, filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, stripMoneySourceLabel, type MoneySourceOption } from "@/lib/money-sources";
@@ -341,6 +342,13 @@ export default function ReportsPage() {
 
   // Vai trò được gán riêng một tab (ví dụ thu ngân chỉ có "Thu chi ngày") thì chỉ thấy tab đó.
   const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
+  /**
+   * Báo cáo & BI chia 5 nhóm (khách 25/11/2026, lib/report-tab-groups): hàng tab chỉ hiện các tab
+   * cùng nhóm với tab đang mở. Tab mở từ chỗ khác của menu (Thu chi ngày, Nguồn tiền, Dự báo dòng
+   * tiền, Tiền về đủ chưa ở nhóm Tiền) thì hàng tab chỉ hiện đúng tab đó.
+   */
+  const activeGroup = reportTabGroupOf(active);
+  const barTabs = activeGroup ? visibleTabs.filter((tab) => activeGroup.tabs.includes(tab.id)) : visibleTabs.filter((tab) => tab.id === active);
   const canConfigure = user ? canPerformMenuAction(user, href, "create") : false;
   const canCreateCashDeposit = user ? canCreateCashDepositSlip(user) : false;
   const canEnterManualRevenue = user ? canPerformMenuAction(user, href, "create") : false;
@@ -481,6 +489,11 @@ export default function ReportsPage() {
   // trước đây trang chỉ đọc ?tab= lúc mở nên đứng yên ở tab cũ.
   useMenuTab(href, (tab) => {
     if (reportTabs.some((item) => item.id === tab)) handleTabChange(tab);
+    // Mục trần "Báo cáo & BI" (link cũ) khi đang ở màn ngoài 5 nhóm: về tab báo cáo đầu tiên.
+    else if (!tab && !reportTabGroupOf(active)) {
+      const first = visibleTabs.find((item) => reportTabGroupOf(item.id));
+      if (first) handleTabChange(first.id);
+    }
   });
 
   const printDailyCashReport = () => {
@@ -538,7 +551,6 @@ export default function ReportsPage() {
       ...operations.details.purchaseRequests.map((row) => ({ ...row, module: "PR" })),
       ...operations.details.purchaseOrders.map((row) => ({ ...row, module: "PO" })),
       ...operations.details.receipts.map((row) => ({ ...row, module: "Nhập hàng" })),
-      ...operations.details.workItems.map((row) => ({ ...row, module: "Công việc" })),
       ...operations.details.assets.map((row) => ({ ...row, module: "Tài sản/CCDC" })),
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [operations]);
@@ -926,7 +938,7 @@ export default function ReportsPage() {
         <ModuleTabs
           active={active}
           onChange={handleTabChange}
-          tabs={visibleTabs}
+          tabs={barTabs}
         />
         <StickyFilterSlot />
       </div>
@@ -952,22 +964,21 @@ export default function ReportsPage() {
 
       {!tabLoading && operations && (
         <div className="space-y-5">
-          <div className="grid sm:grid-cols-2 xl:grid-cols-5 gap-4">
+          {/* Bỏ khối Công việc (khách 25/11/2026: công việc đã chuyển sang phần mềm khác). */}
+          <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4">
             <OpsKpi label="PR" count={operations.summary.purchaseRequests.count} amount={operations.summary.purchaseRequests.amount} icon="assignment" />
             <OpsKpi label="PO" count={operations.summary.purchaseOrders.count} amount={operations.summary.purchaseOrders.amount} icon="shopping_cart" />
             <OpsKpi label="Nhập hàng" count={operations.summary.receipts.count} amount={operations.summary.receipts.amount} icon="inventory" />
-            <OpsKpi label="Công việc" count={operations.summary.workItems.count} extra={`${operations.summary.workItems.overdue} quá hạn`} icon="task_alt" />
             <OpsKpi label="Tài sản/CCDC" count={operations.summary.assets.count} amount={operations.summary.assets.amount} icon="precision_manufacturing" />
           </div>
           <div className="grid xl:grid-cols-2 gap-5">
             <OperationGroupTable title="PR theo phòng ban" rows={operations.groups.purchaseRequests} />
             <OperationGroupTable title="PO theo phòng ban" rows={operations.groups.purchaseOrders} />
             <OperationGroupTable title="Nhập hàng theo phòng ban" rows={operations.groups.receipts} />
-            <OperationGroupTable title="Công việc theo phòng ban" rows={operations.groups.workItems} />
             <OperationGroupTable title="Tài sản/CCDC theo phòng ban" rows={operations.groups.assets} />
           </div>
           <section className="table-panel">
-            <PanelHeader title="Danh sách chi tiết vận hành" subtitle="Scroll để xem PR, PO, nhập hàng, công việc và tài sản/CCDC trong kỳ." />
+            <PanelHeader title="Danh sách chi tiết vận hành" subtitle="Scroll để xem PR, PO, nhập hàng và tài sản/CCDC trong kỳ." />
             <div className="max-h-[520px] overflow-auto">
               <Table headers={["Phần hành", "Mã", "Ngày", "Cửa hàng", "Phòng ban", "Trạng thái", "Giá trị/Phụ trách"]}>
                 {operationRows.map((row) => (

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { branchScopeOptions, displayRoleName } from "@/lib/branch-labels";
+import { reportTabSectionLabel } from "@/lib/report-tab-groups";
 import { ALL_APP_ACTIONS, appMenuItems, type AppAction, type DemoSession, SESSION_KEY, moduleTabs, moduleSubTabs, isSubTabEntry, subTabEntry } from "@/lib/auth-demo";
 import { logout } from "@/lib/session-client";
 import CopyableText from "@/components/CopyableText";
@@ -866,7 +867,17 @@ export default function PermissionsPage() {
                       );
                     })}
                   </tr>,
-                  ...(moduleTabs[item.href] || []).flatMap((tab) => [
+                  ...(moduleTabs[item.href] || []).flatMap((tab, tabIndex, tabs) => [
+                    // Báo cáo & BI: dòng tiêu đề nhóm trước tab đầu của mỗi nhóm (khách 25/11/2026).
+                    ...(item.href === "/reports" && (tabIndex === 0 || reportTabSectionLabel(tabs[tabIndex - 1].id) !== reportTabSectionLabel(tab.id))
+                      ? [
+                          <tr key={`${item.name}-group-${tab.id}`} className="bg-slate-100/70">
+                            <td colSpan={rolesList.length + 1} className="px-4 py-1.5 pl-10 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                              {reportTabSectionLabel(tab.id)}
+                            </td>
+                          </tr>,
+                        ]
+                      : []),
                     <tr key={`${item.name}-${tab.id}`} className="bg-slate-50/60 hover:bg-slate-100/60">
                       <td className="px-4 py-2 pl-12 text-xs font-medium text-slate-600">
                         <span className="material-symbols-outlined text-sm mr-2 align-middle text-slate-300">subdirectory_arrow_right</span>
