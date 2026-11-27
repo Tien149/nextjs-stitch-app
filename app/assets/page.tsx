@@ -72,7 +72,7 @@ type Asset = {
   allocatedAmount?: number;
   remainingPeriods?: number | null;
   computedCurrentValue?: number;
-  computedStatus?: "IN_USE" | "FULLY_ALLOCATED" | "DISPOSED";
+  computedStatus?: "IN_USE" | "FULLY_ALLOCATED" | "DISPOSED" | "TRANSFERRED";
   canEditCode?: boolean;
   codeEditLockReason?: string | null;
   /** Một mã nhiều đợt (lib/asset-lot.ts): đợt thứ mấy / tổng số đợt của mã. */
@@ -392,7 +392,7 @@ export default function AssetsPage() {
   const reusableAssets = useMemo(() => {
     const byCode = new Map<string, Asset>();
     for (const asset of unsearchedAssets) {
-      if ((asset.computedStatus || asset.status) === "DISPOSED") continue;
+      if (["DISPOSED", "TRANSFERRED"].includes(asset.computedStatus || asset.status || "")) continue;
       const current = byCode.get(asset.code);
       if (!current || (asset.lotNo || 1) > (current.lotNo || 1)) byCode.set(asset.code, asset);
     }
@@ -428,9 +428,11 @@ export default function AssetsPage() {
 
   // KPI Calculations
   const kpis = useMemo(() => {
-    const totalOriginalCost = assets.reduce((sum, a) => sum + a.originalCost, 0);
-    const totalAllocatedAmount = assets.reduce((sum, a) => sum + (a.allocatedAmount || 0), 0);
-    const totalRemainingValue = assets.reduce(
+    // Đợt gốc đã điều chuyển chỉ là lịch sử — nguyên giá / số lượng của nó đã nằm ở các đợt mới.
+    const live = assets.filter((a) => (a.computedStatus || a.status) !== "TRANSFERRED");
+    const totalOriginalCost = live.reduce((sum, a) => sum + a.originalCost, 0);
+    const totalAllocatedAmount = live.reduce((sum, a) => sum + (a.allocatedAmount || 0), 0);
+    const totalRemainingValue = live.reduce(
       (sum, a) => sum + (a.computedCurrentValue !== undefined ? a.computedCurrentValue : a.currentValue),
       0
     );
@@ -442,7 +444,7 @@ export default function AssetsPage() {
       totalOriginalCost,
       totalAllocatedAmount,
       totalRemainingValue,
-      totalCount: assets.length,
+      totalCount: live.length,
       inUseCount,
       fullyAllocatedCount,
       disposedCount,
@@ -718,6 +720,7 @@ export default function AssetsPage() {
   const departmentSummary = useMemo(() => {
     const map = new Map<string, { code: string; name: string; count: number; quantity: number; originalCost: number; remainingValue: number }>();
     for (const asset of assets) {
+      if ((asset.computedStatus || asset.status) === "TRANSFERRED") continue;
       const code = asset.departmentCode || "UNASSIGNED";
       const department = departments.find((d) => d.code === code);
       const currentVal = asset.computedCurrentValue !== undefined ? asset.computedCurrentValue : asset.currentValue;
@@ -744,6 +747,8 @@ export default function AssetsPage() {
         return <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-800">Đã phân bổ hết</span>;
       case "DISPOSED":
         return <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-slate-200 text-slate-700">Đã thanh lý</span>;
+      case "TRANSFERRED":
+        return <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-indigo-100 text-indigo-800" title="Đợt này đã điều chuyển (hết hoặc một phần) — giá trị còn lại nằm ở đợt mới">Đã điều chuyển</span>;
       case "IN_USE":
       default:
         return <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-emerald-100 text-emerald-800">Đang dùng</span>;
@@ -1475,6 +1480,7 @@ export default function AssetsPage() {
                     <option value="IN_USE">Đang dùng</option>
                     <option value="FULLY_ALLOCATED">Đã phân bổ hết</option>
                     <option value="DISPOSED">Đã thanh lý</option>
+                    <option value="TRANSFERRED">Đã điều chuyển</option>
                   </select>
                 </div>
 

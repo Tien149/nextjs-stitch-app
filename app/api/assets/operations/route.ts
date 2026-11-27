@@ -13,6 +13,8 @@ import { allowedDepartmentsOf, assertDepartmentAccess } from "@/lib/department-s
 import { AssetCodeError, nextAssetCode } from "@/lib/asset-code-generator";
 import { softDeleteRecord } from "@/lib/soft-delete";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel } from "@/lib/stocktake-status";
+import { ASSET_TRANSFERRED, cancelAssetTransfer, createAssetTransfer, postAssetTransferJournals } from "@/lib/asset-transfer";
+import { postJournalEntry } from "@/lib/accounting";
 
 /** Module ghi audit vẫn là Tài sản. */
 const menuHref = "/assets";
@@ -110,7 +112,8 @@ export async function GET(request: Request) {
     // khoảng, không thì giữ giới hạn bản ghi mới nhất như cũ.
     const range = prismaDateRange({ from: searchParams.get("from"), to: searchParams.get("to") });
     const listTake = range ? 5000 : 200;
-    const [assets, depreciations, maintenances, damageReports, stocktakeSessions] = await Promise.all([
+    const transferWhere = branchCode === "ALL" ? {} : { OR: [{ fromBranchCode: branchCode }, { toBranchCode: branchCode }] };
+    const [assets, depreciations, maintenances, damageReports, stocktakeSessions, assetTransfers] = await Promise.all([
       prisma.assetRecord.findMany({ where: assetWhere, orderBy: { createdAt: "desc" } }),
       // Ma trận khấu hao 12 tháng × mọi tài sản: 200 dòng cũ cắt mất số (20 tài sản × 12 kỳ = 240).
       prisma.assetDepreciation.findMany({ where: relatedWhere, include: { asset: true }, orderBy: [{ period: "desc" }, { createdAt: "desc" }], take: 20000 }),
@@ -126,6 +129,8 @@ export async function GET(request: Request) {
         orderBy: { createdAt: "desc" },
         take: range ? 500 : 20,
       }),
+      // Phiếu điều chuyển liên nhà hàng (khách 27/11/2026) — thấy ở cả nhà hàng chuyển lẫn nhà hàng nhận.
+      prisma.assetTransfer.findMany({ where: { ...transferWhere, ...(range ? { transferDate: range } : {}) }, orderBy: { createdAt: "desc" }, take: range ? 2000 : 200 }),
     ]);
     // Ảnh kiểm kê là data URL nặng; danh sách phiên chỉ cần biết dòng CÓ ảnh, ảnh thật tải riêng
     // qua ?stocktakeLineImage=<id> khi người dùng bấm xem.
@@ -133,7 +138,7 @@ export async function GET(request: Request) {
       ...session,
       lines: session.lines.map(({ imageUrl, ...line }) => ({ ...line, hasImage: Boolean(imageUrl) })),
     }));
-    return NextResponse.json(scopePayloadByTab(auth.session, "/assets/operations", { assets, depreciations, maintenances, damageReports, assetStocktakes }));
+    return NextResponse.json(scopePayloadByTab(auth.session, "/assets/operations", { assets, depreciations, maintenances, damageReports, assetStocktakes, assetTransfers }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -150,7 +155,7 @@ export async function POST(request: Request) {
       ? "approve"
       : action === "DELETE_ASSET_STOCKTAKE"
         ? "delete"
-        : ["RUN_DEPRECIATION", "REOPEN_DEPRECIATION", "REOPEN_MAINTENANCE", "REOPEN_DAMAGE", "REOPEN_DISPOSAL", "COMPLETE_MAINTENANCE", "RESOLVE_DAMAGE", "CONFIGURE_DEPRECIATION"].includes(action) ? "edit" : "create";
+        : ["RUN_DEPRECIATION", "REOPEN_DEPRECIATION", "REOPEN_MAINTENANCE", "REOPEN_DAMAGE", "REOPEN_DISPOSAL", "COMPLETE_MAINTENANCE", "RESOLVE_DAMAGE", "CONFIGURE_DEPRECIATION", "TRANSFER_ASSET", "CANCEL_ASSET_TRANSFER"].includes(action) ? "edit" : "create";
     const auth = requireMenuAction(request, operationsHref, requiredAction);
     if (!auth.ok) return auth.response;
 
@@ -602,6 +607,10 @@ export async function POST(request: Request) {
         businessError(`Các kỳ sau đã chạy khấu hao (${laterPeriods.map((row) => row.period).join(", ")}). Mở lại từ kỳ mới nhất rồi lùi dần về ${period}.`);
       }
 
+      const transferredRow = rows.find((row) => row.asset.status === ASSET_TRANSFERRED);
+      if (transferredRow) {
+        businessError(`${transferredRow.asset.code} (đợt ${transferredRow.asset.lotNo}) đã điều chuyển sang nhà hàng khác — huỷ phiếu điều chuyển trước rồi mới mở lại khấu hao các kỳ trước khi chuyển.`);
+      }
       const restorable = rows.filter((row) => row.asset.status !== "DISPOSED");
       const totalAmount = rows.reduce((sum, row) => sum + row.depreciationAmount, 0);
       await prisma.$transaction(async (tx) => {
@@ -992,11 +1001,47 @@ export async function POST(request: Request) {
       return NextResponse.json(result);
     }
 
+    /**
+     * Điều chuyển tài sản/CCDC sang nhà hàng khác (khách 27/11/2026) — lib/asset-transfer.ts.
+     * Người lập phải có quyền nhà hàng đang giữ tài sản; bút toán ghi ngay sau khi lưu phiếu.
+     */
+    if (action === "TRANSFER_ASSET") {
+      const assetId = cleanText(body.assetId);
+      const source = await prisma.assetRecord.findUnique({ where: { id: assetId } });
+      if (!source) businessError("Không tìm thấy tài sản / CCDC");
+      assertBranchAccess(auth.session, source.branchCode);
+      assertDepartmentAccess(auth.session, source.departmentCode, `Tài sản ${source.code}`);
+      const transfer = await prisma.$transaction((tx) => createAssetTransfer(tx, {
+        assetId,
+        toBranchCode: cleanText(body.toBranchCode),
+        toWarehouseCode: cleanText(body.toWarehouseCode) || null,
+        toDepartmentCode: cleanText(body.toDepartmentCode) || null,
+        transferDate: body.transferDate ? toDate(body.transferDate) : new Date(),
+        quantity: body.quantity === undefined || body.quantity === "" ? source.quantity : toNumber(body.quantity),
+        note: cleanText(body.note) || null,
+        actor: auth.session.name,
+      }), { timeout: 60_000 });
+      await postAssetTransferJournals(transfer, postJournalEntry, auth.session.name);
+      await writeAuditLog({ session: auth.session, module: "ASSET", action: "TRANSFER_ASSET", entityType: "AssetTransfer", entityId: transfer.id, entityCode: transfer.code, branchCode: transfer.fromBranchCode, metadata: { assetCode: transfer.assetCode, toBranchCode: transfer.toBranchCode, quantity: transfer.quantity, remainingValue: transfer.remainingValue, remainingPeriods: transfer.remainingPeriods } });
+      return NextResponse.json(transfer);
+    }
+
+    if (action === "CANCEL_ASSET_TRANSFER") {
+      const transferId = cleanText(body.transferId);
+      const existing = await prisma.assetTransfer.findUnique({ where: { id: transferId } });
+      if (!existing) businessError("Không tìm thấy phiếu điều chuyển");
+      assertBranchAccess(auth.session, existing.fromBranchCode);
+      const result = await prisma.$transaction((tx) => cancelAssetTransfer(tx, transferId, auth.session.name), { timeout: 60_000 });
+      await writeAuditLog({ session: auth.session, module: "ASSET", action: "CANCEL_ASSET_TRANSFER", entityType: "AssetTransfer", entityId: result.id, entityCode: result.code, branchCode: result.fromBranchCode, metadata: { assetCode: result.assetCode, toBranchCode: result.toBranchCode } });
+      return NextResponse.json(result);
+    }
+
     if (action === "DISPOSE_ASSET") {
       const assetId = cleanText(body.assetId) || cleanText(body.id);
       const asset = await prisma.assetRecord.findUnique({ where: { id: assetId } });
       if (!asset) businessError("Không tìm thấy tài sản");
       assertBranchAccess(auth.session, asset.branchCode);
+      if (asset.status === ASSET_TRANSFERRED) businessError(`${asset.code} (đợt ${asset.lotNo}) đã điều chuyển sang nhà hàng khác — thanh lý ở đợt bên nhà hàng nhận.`);
 
       const disposalDate = body.disposalDate ? toDate(body.disposalDate) : new Date();
       if (await isPeriodLocked(disposalDate, asset.branchCode)) businessError("Kỳ kế toán đã khóa");

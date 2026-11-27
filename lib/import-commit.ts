@@ -2006,7 +2006,7 @@ export async function commitImport(input: CommitInput) {
           // Một mã có thể nhiều đợt: file kiểm kê đếm THEO MÃ, hệ thống chia về từng đợt
           // (lib/asset-lot.ts distributeStocktakeCount — thừa vào đợt mới nhất, thiếu trừ từ đợt mới).
           // Chỉ các đợt của cửa hàng đang kiểm: cùng mã có thể nằm ở nhiều nhà hàng.
-          const lots = await tx.assetRecord.findMany({ where: { code: assetCode, branchCode: session.branchCode, deletedAt: null, status: { not: "DISPOSED" } }, orderBy: { lotNo: "asc" } });
+          const lots = await tx.assetRecord.findMany({ where: { code: assetCode, branchCode: session.branchCode, deletedAt: null, status: { notIn: ["DISPOSED", "TRANSFERRED"] } }, orderBy: { lotNo: "asc" } });
           if (lots.length === 0) throw new Error(`Dong ${row.rowNumber}: Khong tim thay tai san ${assetCode} o cua hang ${session.branchCode}`);
           const actualQuantity = asNumber(row.values.actual_quantity);
           const distributed = distributeStocktakeCount(lots.map((lot) => ({ id: lot.id, lotNo: lot.lotNo, quantity: lot.quantity })), actualQuantity);

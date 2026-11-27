@@ -32,6 +32,7 @@ export const MONEY_FIELDS: Record<string, readonly string[]> = {
   DebtSettlement: ["amount"],
   VoucherAllocation: ["amount"],
   AssetRecord: ["originalCost", "currentValue", "accumulatedDepreciation", "residualValue", "payableAmount", "disposalAmount"],
+  AssetTransfer: ["originalCost", "accumulatedDepreciation", "remainingValue"],
   ReconciliationMatch: ["targetAmount", "matchedAmount"],
   SupplierQuote: ["totalAmount"],
   SupplierQuoteLine: ["totalCost"],

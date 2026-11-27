@@ -81,6 +81,22 @@ async function assetDeleteSteps(asset: NonNullable<Awaited<ReturnType<typeof pri
     });
   }
 
+  // Đợt dính phiếu điều chuyển nhà hàng (đợt gốc đã chuyển hoặc đợt sinh ra từ phiếu): xoá lẻ một
+  // đợt là lệch công nợ nội bộ + bút toán của phiếu — huỷ phiếu điều chuyển trước.
+  if (asset.status === "TRANSFERRED" || asset.transferId) {
+    const transfer = await prisma.assetTransfer.findFirst({
+      where: { status: "ACTIVE", OR: [{ sourceAssetId: asset.id }, ...(asset.transferId ? [{ id: asset.transferId }] : [])] },
+      select: { code: true },
+    });
+    if (transfer) {
+      steps.push({
+        text: `Tài sản đi theo phiếu điều chuyển ${transfer.code}. Huỷ phiếu điều chuyển trước (Vận hành tài sản › Điều chuyển).`,
+        href: "/assets/operations?tab=transfer",
+        linkLabel: "Mở tab Điều chuyển",
+      });
+    }
+  }
+
   if (isDisposedAsset(asset)) {
     steps.push({
       text: "Tài sản đã thanh lý. Mở lại phiếu thanh lý ở Vận hành tài sản › Thanh lý (phiếu thu tiền thanh lý sẽ bị gỡ theo).",
@@ -304,8 +320,11 @@ export async function GET(request: Request) {
       const remainingPeriods = asset.usefulLifeMonths ? Math.max(asset.usefulLifeMonths - allocatedPeriods, 0) : null;
       const computedCurrentValue = Math.max(asset.originalCost - allocatedAmount, asset.residualValue);
 
-      let computedStatus: "IN_USE" | "FULLY_ALLOCATED" | "DISPOSED" = "IN_USE";
-      if (asset.disposalStatus || asset.status === "DISPOSED") {
+      let computedStatus: "IN_USE" | "FULLY_ALLOCATED" | "DISPOSED" | "TRANSFERRED" = "IN_USE";
+      if (asset.status === "TRANSFERRED") {
+        // Đợt gốc đã chuyển (hết hoặc một phần) sang đợt mới — giá trị còn lại nằm ở đợt mới.
+        computedStatus = "TRANSFERRED";
+      } else if (asset.disposalStatus || asset.status === "DISPOSED") {
         computedStatus = "DISPOSED";
       } else if (asset.usefulLifeMonths && remainingPeriods === 0) {
         computedStatus = "FULLY_ALLOCATED";
@@ -346,7 +365,7 @@ export async function GET(request: Request) {
         allocatedPeriods,
         allocatedAmount,
         remainingPeriods,
-        computedCurrentValue,
+        computedCurrentValue: asset.status === "TRANSFERRED" ? 0 : computedCurrentValue,
         computedStatus,
         canEditCode: !codeEditLockReason,
         codeEditLockReason,
@@ -937,6 +956,18 @@ export async function PATCH(request: Request) {
     }
 
     const targetBranch = body.branchCode !== undefined ? cleanText(body.branchCode) : current.branchCode;
+    /**
+     * Đổi NHÀ HÀNG của tài sản đã phân bổ / từ số dư đầu kỳ / từ phiếu điều chuyển: sửa thẳng ô cửa
+     * hàng thì lần Đồng bộ ghi sổ sau kéo cả chi phí các kỳ cũ sang nhà hàng mới. Phải dùng phiếu
+     * Điều chuyển (khách 27/11/2026) để kỳ cũ giữ ở nhà hàng cũ và sinh công nợ nội bộ.
+     */
+    if (targetBranch && targetBranch.toUpperCase() !== current.branchCode.toUpperCase()) {
+      const runCount = await prisma.assetDepreciation.count({ where: { assetId: current.id } });
+      if (runCount > 0 || current.openingBalanceId || current.transferredFromId || current.status === "TRANSFERRED") {
+        const why = runCount > 0 ? `đã phân bổ ${runCount} kỳ ở ${current.branchCode}` : current.openingBalanceId ? "sinh từ số dư đầu kỳ" : "đi theo phiếu điều chuyển";
+        return NextResponse.json({ error: `Không đổi nhà hàng của ${current.code} ở đây được vì tài sản ${why}. Dùng Vận hành tài sản → Điều chuyển để chuyển sang nhà hàng khác (chi phí kỳ cũ giữ ở nhà hàng cũ, có công nợ nội bộ).` }, { status: 409 });
+      }
+    }
     const nextCode = body.code !== undefined ? normalizeAssetCode(body.code) : current.code;
     if (body.code !== undefined && !nextCode) {
       return NextResponse.json({ error: "Mã tài sản không được để trống khi chỉnh sửa." }, { status: 400 });

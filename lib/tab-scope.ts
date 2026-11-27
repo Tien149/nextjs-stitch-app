@@ -40,6 +40,7 @@ const tabDataKeys: Record<string, Record<string, string[]>> = {
     damage: ["damageReports"],
     disposal: ["damageReports"],
     stocktake: ["assets", "assetStocktakes"],
+    transfer: ["assets", "assetTransfers"],
   },
 };
 

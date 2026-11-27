@@ -35,6 +35,8 @@ type Asset = {
   supplierName?: string | null;
   supplierCode?: string | null;
   status?: string;
+  quantity?: number;
+  openingDepreciatedPeriods?: number;
   disposalAmount?: number | null;
   disposalDate?: string | null;
 };
@@ -87,6 +89,30 @@ type AssetStocktakeLine = {
 
 type MasterOption = { code: string; name: string; branch?: string | null };
 
+/** Phiếu điều chuyển tài sản/CCDC giữa hai nhà hàng (khách 27/11/2026). */
+type AssetTransfer = {
+  id: string;
+  code: string;
+  transferDate: string;
+  fromBranchCode: string;
+  toBranchCode: string;
+  toWarehouseCode: string | null;
+  assetCode: string;
+  assetName: string;
+  isTool: boolean;
+  quantity: number;
+  sourceQuantity: number;
+  originalCost: number;
+  remainingValue: number;
+  depreciatedPeriods: number;
+  remainingPeriods: number | null;
+  receivableDebtCode: string | null;
+  payableDebtCode: string | null;
+  status: string;
+  note: string | null;
+  createdBy: string | null;
+};
+
 type AssetStocktakeSession = {
   id: string;
   code: string;
@@ -131,6 +157,7 @@ type Data = {
   maintenances: Maintenance[];
   damageReports: Damage[];
   assetStocktakes: AssetStocktakeSession[];
+  assetTransfers: AssetTransfer[];
 };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value || 0);
@@ -143,7 +170,8 @@ export default function AssetOperationsPage() {
   const href = "/assets/operations";
   const { user, loading } = useModuleAuth(href);
   const [active, setActive] = useState("depreciation");
-  const [data, setData] = useState<Data>({ assets: [], depreciations: [], maintenances: [], damageReports: [], assetStocktakes: [] });
+  const [data, setData] = useState<Data>({ assets: [], depreciations: [], maintenances: [], damageReports: [], assetStocktakes: [], assetTransfers: [] });
+  const [branches, setBranches] = useState<MasterOption[]>([]);
   const [departments, setDepartments] = useState<MasterOption[]>([]);
   const [assetGroups, setAssetGroups] = useState<MasterOption[]>([]);
   const [warehouses, setWarehouses] = useState<MasterOption[]>([]);
@@ -214,6 +242,8 @@ export default function AssetOperationsPage() {
     dueDate: "",
     note: "",
   });
+  const emptyTransferForm = () => ({ assetId: "", toBranchCode: "", toWarehouseCode: "", toDepartmentCode: "", transferDate: new Date().toISOString().slice(0, 10), quantity: "", note: "" });
+  const [transferForm, setTransferForm] = useState(emptyTransferForm);
   const [disposalForm, setDisposalForm] = useState({
     assetId: "",
     disposalDate: new Date().toISOString().slice(0, 10),
@@ -253,7 +283,7 @@ export default function AssetOperationsPage() {
     });
     if (!response.ok) return;
     const payload = await response.json() as Data;
-    setData(payload);
+    setData({ ...payload, assetTransfers: payload.assetTransfers || [] });
     setAssetId((value) => value || payload.assets[0]?.id || "");
   };
 
@@ -265,11 +295,13 @@ export default function AssetOperationsPage() {
       const rows = await response.json();
       return Array.isArray(rows) ? rows.map((row) => ({ code: String(row.code), name: String(row.name || row.code), branch: row.branch ?? null })) : [];
     };
-    const [departmentRows, groupRows, warehouseRows] = await Promise.all([
+    const [departmentRows, groupRows, warehouseRows, branchRows] = await Promise.all([
       fetch("/api/master-data?type=DEPARTMENT&status=ACTIVE", { headers }).then(toOptions),
       fetch("/api/master-data?type=ASSET_GROUP&status=ACTIVE", { headers }).then(toOptions),
       fetch("/api/master-data?type=WAREHOUSE&status=ACTIVE", { headers }).then(toOptions),
+      fetch("/api/master-data?type=BRANCH&status=ACTIVE", { headers }).then(toOptions),
     ]);
+    setBranches(branchRows);
     setDepartments(departmentRows);
     setAssetGroups(groupRows);
     setWarehouses(warehouseRows);
@@ -288,7 +320,7 @@ export default function AssetOperationsPage() {
   const buildStocktakeRows = (branchCode: string, departmentCode: string): StocktakeDraftRow[] => {
     const rows = new Map<string, StocktakeDraftRow>();
     const candidates = data.assets
-      .filter((asset) => asset.branchCode === branchCode && asset.status !== "DISPOSED")
+      .filter((asset) => asset.branchCode === branchCode && asset.status !== "DISPOSED" && asset.status !== "TRANSFERRED")
       .filter((asset) => !departmentCode || (asset.departmentCode || "").toUpperCase() === departmentCode.toUpperCase())
       .sort((a, b) => a.code.localeCompare(b.code) || (a.lotNo || 1) - (b.lotNo || 1));
     // Một mã nhiều đợt gộp thành MỘT dòng: nhân viên đếm cái nồi, không phân biệt nồi mua đợt nào.
@@ -644,11 +676,11 @@ export default function AssetOperationsPage() {
         tabs={visibleTabs}
       />
 
-      {["maintenance", "damage", "disposal", "stocktake"].includes(active) && (
+      {["maintenance", "damage", "disposal", "stocktake", "transfer"].includes(active) && (
         <div className="mb-4 rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm">
           <div className="flex flex-wrap items-end gap-3">
             <DateRangeFilter
-              label={{ maintenance: "Ngày bảo trì dự kiến", damage: "Ngày báo hỏng", disposal: "Ngày thanh lý", stocktake: "Ngày kiểm kê" }[active as "maintenance"]}
+              label={{ maintenance: "Ngày bảo trì dự kiến", damage: "Ngày báo hỏng", disposal: "Ngày thanh lý", stocktake: "Ngày kiểm kê", transfer: "Ngày điều chuyển" }[active as "maintenance"]}
               value={opsRangeDraft}
               onChange={setOpsRangeDraft}
             />
@@ -1386,6 +1418,124 @@ export default function AssetOperationsPage() {
         </div>
       )}
 
+      {active === "transfer" && (() => {
+        const picked = data.assets.find((asset) => asset.id === transferForm.assetId);
+        const pickedQuantity = picked?.quantity ?? 0;
+        const moveQuantity = transferForm.quantity === "" ? pickedQuantity : Number(transferForm.quantity) || 0;
+        const share = pickedQuantity > 0 ? Math.min(moveQuantity / pickedQuantity, 1) : 1;
+        const runCount = picked ? data.depreciations.filter((row) => row.asset.id === picked.id).length : 0;
+        const doneTotal = picked ? (picked.openingDepreciatedPeriods || 0) + runCount : 0;
+        const periodsLeft = picked?.usefulLifeMonths ? Math.max(picked.usefulLifeMonths - doneTotal, 0) : null;
+        const targetWarehouses = warehouses.filter((warehouse) => !transferForm.toBranchCode || !warehouse.branch || warehouse.branch === "ALL" || warehouse.branch === transferForm.toBranchCode);
+        const transfers = data.assetTransfers.filter((row) => inDateRange(row.transferDate, opsRange));
+        return (
+          <div className="grid xl:grid-cols-[420px_1fr] gap-5">
+            {canEdit && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!picked) { setMessage("Chọn tài sản / CCDC cần điều chuyển."); return; }
+                  if (!transferForm.toBranchCode) { setMessage("Chọn nhà hàng nhận."); return; }
+                  const summary = `Điều chuyển ${moveQuantity} / ${pickedQuantity} của ${picked.code} - ${picked.name} từ ${storeLabel(picked.branchCode)} sang ${storeLabel(transferForm.toBranchCode)}?\n\nGiá trị còn lại khoảng ${money(picked.currentValue * share)} đ${periodsLeft !== null ? `, phân bổ tiếp ${periodsLeft} kỳ ở nhà hàng nhận` : ""}. Sinh công nợ nội bộ: ${picked.branchCode} phải thu, ${transferForm.toBranchCode} phải trả.`;
+                  if (!window.confirm(summary)) return;
+                  void send({ action: "TRANSFER_ASSET", ...transferForm }, (payload) => `Đã lập phiếu ${String(payload.code)}: ${picked.code} chuyển sang ${storeLabel(transferForm.toBranchCode)}, giá trị còn lại ${money(Number(payload.remainingValue || 0))} đ${payload.remainingPeriods !== null && payload.remainingPeriods !== undefined ? `, phân bổ tiếp ${payload.remainingPeriods} kỳ` : ""}. Công nợ nội bộ ${String(payload.receivableDebtCode || "")} / ${String(payload.payableDebtCode || "")}.`)
+                    .then((ok) => { if (ok) setTransferForm(emptyTransferForm()); });
+                }}
+                className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit"
+              >
+                <h2 className="font-bold text-indigo-700 flex items-center gap-2">
+                  <span className="material-symbols-outlined">move_up</span>
+                  Điều chuyển sang nhà hàng khác
+                </h2>
+                <AssetSelect
+                  assets={data.assets.filter((asset) => asset.status === "IN_USE" && (asset.quantity ?? 0) > 0)}
+                  value={transferForm.assetId}
+                  onChange={(assetIdValue) => setTransferForm({ ...transferForm, assetId: assetIdValue, quantity: "" })}
+                />
+                {picked && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 space-y-0.5">
+                    <p>Đang ở <b>{storeLabel(picked.branchCode)}</b> · số lượng <b>{picked.quantity ?? 0}</b> · nguyên giá {money(picked.originalCost)} đ</p>
+                    <p>Giá trị còn lại <b>{money(picked.currentValue)} đ</b>{picked.usefulLifeMonths ? <> · đã phân bổ {doneTotal}/{picked.usefulLifeMonths} kỳ</> : " · chưa cấu hình khấu hao"}</p>
+                  </div>
+                )}
+                <Field label="Nhà hàng nhận *">
+                  <select className="control" value={transferForm.toBranchCode} onChange={(e) => setTransferForm({ ...transferForm, toBranchCode: e.target.value, toWarehouseCode: "" })} required>
+                    <option value="">Chọn nhà hàng nhận</option>
+                    {branches.filter((branch) => branch.code !== picked?.branchCode).map((branch) => <option key={branch.code} value={branch.code}>{branch.name} ({branch.code})</option>)}
+                  </select>
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Kho nhận">
+                    <select className="control" value={transferForm.toWarehouseCode} onChange={(e) => setTransferForm({ ...transferForm, toWarehouseCode: e.target.value })}>
+                      <option value="">(không chọn)</option>
+                      {targetWarehouses.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Phòng ban nhận">
+                    <select className="control" value={transferForm.toDepartmentCode} onChange={(e) => setTransferForm({ ...transferForm, toDepartmentCode: e.target.value })}>
+                      <option value="">(giữ như cũ)</option>
+                      {departments.filter((department) => !transferForm.toBranchCode || !department.branch || department.branch === "ALL" || department.branch === transferForm.toBranchCode).map((department) => <option key={department.code} value={department.code}>{department.name}</option>)}
+                    </select>
+                  </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Ngày điều chuyển *">
+                    <DateInput className="mt-1.5" value={transferForm.transferDate} onChange={(transferDate) => setTransferForm({ ...transferForm, transferDate })} ariaLabel="Ngày điều chuyển" required />
+                  </Field>
+                  <Field label={`Số lượng chuyển${picked ? ` (tối đa ${picked.quantity ?? 0})` : ""}`}>
+                    <input type="number" min="0" step="any" className="control" value={transferForm.quantity} placeholder={picked ? String(picked.quantity ?? 0) : "Toàn bộ"} onChange={(e) => setTransferForm({ ...transferForm, quantity: e.target.value })} />
+                  </Field>
+                </div>
+                {picked && (
+                  <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-900 space-y-0.5">
+                    <p>Chuyển sang: giá trị còn lại khoảng <b>{money(picked.currentValue * share)} đ</b>{periodsLeft !== null && <> · phân bổ tiếp <b>{periodsLeft} kỳ</b> ở nhà hàng nhận</>}</p>
+                    <p>Từ tháng {transferForm.transferDate.slice(5, 7)}/{transferForm.transferDate.slice(0, 4)} chi phí thuộc nhà hàng nhận; nhà hàng chuyển chịu tới hết tháng trước. Công nợ nội bộ bằng giá trị còn lại.</p>
+                  </div>
+                )}
+                <Field label="Ghi chú">
+                  <textarea className="control h-16 resize-none" value={transferForm.note} onChange={(e) => setTransferForm({ ...transferForm, note: e.target.value })} />
+                </Field>
+                <button className="primary-button bg-indigo-600 hover:bg-indigo-700 w-full">Lập phiếu điều chuyển</button>
+              </form>
+            )}
+
+            <section className="table-panel">
+              <Panel title="Phiếu điều chuyển tài sản / CCDC" reload={loadData} exportFileName="dieu_chuyen_tai_san" />
+              <Table headers={[{ label: "Phiếu" }, { label: "Tài sản / CCDC" }, { label: "Từ → Đến" }, { label: "SL", align: "right" }, { label: "Giá trị còn lại", align: "right" }, { label: "Kỳ còn lại", align: "right" }, { label: "Công nợ nội bộ" }, { label: "Trạng thái" }, { label: "Thao tác", align: "right" }]}>
+                {transfers.length === 0 ? (
+                  <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">Chưa có phiếu điều chuyển nào.</td></tr>
+                ) : transfers.map((row) => (
+                  <tr key={row.id} className={`border-t border-slate-100 ${row.status === "CANCELLED" ? "opacity-50" : ""}`}>
+                    <Cell><b>{row.code}</b><small className="block text-slate-500">{new Date(row.transferDate).toLocaleDateString("vi-VN")}</small></Cell>
+                    <Cell><DocLink code={row.assetCode} className="font-bold" /><small className="block text-slate-600">{row.assetName} · {row.isTool ? "CCDC" : "TSCĐ"}</small></Cell>
+                    <Cell>{storeLabel(row.fromBranchCode)} → <b>{storeLabel(row.toBranchCode)}</b>{row.toWarehouseCode ? <small className="block text-slate-500">{row.toWarehouseCode}</small> : null}</Cell>
+                    <Cell right>{row.quantity}{row.quantity < row.sourceQuantity ? <small className="block text-slate-500">/ {row.sourceQuantity}</small> : null}</Cell>
+                    <Cell right><b>{money(row.remainingValue)} đ</b><small className="block text-slate-500">NG {money(row.originalCost)} đ</small></Cell>
+                    <Cell right>{row.remainingPeriods ?? "-"}<small className="block text-slate-500">đã PB {row.depreciatedPeriods}</small></Cell>
+                    <Cell>{row.receivableDebtCode ? <><DocLink code={row.receivableDebtCode} /><small className="block text-slate-500">{row.payableDebtCode}</small></> : <span className="text-slate-400">-</span>}</Cell>
+                    <Cell>{row.status === "CANCELLED" ? <span className="status bg-slate-100 text-slate-600">Đã huỷ</span> : <span className="status bg-indigo-100 text-indigo-800">Đã điều chuyển</span>}</Cell>
+                    <Cell right>
+                      {canEdit && row.status === "ACTIVE" && (
+                        <button
+                          className="action-link text-slate-400 hover:text-rose-600"
+                          title="Huỷ phiếu: trả tài sản về nhà hàng cũ, gỡ công nợ nội bộ và bút toán"
+                          onClick={() => {
+                            if (!window.confirm(`Huỷ phiếu ${row.code}? ${row.assetCode} trở về ${storeLabel(row.fromBranchCode)} như trước khi chuyển; đợt mới ở nhà hàng nhận, công nợ nội bộ và bút toán của phiếu bị gỡ.`)) return;
+                            void send({ action: "CANCEL_ASSET_TRANSFER", transferId: row.id }, `Đã huỷ phiếu ${row.code}.`);
+                          }}
+                        >
+                          Huỷ phiếu
+                        </button>
+                      )}
+                    </Cell>
+                  </tr>
+                ))}
+              </Table>
+            </section>
+          </div>
+        );
+      })()}
+
       {active === "disposal" && (
         <div className="grid lg:grid-cols-[420px_1fr] gap-5">
           {canEdit && (
@@ -1401,7 +1551,7 @@ export default function AssetOperationsPage() {
                 <span className="material-symbols-outlined">delete_sweep</span>
                 Thực hiện thanh lý tài sản
               </h2>
-              <AssetSelect assets={data.assets.filter((a) => a.status !== "DISPOSED")} value={disposalForm.assetId} onChange={(assetIdValue) => setDisposalForm({ ...disposalForm, assetId: assetIdValue })} />
+              <AssetSelect assets={data.assets.filter((a) => a.status !== "DISPOSED" && a.status !== "TRANSFERRED")} value={disposalForm.assetId} onChange={(assetIdValue) => setDisposalForm({ ...disposalForm, assetId: assetIdValue })} />
               <Field label="Ngày thanh lý *">
                 <DateInput className="mt-1.5" value={disposalForm.disposalDate} onChange={(disposalDate) => setDisposalForm({ ...disposalForm, disposalDate })} ariaLabel="Ngày thanh lý tài sản" required />
               </Field>

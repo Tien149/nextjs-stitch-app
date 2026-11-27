@@ -713,6 +713,10 @@ model AssetRecord {
   disposalStatus            String?
   disposalAmount            Float?               @default(0)
   disposalNote              String?
+  /// Đợt sinh ra từ phiếu điều chuyển liên nhà hàng (khách 27/11/2026): đợt gốc bị tách và phiếu
+  /// AssetTransfer. Đợt này KHÔNG ghi bút toán ghi tăng (bút toán nằm ở phiếu điều chuyển).
+  transferredFromId         String?
+  transferId                String?
   status                    String               @default("IN_USE")
   note                      String?
   createdAt                 DateTime             @default(now())
@@ -734,7 +738,53 @@ model AssetRecord {
   @@index([status])
   @@index([sourcePurchaseOrderId])
   @@index([purchaseDocCode])
+  @@index([transferId])
   @@index([deletedAt])
+}
+
+/// Phiếu điều chuyển tài sản/CCDC giữa hai nhà hàng (khách 27/11/2026). Nhà hàng chuyển ngưng phân
+/// bổ từ kỳ chuyển; phần chuyển thành đợt mới ở nhà hàng nhận, mang giá trị còn lại và số kỳ còn
+/// lại; công nợ nội bộ (1368/3368) bằng giá trị còn lại. Chuyển một phần thì phần ở lại cũng thành
+/// đợt mới để phân bổ tiếp đúng số, đợt gốc giữ lịch sử khấu hao (trạng thái TRANSFERRED).
+model AssetTransfer {
+  id                      String    @id @default(uuid())
+  code                    String    @unique
+  transferDate            DateTime
+  period                  String
+  fromBranchCode          String
+  toBranchCode            String
+  toWarehouseCode         String?
+  toDepartmentCode        String?
+  sourceAssetId           String
+  assetCode               String
+  assetName               String
+  isTool                  Boolean   @default(true)
+  quantity                Float
+  sourceQuantity          Float
+  /// Phần chuyển đi: nguyên giá, lũy kế đã phân bổ (cả trước khi lên hệ thống), giá trị còn lại.
+  originalCost            Float
+  accumulatedDepreciation Float
+  remainingValue          Float
+  depreciatedPeriods      Float     @default(0)
+  remainingPeriods        Float?
+  targetAssetId           String?
+  keptAssetId             String?
+  /// Trạng thái + giá trị còn lại của đợt gốc trước khi chuyển — huỷ phiếu trả về đúng số này.
+  sourceSnapshotJson      String
+  receivableDebtCode      String?
+  payableDebtCode         String?
+  status                  String    @default("ACTIVE")
+  note                    String?
+  createdBy               String?
+  cancelledBy             String?
+  cancelledAt             DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@index([fromBranchCode])
+  @@index([toBranchCode])
+  @@index([sourceAssetId])
+  @@index([period])
 }
 
 model ReconciliationMatch {

@@ -24,6 +24,8 @@ export async function GET(request: Request) {
 
   const order = await prisma.purchaseOrder.findFirst({ where: { code }, select: { orderDate: true, branchCode: true } });
   if (order) return link("/procurement", { tab: "orders", code, date: vnDay(order.orderDate), branch: order.branchCode });
+  const assetTransfer = await prisma.assetTransfer.findFirst({ where: { code }, select: { transferDate: true } });
+  if (assetTransfer) return link("/assets/operations", { tab: "transfer", code, date: vnDay(assetTransfer.transferDate) });
   const purchaseRequest = await prisma.purchaseRequest.findFirst({ where: { code }, select: { requestDate: true, branchCode: true } });
   if (purchaseRequest) return link("/procurement", { tab: "requests", code, date: vnDay(purchaseRequest.requestDate), branch: purchaseRequest.branchCode });
 

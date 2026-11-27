@@ -431,6 +431,8 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
     { id: "disposal", label: "Thanh lý" },
     // Kiểm kê CCDC & Tài sản nằm ở đây theo yêu cầu khách — kiểm kê bên Kho chỉ nhận hàng tồn kho.
     { id: "stocktake", label: "Kiểm kê" },
+    // Điều chuyển tài sản/CCDC giữa các nhà hàng (khách 27/11/2026).
+    { id: "transfer", label: "Điều chuyển" },
   ],
 };
 

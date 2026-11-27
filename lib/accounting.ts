@@ -40,6 +40,7 @@ import {
 import type { MoneyTransfer } from "@prisma/custom-client";
 import { isFixedCostPnlGroupName } from "@/lib/pnl-ordering";
 import { ISSUE_ALLOCATION_SOURCE, syncIssueAllocation } from "@/lib/uniform-allocation";
+import { postAssetTransferJournals } from "@/lib/asset-transfer";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -705,6 +706,12 @@ async function runSyncAccountingPeriod(period: string, branchCode: string, actor
     select: { objectCode: true },
   })).map((row) => (row.objectCode || "").toUpperCase()));
   for (const row of assets) {
+    // Đợt sinh ra từ phiếu điều chuyển nhà hàng: không phải lần mua mới, bút toán nằm ở phiếu
+    // điều chuyển (ASSET_TRANSFER_OUT/_IN) — ghi tăng thêm là nhân đôi tài sản ở nhà hàng nhận.
+    if (row.transferredFromId) {
+      await prisma.journalEntry.deleteMany({ where: { sourceType: "ASSET_ACQUISITION", sourceId: row.id } });
+      continue;
+    }
     // Tài sản sinh từ số dư đầu kỳ đã có bút toán OPENING_BALANCE (Nợ 211/242) ngay bên trên —
     // ghi tăng thêm lần nữa là nhân đôi tài sản. Bản cũ chưa có openingBalanceId thì nhận theo
     // mã tài sản trùng một dòng số dư đầu kỳ loại ASSET.
@@ -991,6 +998,12 @@ async function runSyncAccountingPeriod(period: string, branchCode: string, actor
   for (const row of payables) results.push(await postJournalEntry({ entryDate: row.recognizedDate, branchCode: row.purchaseOrder.branchCode, sourceType: "SUPPLIER_PAYABLE", sourceId: row.id, sourceCode: row.purchaseOrder.code, description: `Nhập hàng ${row.purchaseOrder.code}`, createdBy: actor, lines: [{ accountCode: "152", debit: row.originalAmount, partnerCode: row.supplierCode }, { accountCode: "331", credit: row.originalAmount, partnerCode: row.supplierCode }] }));
 
   results.push(...await postInventoryCogs(start, end, branchCode, actor));
+
+  // Phiếu điều chuyển tài sản liên nhà hàng của kỳ (ghi ngay lúc lập; đồng bộ ghi lại cho chắc).
+  const assetTransfers = await prisma.assetTransfer.findMany({
+    where: { period, status: "ACTIVE", ...(branchCode === "ALL" ? {} : { OR: [{ fromBranchCode: branchCode }, { toBranchCode: branchCode }] }) },
+  });
+  for (const row of assetTransfers) results.push(...await postAssetTransferJournals(row, postJournalEntry, actor));
 
   const depreciation = await prisma.assetDepreciation.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { asset: { branchCode } }) }, include: { asset: true } });
   // CCDC nằm ở 242 (ghi tăng và số dư đầu kỳ đều treo 242) nên phân bổ phải rút 242 xuống; ghi
