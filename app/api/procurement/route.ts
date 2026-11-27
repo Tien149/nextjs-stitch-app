@@ -14,7 +14,7 @@ import {
   SoftDeleteError,
 } from "@/lib/soft-delete";
 import { scopePayloadByTab } from "@/lib/tab-scope";
-import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineRate, purchaseLineUnit, purchaseUnitOptions, toPurchasePrice } from "@/lib/unit-conversion";
+import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineRate, purchaseLineUnit, purchaseUnitOptions, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { parseVatRate } from "@/lib/inventory-vat";
 import { cancelPurchaseReceipt } from "@/lib/purchase-receipt-cancel";
@@ -25,6 +25,7 @@ import { findPriceDeviations, loadActivePrices, loadPriceLists, savePriceList } 
 import { buildTemplateImport, templateDayToDate, templateWindow, templateWindowStatus, type TemplateImportItem } from "@/lib/purchase-template";
 import { vnDay } from "@/lib/recipe-validity";
 import { allowedWarehousesOf, assertWarehouseAccess, scopeWarehouses } from "@/lib/warehouse-scope";
+import { notifyPurchaseRequestPending, resolveEntityNotifications } from "@/lib/notifications";
 
 const menuHref = "/procurement";
 
@@ -638,6 +639,8 @@ export async function POST(request: Request) {
         include: { lines: { include: { item: true } } },
       });
       await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "CREATE_REQUEST", entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode, metadata: { departmentCode, lines: result.lines.length } });
+      // Báo người duyệt (khách 27/11/2026) — lỗi gửi chỉ ghi log, không chặn tạo PR.
+      await notifyPurchaseRequestPending(result, auth.session, request);
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -786,6 +789,7 @@ export async function POST(request: Request) {
         return order;
       });
       await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "CREATE_ORDER", entityType: "PurchaseOrder", entityId: result.id, entityCode: result.code, branchCode, metadata: { requestId, supplierCode, supplierName, departmentCode, warehouseCode, totalAmount } });
+      if (requestId) await resolveEntityNotifications("PurchaseRequest", requestId);
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -1127,6 +1131,7 @@ export async function POST(request: Request) {
         include: { lines: { include: { item: true } } },
       });
       await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "CREATE_REQUEST_FROM_TEMPLATE", entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode, metadata: { templateId, templateCode: template.code, departmentCode, lines: result.lines.length } });
+      await notifyPurchaseRequestPending(result, auth.session, request);
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -1272,6 +1277,7 @@ export async function PATCH(request: Request) {
           data: { status: "REJECTED", approvedBy: auth.session.name, approvedAt: new Date(), rejectReason: cleanText(body.reason) || null },
         });
         await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousStatus: pr.status, reason: result.rejectReason } });
+        await resolveEntityNotifications("PurchaseRequest", result.id);
         return NextResponse.json(result);
       }
       /**
@@ -1288,10 +1294,40 @@ export async function PATCH(request: Request) {
       const warehouse = await prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: warehouseCode, branch: pr.branchCode } });
       if (!warehouse) businessError(`Kho ${warehouseCode} không thuộc chi nhánh ${pr.branchCode}.`);
       assertWarehouseAccess(auth.session, warehouseCode);
-      const allLines = await prisma.purchaseRequestLine.findMany({ where: { requestId }, include: { item: true } });
+      const allLines = await prisma.purchaseRequestLine.findMany({ where: { requestId }, include: { item: { include: { unitConversions: { where: { deletedAt: null } } } } } });
       if (allLines.length === 0) businessError(`Yêu cầu mua ${pr.code} không có dòng hàng.`);
       // Chỉ lên PO cho dòng chưa nằm trên PO nào (PR mở lại sau khi huỷ một trong các PO của nó).
-      const prLines = await openRequestLines(prisma, requestId, allLines);
+      const openLines = await openRequestLines(prisma, requestId, allLines);
+      /**
+       * Thu mua sửa SỐ LƯỢNG / ĐVT MUA ngay lúc duyệt (khách 27/11/2026: người đặt chọn nhầm "5 GR"
+       * thay vì "5 GÓI"). Số gửi lên theo ĐVT mua; DB vẫn lưu theo ĐVT tồn kho. Dòng PR cũng được sửa
+       * theo để PR – PO – nhận hàng khớp nhau; số cũ ghi vào nhật ký.
+       */
+      const lineEdits: Array<{ item: string; from: string; to: string }> = [];
+      const editInput = new Map<string, { quantity: number; unitCode: string }>();
+      for (const row of (Array.isArray(body.lines) ? body.lines : []) as Array<{ lineId?: unknown; quantity?: unknown; unitCode?: unknown }>) {
+        const lineId = cleanText(row.lineId);
+        if (!lineId || (row.quantity === undefined && row.unitCode === undefined)) continue;
+        editInput.set(lineId, { quantity: row.quantity === undefined ? Number.NaN : toNumber(row.quantity), unitCode: cleanText(row.unitCode) });
+      }
+      const prLines = openLines.map((line) => {
+        const input = editInput.get(line.id);
+        if (!input) return line;
+        const currentUnit = purchaseLineUnit(line);
+        const unitCode = input.unitCode || currentUnit;
+        // Giữ ĐVT cũ thì giữ luôn hệ số lúc đặt (danh mục có thể đã đổi hệ số sau đó).
+        const rate = unitCode.toUpperCase() === currentUnit.toUpperCase()
+          ? purchaseLineRate(line)
+          : conversionRateForUnit(line.item.unit, line.item.unitConversions, unitCode);
+        if (rate === null) businessError(`Mặt hàng ${line.item.name} chưa khai ĐVT ${unitCode} ở danh mục mặt hàng.`);
+        const purchaseQuantity = Number.isNaN(input.quantity) ? toPurchaseQuantity(line.quantity, line) : input.quantity;
+        if (!(purchaseQuantity > 0)) businessError(`Số lượng ${line.item.name} phải lớn hơn 0.`);
+        const quantity = Math.round(purchaseQuantity * rate * 1e6) / 1e6;
+        const changed = Math.abs(quantity - line.quantity) > 1e-9 || unitCode.toUpperCase() !== currentUnit.toUpperCase();
+        if (!changed) return line;
+        lineEdits.push({ item: `${line.item.code} ${line.item.name}`, from: `${toPurchaseQuantity(line.quantity, line)} ${currentUnit}`, to: `${purchaseQuantity} ${unitCode}` });
+        return { ...line, quantity, unitCode, conversionRate: rate };
+      });
       if (prLines.length === 0) businessError(`Yêu cầu mua ${pr.code} đã lên PO hết các dòng (${liveOrders.map((order) => order.code).join(", ")}).`);
       // Giá gửi lên theo ĐVT đặt của dòng PR (đ/KG...) → quy về ĐVT tồn như mọi chỗ khác.
       const lineInput = new Map<string, { price: number; supplierCode: string; supplierName: string }>();
@@ -1314,6 +1350,12 @@ export async function PATCH(request: Request) {
       }
       const now = new Date();
       const orders = await prisma.$transaction(async (tx) => {
+        for (const line of prLines) {
+          const original = openLines.find((candidate) => candidate.id === line.id);
+          if (original && original !== line) {
+            await tx.purchaseRequestLine.update({ where: { id: line.id }, data: { quantity: line.quantity, unitCode: line.unitCode, conversionRate: line.conversionRate } });
+          }
+        }
         const created = [];
         for (const group of groups.values()) {
           const code = await generatedCode("PO", "PurchaseOrder", tx);
@@ -1333,8 +1375,9 @@ export async function PATCH(request: Request) {
       });
       await writeAuditLog({
         session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: pr.id, entityCode: pr.code, branchCode: pr.branchCode,
-        metadata: { previousStatus: pr.status, reopenedLines: liveOrders.length > 0 ? prLines.length : undefined, orders: orders.map((order) => ({ code: order.code, supplierCode: order.supplierCode, totalAmount: order.totalAmount })), warehouseCode, unpricedLines: [...groups.values()].flatMap((group) => group.lines).filter((line) => !(line.unitCost > 0)).length },
+        metadata: { previousStatus: pr.status, reopenedLines: liveOrders.length > 0 ? prLines.length : undefined, editedLines: lineEdits.length > 0 ? lineEdits : undefined, orders: orders.map((order) => ({ code: order.code, supplierCode: order.supplierCode, totalAmount: order.totalAmount })), warehouseCode, unpricedLines: [...groups.values()].flatMap((group) => group.lines).filter((line) => !(line.unitCost > 0)).length },
       });
+      await resolveEntityNotifications("PurchaseRequest", pr.id);
       return NextResponse.json({ ...orders[0], codes: orders.map((order) => order.code), requestCode: pr.code });
     }
 
@@ -1473,6 +1516,7 @@ export async function PATCH(request: Request) {
         return updated;
       });
       await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousStatus: pr.status, droppedRemainder, orders: droppedRemainder ? pr.orders.map((order) => order.code) : undefined } });
+      await resolveEntityNotifications("PurchaseRequest", result.id);
       return NextResponse.json(result);
     }
 
@@ -1562,6 +1606,7 @@ export async function PATCH(request: Request) {
       });
 
       await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "UPDATE_REQUEST", entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { changedFields: Object.keys(body).filter((field) => field !== "action" && field !== "requestId"), lines: result.lines.length } });
+      if (resubmit) await notifyPurchaseRequestPending(result, auth.session, request, true);
       return NextResponse.json(result);
     }
 
@@ -1811,7 +1856,9 @@ export async function DELETE(request: Request) {
       if (pr.orders.length > 0) {
         businessError(`Đề nghị mua hàng ${pr.code} đã sinh ${pr.orders.length} đơn mua hàng nên không thể xoá. Hãy xoá đơn mua hàng trước.`);
       }
-      return NextResponse.json(await softDeleteRecord({ model: "PurchaseRequest", id, session: auth.session, reason }));
+      const deleted = await softDeleteRecord({ model: "PurchaseRequest", id, session: auth.session, reason });
+      await resolveEntityNotifications("PurchaseRequest", id);
+      return NextResponse.json(deleted);
     }
 
     if (["ORDER", "PO", "PURCHASE_ORDER", "PURCHASEORDER"].includes(type)) {

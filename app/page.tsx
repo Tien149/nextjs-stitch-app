@@ -19,6 +19,7 @@ import {
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { FilterApplyButton } from "@/components/FilterApplyButton";
+import { NotificationBell } from "@/components/NotificationBell";
 import { useAppliedFilters } from "@/lib/use-applied-filters";
 import { money as formatVndMoney } from "@/lib/format-number";
 
@@ -374,10 +375,7 @@ export default function Home() {
               </button>
             )}
             <div className="flex items-center gap-3 ml-2 border-l pl-4 border-slate-200">
-              <span className="material-symbols-outlined text-slate-600 bg-slate-100 p-2 rounded-full cursor-pointer hover:bg-slate-200 transition-colors relative">
-                notifications
-                <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-rose-500 rounded-full border-2 border-white"></span>
-              </span>
+              <NotificationBell tone="light" />
               <div className="flex items-center gap-2.5">
                 <div className="text-right hidden md:block">
                   <div className="text-xs font-bold text-slate-800">{user?.name}</div>

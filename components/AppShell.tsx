@@ -3,6 +3,13 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { AppSidebar } from "@/components/AppSidebar";
+import { UnreadBadge } from "@/components/NotificationBell";
+import { useUnreadCount } from "@/lib/notification-store";
+
+/** Số chưa đọc trên nút menu điện thoại — tách riêng để chỉ hỏi máy chủ khi đang ở trang có khung menu (không ở /login). */
+function MenuUnreadBadge() {
+  return <UnreadBadge count={useUnreadCount()} className="absolute -right-1 -top-1" />;
+}
 
 /** Cac route khong dung khung sidebar: man dang nhap, cac trang in chung tu va phieu PO cong khai gui NCC. */
 function isBareRoute(pathname: string) {
@@ -84,6 +91,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         className="lg:hidden fixed bottom-5 left-4 z-40 h-12 w-12 rounded-full bg-[#0f172a] text-white shadow-lg shadow-slate-900/30 grid place-items-center active:scale-95 transition-transform"
       >
         <span className="material-symbols-outlined">menu</span>
+        {/* Điện thoại: chuông nằm trong menu nên báo số chưa đọc ngay trên nút menu. */}
+        <MenuUnreadBadge />
       </button>
 
       {/* overflow-x-clip thay cho overflow-x-hidden: hidden biến khối này thành scroll

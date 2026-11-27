@@ -72,6 +72,8 @@ export default function Login() {
       const session = await response.json();
       const sessionValue = JSON.stringify(session);
       localStorage.setItem(SESSION_KEY, sessionValue);
+      // Máy này đã bật thông báo đẩy (người trước / chính mình lần trước) → gắn sang tài khoản vừa đăng nhập.
+      void import("@/lib/push-client").then(({ syncPush }) => syncPush());
 
       // Đồng bộ chi nhánh mặc định theo phạm vi được cấp cho tài khoản
       if (session.allowedBranches?.includes("ALL")) {

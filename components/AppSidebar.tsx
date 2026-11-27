@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { AppBrand } from "@/components/AppBrand";
 import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
+import { NotificationBell } from "@/components/NotificationBell";
 import { type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { resolveMenuLayout, type ResolvedMenuLink } from "@/lib/menu-layout";
 import { announceMenuTab } from "@/lib/menu-tab-event";
@@ -144,8 +145,12 @@ export function AppSidebar({ onNavigate, inDrawer = false }: { onNavigate?: () =
     // h-dvh thay h-screen: trên Safari/Chrome iOS, 100vh cao hơn vùng nhìn thấy nên khối chân
     // trang ("Trợ giúp", "Đăng xuất") bị đẩy khỏi màn hình và không cuộn tới được.
     <aside className="w-64 h-dvh fixed left-0 top-0 bg-[#0f172a] flex flex-col py-6 shadow-xl z-50 overflow-hidden">
-      <div className="px-6 mb-8 shrink-0">
-        <AppBrand compact />
+      <div className="pl-6 pr-3 mb-8 shrink-0 flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <AppBrand compact />
+        </div>
+        {/* Chuông thông báo (PR chờ duyệt...) — khách 27/11/2026. */}
+        {session && <NotificationBell onNavigate={onNavigate} />}
       </div>
       <nav className="sidebar-scroll flex-1 min-h-0 space-y-1 overflow-y-auto overscroll-contain pr-1">
         {layout.top.map((link) => renderLink(link, false))}

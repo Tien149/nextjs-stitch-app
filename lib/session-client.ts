@@ -12,6 +12,13 @@ export function clearClientSession() {
 
 // Cookie phiên là httpOnly nên phải nhờ server xoá, sau đó mới dọn localStorage.
 export async function logout() {
+  // Tắt thông báo đẩy của thiết bị trước (cần phiên còn sống) — người dùng sau trên máy này không nhận thông báo của mình.
+  try {
+    const { disablePush } = await import("@/lib/push-client");
+    await disablePush();
+  } catch {
+    // Không tắt được thì máy chủ vẫn gắn lại đăng ký cho người đăng nhập kế tiếp (syncPush).
+  }
   try {
     await fetch("/api/auth/logout", { method: "POST" });
   } catch {

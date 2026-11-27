@@ -7,6 +7,10 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "FIN ERP",
   description: "Hệ thống quản trị tài chính, POS và công nợ",
+  // Cài ra màn hình chính (PWA) — iPhone chỉ nhận thông báo đẩy khi mở app từ icon (iOS ≥ 16.4).
+  manifest: "/manifest.webmanifest",
+  icons: { apple: "/apple-touch-icon.png" },
+  appleWebApp: { capable: true, title: "FIN ERP", statusBarStyle: "default" },
 };
 
 export default function RootLayout({

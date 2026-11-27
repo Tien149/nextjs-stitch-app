@@ -2409,6 +2409,7 @@ export default function ProcurementPage() {
         <ApproveRequestDialog
           request={approvingRequest}
           existingOrders={liveOrdersOf(approvingRequest).map((order) => order.code)}
+          items={data.items}
           supplierOptions={supplierOptions}
           warehouses={warehousesForBranch(approvingRequest.branchCode)}
           defaultWarehouse={suggestedWarehouseForRequest(approvingRequest)}

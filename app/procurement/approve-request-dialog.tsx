@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { PartnerPicker, type CreatedPartner } from "@/components/PartnerPicker";
 import { SearchableSelect } from "@/components/SearchableSelect";
+import { QuantityInput } from "@/components/QuantityInput";
 import { money, quantity as qty } from "@/lib/format-number";
-import { purchaseLineUnit, toPurchasePrice, toPurchaseQuantity, type PurchaseUnitLine } from "@/lib/unit-conversion";
+import { purchaseLineRate, purchaseLineUnit, receiveUnitOptions, toPurchasePrice, toPurchaseQuantity, type PurchaseUnitLine, type UnitConversionLike } from "@/lib/unit-conversion";
 
 type ApproveLine = PurchaseUnitLine & { id: string; itemId: string; quantity: number; supplierCode?: string | null; supplierName?: string | null; note?: string | null; item: { code: string; name: string; unit: string } };
 type ApproveQuote = { supplierCode: string; supplierName: string; isSelected: boolean; lines: Array<PurchaseUnitLine & { itemId: string; unitCost: number }> };
@@ -16,6 +17,9 @@ type Option = { value: string; label: string; subLabel?: string };
 /** Giá một NCC cho một dòng PR, theo ĐVT đặt của dòng. */
 type LineOffer = { supplierCode: string; supplierName: string; price: number; source: string };
 type LineSupplier = { code: string; name: string };
+/** Số lượng / ĐVT mua thu mua sửa lúc duyệt (khách 27/11/2026) — số theo ĐVT mua, rate = hệ số về ĐVT tồn. */
+type LineEdit = { quantity: string; unitCode: string; rate: number };
+export type ApproveItemUnits = { id: string; unit: string; unitConversions?: UnitConversionLike[] | null };
 
 /**
  * Thu mua duyệt PR → lên PO luôn (khách 21/10/2026). CHƯA CÓ GIÁ VẪN DUYỆT ĐƯỢC — để trống, giá
@@ -35,6 +39,7 @@ export function ApproveRequestDialog({
   onClose,
   onApproved,
   existingOrders = [],
+  items = [],
 }: {
   request: ApprovableRequest;
   supplierOptions: Option[];
@@ -46,6 +51,8 @@ export function ApproveRequestDialog({
   onApproved: (message: string) => Promise<void> | void;
   /** PO còn hiệu lực của PR — có nghĩa là đang duyệt lại phần mở lại sau khi huỷ một PO (`request.lines` chỉ còn phần đó). */
   existingOrders?: string[];
+  /** Danh mục mặt hàng (ĐVT tồn + quy đổi) để chọn lại ĐVT mua từng dòng. */
+  items?: ApproveItemUnits[];
 }) {
   // NCC mặc định: NCC đề xuất trên PR (từ mẫu / người đặt) → báo giá đã chốt; thu mua đổi được.
   const initialQuote = request.quotes.find((quote) => quote.isSelected) || null;
@@ -58,6 +65,28 @@ export function ApproveRequestDialog({
   const [priceSource, setPriceSource] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Mặc định = đúng số & ĐVT người đặt; thu mua sửa thì PR và PO đi theo số mới.
+  const [edits, setEdits] = useState<Record<string, LineEdit>>(() => Object.fromEntries(request.lines.map((line) => [
+    line.id,
+    { quantity: String(toPurchaseQuantity(line.quantity, line)), unitCode: purchaseLineUnit(line), rate: purchaseLineRate(line) },
+  ])));
+  const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
+  /** Dòng PR sau khi áp số lượng / ĐVT thu mua sửa — mọi phép tính giá, tổng tiền dùng dòng này. */
+  const lines = useMemo<ApproveLine[]>(() => request.lines.map((line) => {
+    const edit = edits[line.id];
+    if (!edit) return line;
+    return { ...line, unitCode: edit.unitCode, conversionRate: edit.rate, quantity: (Number(edit.quantity) || 0) * edit.rate };
+  }), [request.lines, edits]);
+  /** Số & ĐVT người đặt ghi trên PR (để hiện "PR: 5 GR" cạnh ô đã sửa). */
+  const originalOf = (lineId: string) => {
+    const line = request.lines.find((candidate) => candidate.id === lineId);
+    return line ? { quantity: toPurchaseQuantity(line.quantity, line), unit: purchaseLineUnit(line) } : null;
+  };
+  const isEdited = (lineId: string) => {
+    const edit = edits[lineId];
+    const original = originalOf(lineId);
+    return Boolean(edit && original) && (edit.unitCode.toUpperCase() !== original!.unit.toUpperCase() || Math.abs((Number(edit.quantity) || 0) - original!.quantity) > 1e-9);
+  };
 
   // Bảng giá đang hiệu lực của MỌI NCC cho cửa hàng — nguồn gợi ý từng dòng và bảng so sánh.
   useEffect(() => {
@@ -70,26 +99,24 @@ export function ApproveRequestDialog({
     return () => { cancelled = true; };
   }, [request.branchCode]);
 
-  /** Mọi NCC có giá cho từng dòng (báo giá trên PR trước, rồi bảng giá), rẻ nhất trước. */
-  const offersByLine = useMemo(() => {
-    const result = new Map<string, LineOffer[]>();
-    for (const line of request.lines) {
-      const offers = new Map<string, LineOffer>();
-      for (const quote of request.quotes) {
-        const quoteLine = quote.lines.find((candidate) => candidate.itemId === line.itemId);
-        if (quoteLine && quoteLine.unitCost > 0) {
-          offers.set(quote.supplierCode, { supplierCode: quote.supplierCode, supplierName: quote.supplierName, price: toPurchasePrice(quoteLine.unitCost, line), source: "Báo giá" });
-        }
+  /** Mọi NCC có giá cho một dòng (báo giá trên PR trước, rồi bảng giá), rẻ nhất trước — giá theo ĐVT mua của dòng. */
+  const offersFor = (line: ApproveLine) => {
+    const offers = new Map<string, LineOffer>();
+    for (const quote of request.quotes) {
+      const quoteLine = quote.lines.find((candidate) => candidate.itemId === line.itemId);
+      if (quoteLine && quoteLine.unitCost > 0) {
+        offers.set(quote.supplierCode, { supplierCode: quote.supplierCode, supplierName: quote.supplierName, price: toPurchasePrice(quoteLine.unitCost, line), source: "Báo giá" });
       }
-      for (const listed of activePrices || []) {
-        if (listed.itemId !== line.itemId || !(listed.stockUnitPrice > 0) || offers.has(listed.supplierCode)) continue;
-        const price = listed.unitCode === purchaseLineUnit(line) ? listed.unitPrice : Math.round(toPurchasePrice(listed.stockUnitPrice, line) * 100) / 100;
-        offers.set(listed.supplierCode, { supplierCode: listed.supplierCode, supplierName: listed.supplierName, price, source: `Bảng giá ${listed.priceListCode}` });
-      }
-      result.set(line.id, [...offers.values()].sort((a, b) => a.price - b.price));
     }
-    return result;
-  }, [request, activePrices]);
+    for (const listed of activePrices || []) {
+      if (listed.itemId !== line.itemId || !(listed.stockUnitPrice > 0) || offers.has(listed.supplierCode)) continue;
+      const price = listed.unitCode === purchaseLineUnit(line) ? listed.unitPrice : Math.round(toPurchasePrice(listed.stockUnitPrice, line) * 100) / 100;
+      offers.set(listed.supplierCode, { supplierCode: listed.supplierCode, supplierName: listed.supplierName, price, source: `Bảng giá ${listed.priceListCode}` });
+    }
+    return [...offers.values()].sort((a, b) => a.price - b.price);
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const offersByLine = useMemo(() => new Map(lines.map((line) => [line.id, offersFor(line)])), [lines, request.quotes, activePrices]);
 
   const offerOf = (lineId: string, supplierCode: string) => offersByLine.get(lineId)?.find((offer) => offer.supplierCode === supplierCode);
 
@@ -104,7 +131,7 @@ export function ApproveRequestDialog({
   useEffect(() => {
     if (!activePrices) return;
     const timer = window.setTimeout(() => {
-      assign(request.lines.map((line) => {
+      assign(lines.map((line) => {
         const cheapest = offersByLine.get(line.id)?.[0];
         if (line.supplierCode) return { lineId: line.id, supplier: { code: line.supplierCode, name: line.supplierName || line.supplierCode } };
         return { lineId: line.id, supplier: initialSupplier.code ? initialSupplier : cheapest ? { code: cheapest.supplierCode, name: cheapest.supplierName } : { code: "", name: "" } };
@@ -117,10 +144,27 @@ export function ApproveRequestDialog({
 
   const changeDefaultSupplier = (next: LineSupplier) => {
     setSupplier(next);
-    assign(request.lines.map((line) => ({ lineId: line.id, supplier: next })));
+    assign(lines.map((line) => ({ lineId: line.id, supplier: next })));
   };
 
-  const pickCheapestEachLine = () => assign(request.lines.flatMap((line) => {
+  const changeQuantity = (lineId: string, value: string) => setEdits((current) => ({ ...current, [lineId]: { ...current[lineId], quantity: value } }));
+
+  /**
+   * Đổi ĐVT mua của dòng: giữ con số đang gõ (thu mua sửa tiếp nếu cần), giá lấy lại của NCC đang
+   * chọn theo ĐVT mới; NCC chưa có giá mà đã gõ tay thì quy đổi theo hệ số.
+   */
+  const changeUnit = (line: ApproveLine, unitCode: string, rate: number) => {
+    const nextLine = { ...line, unitCode, conversionRate: rate, quantity: (Number(edits[line.id]?.quantity) || 0) * rate };
+    setEdits((current) => ({ ...current, [line.id]: { ...current[line.id], unitCode, rate } }));
+    const chosen = lineSupplier[line.id]?.code || "";
+    const offer = offersFor(nextLine).find((candidate) => candidate.supplierCode === chosen);
+    const typed = Number(prices[line.id]);
+    const previousRate = purchaseLineRate(line);
+    setPrices((current) => ({ ...current, [line.id]: offer ? String(offer.price) : typed > 0 ? String(Math.round((typed / previousRate) * rate * 100) / 100) : "" }));
+    setPriceSource((current) => ({ ...current, [line.id]: offer?.source || "" }));
+  };
+
+  const pickCheapestEachLine = () => assign(lines.flatMap((line) => {
     const cheapest = offersByLine.get(line.id)?.[0];
     return cheapest ? [{ lineId: line.id, supplier: { code: cheapest.supplierCode, name: cheapest.supplierName } }] : [];
   }));
@@ -128,7 +172,7 @@ export function ApproveRequestDialog({
   // So sánh tổng phiếu theo từng NCC (chỉ các mặt hàng NCC đó có giá).
   const compare = useMemo<SupplierCompare[]>(() => {
     const rows = new Map<string, SupplierCompare>();
-    for (const line of request.lines) {
+    for (const line of lines) {
       for (const offer of offersByLine.get(line.id) || []) {
         const row = rows.get(offer.supplierCode) || { supplierCode: offer.supplierCode, supplierName: offer.supplierName, total: 0, covered: 0, source: offer.source === "Báo giá" ? "báo giá" : "bảng giá" };
         row.total += toPurchaseQuantity(line.quantity, line) * offer.price;
@@ -137,15 +181,15 @@ export function ApproveRequestDialog({
       }
     }
     return [...rows.values()].sort((a, b) => b.covered - a.covered || a.total - b.total);
-  }, [request, offersByLine]);
+  }, [lines, offersByLine]);
 
   const amountOf = (line: ApproveLine) => toPurchaseQuantity(line.quantity, line) * Number(prices[line.id] || 0);
-  const total = request.lines.reduce((sum, line) => sum + amountOf(line), 0);
-  const unpriced = request.lines.filter((line) => !(Number(prices[line.id]) > 0)).length;
+  const total = lines.reduce((sum, line) => sum + amountOf(line), 0);
+  const unpriced = lines.filter((line) => !(Number(prices[line.id]) > 0)).length;
   /** PO sẽ tạo: gom dòng theo NCC đã chọn. */
   const orderGroups = useMemo(() => {
     const groups = new Map<string, { name: string; lines: number; amount: number }>();
-    for (const line of request.lines) {
+    for (const line of lines) {
       const chosen = lineSupplier[line.id];
       if (!chosen?.code) continue;
       const group = groups.get(chosen.code) || { name: chosen.name || chosen.code, lines: 0, amount: 0 };
@@ -154,16 +198,21 @@ export function ApproveRequestDialog({
       groups.set(chosen.code, group);
     }
     return [...groups.entries()].map(([code, group]) => ({ code, ...group }));
-  }, [request, lineSupplier, prices]);
+  }, [lines, lineSupplier, prices]);
 
   const approve = async () => {
-    const missing = request.lines.find((line) => !lineSupplier[line.id]?.code);
+    const missing = lines.find((line) => !lineSupplier[line.id]?.code);
     if (missing) {
       setError(`Chọn nhà cung cấp cho ${missing.item.name}.`);
       return;
     }
     if (!warehouseCode) {
       setError("Chọn kho nhận hàng.");
+      return;
+    }
+    const zero = lines.find((line) => !(Number(edits[line.id]?.quantity) > 0));
+    if (zero) {
+      setError(`Nhập số lượng cho ${zero.item.name}.`);
       return;
     }
     setBusy(true);
@@ -178,9 +227,12 @@ export function ApproveRequestDialog({
           supplierCode: supplier.code,
           supplierName: supplier.name,
           warehouseCode,
-          lines: request.lines.map((line) => ({
+          lines: lines.map((line) => ({
             lineId: line.id,
             unitCost: Number(prices[line.id] || 0),
+            // Số lượng / ĐVT mua theo bản thu mua đã sửa (máy chủ quy về ĐVT tồn, sửa luôn dòng PR).
+            quantity: Number(edits[line.id]?.quantity) || 0,
+            unitCode: edits[line.id]?.unitCode,
             supplierCode: lineSupplier[line.id]?.code,
             supplierName: lineSupplier[line.id]?.name,
           })),
@@ -206,7 +258,7 @@ export function ApproveRequestDialog({
         <div className="p-5 border-b border-slate-200 flex items-start justify-between gap-3">
           <div>
             <h3 className="font-bold text-slate-900">Duyệt {request.code} → lên PO</h3>
-            <p className="text-sm text-slate-500 mt-1">{request.reason}. Mỗi dòng chọn được NCC riêng — duyệt xong tự tách mỗi NCC một PO. Chưa có giá vẫn duyệt được.</p>
+            <p className="text-sm text-slate-500 mt-1">{request.reason}. Mỗi dòng chọn được NCC riêng — duyệt xong tự tách mỗi NCC một PO. Chưa có giá vẫn duyệt được. Số lượng / ĐVT mua sai thì sửa thẳng trên dòng — PR và PO đi theo số mới.</p>
             {existingOrders.length > 0 && (
               <p className="text-sm text-amber-700 mt-1">Duyệt lại {request.lines.length} dòng của PO đã huỷ — các dòng đang nằm trên {existingOrders.join(", ")} giữ nguyên.</p>
             )}
@@ -244,7 +296,7 @@ export function ApproveRequestDialog({
                 {compare.slice(0, 8).map((row) => (
                   <button key={row.supplierCode} type="button" onClick={() => changeDefaultSupplier({ code: row.supplierCode, name: row.supplierName })}
                     className={`w-full flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left ${row.supplierCode === supplier.code ? "bg-blue-50 ring-1 ring-blue-300" : "hover:bg-slate-50"}`} title="Áp NCC này cho mọi dòng">
-                    <span className="min-w-0 truncate"><b>{row.supplierName}</b><small className="text-slate-500"> · {row.covered}/{request.lines.length} mặt hàng · theo {row.source}</small></span>
+                    <span className="min-w-0 truncate"><b>{row.supplierName}</b><small className="text-slate-500"> · {row.covered}/{lines.length} mặt hàng · theo {row.source}</small></span>
                     <span className="tabular-nums whitespace-nowrap">{money(Math.round(row.total))} đ</span>
                   </button>
                 ))}
@@ -263,13 +315,14 @@ export function ApproveRequestDialog({
                 <tr>
                   <th className="px-3 py-2 text-left">Mặt hàng</th>
                   <th className="px-3 py-2 text-right">Số lượng</th>
+                  <th className="px-3 py-2 text-left">ĐVT mua</th>
                   <th className="px-3 py-2 text-left min-w-[220px]">Nhà cung cấp</th>
                   <th className="px-3 py-2 text-right">Đơn giá (trước thuế)</th>
                   <th className="px-3 py-2 text-right">Thành tiền</th>
                 </tr>
               </thead>
               <tbody>
-                {request.lines.map((line) => {
+                {lines.map((line) => {
                   const unit = purchaseLineUnit(line);
                   const quantity = toPurchaseQuantity(line.quantity, line);
                   const chosen = lineSupplier[line.id];
@@ -277,6 +330,13 @@ export function ApproveRequestDialog({
                   const current = Number(prices[line.id]) || 0;
                   const cheaper = offers.find((offer) => offer.supplierCode !== chosen?.code && (!(current > 0) || offer.price < current));
                   const pricedCodes = new Set(offers.map((offer) => offer.supplierCode));
+                  const edited = isEdited(line.id);
+                  const original = originalOf(line.id);
+                  // ĐVT PR lúc đặt đứng đầu (giữ hệ số lúc đặt), sau đó các ĐVT khai ở danh mục mặt hàng.
+                  const originalLine = request.lines.find((candidate) => candidate.id === line.id) || line;
+                  const catalog = itemById.get(line.itemId);
+                  const unitOptions = (catalog ? receiveUnitOptions(originalLine, catalog) : [{ unitCode: purchaseLineUnit(originalLine), label: purchaseLineUnit(originalLine), conversionRate: purchaseLineRate(originalLine) }])
+                    .map((option, index) => (index === 0 ? { ...option, label: option.label.replace(" · ĐVT đặt", " · theo PR") } : option));
                   return (
                     <tr key={line.id} className="border-t border-slate-100 align-top">
                       <td className="px-3 py-2 min-w-[180px]">
@@ -290,7 +350,28 @@ export function ApproveRequestDialog({
                           </button>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right whitespace-nowrap tabular-nums">{qty(quantity)} {unit}</td>
+                      <td className="px-3 py-2 text-right">
+                        <QuantityInput
+                          value={edits[line.id]?.quantity ?? String(quantity)}
+                          onChange={(value) => changeQuantity(line.id, value)}
+                          className={`control !mt-0 w-24 text-right tabular-nums ${edited ? "!border-amber-400 !bg-amber-50" : ""}`}
+                          ariaLabel={`Số lượng ${line.item.name}`}
+                        />
+                        {edited && original && <small className="block mt-0.5 text-[11px] text-amber-700 whitespace-nowrap">PR: {qty(original.quantity)} {original.unit}</small>}
+                      </td>
+                      <td className="px-3 py-2">
+                        <select
+                          className={`control !mt-0 min-w-[160px] ${edited && original && original.unit.toUpperCase() !== unit.toUpperCase() ? "!border-amber-400 !bg-amber-50" : ""}`}
+                          value={unit}
+                          onChange={(event) => {
+                            const option = unitOptions.find((candidate) => candidate.unitCode === event.target.value);
+                            if (option) changeUnit(line, option.unitCode, option.conversionRate);
+                          }}
+                          aria-label={`ĐVT mua ${line.item.name}`}
+                        >
+                          {unitOptions.map((option) => <option key={option.unitCode} value={option.unitCode}>{option.label}</option>)}
+                        </select>
+                      </td>
                       <td className="px-3 py-2">
                         {/* Ô chọn NCC có tìm kiếm (khách 24/10/2026); NCC có giá đứng đầu, rẻ → đắt. */}
                         <SearchableSelect
@@ -324,7 +405,7 @@ export function ApproveRequestDialog({
               </tbody>
               <tfoot className="bg-slate-50 font-bold">
                 <tr>
-                  <td className="px-3 py-2" colSpan={4}>Tạm tính{unpriced > 0 ? ` (${unpriced} dòng chưa có giá)` : ""}</td>
+                  <td className="px-3 py-2" colSpan={5}>Tạm tính{unpriced > 0 ? ` (${unpriced} dòng chưa có giá)` : ""}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{money(Math.round(total))} đ</td>
                 </tr>
               </tfoot>

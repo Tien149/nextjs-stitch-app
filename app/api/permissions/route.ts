@@ -3,6 +3,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { hashPassword, withoutPassword } from "@/lib/password-hash";
 import { prisma } from "@/lib/prisma";
 import { softDeleteRecord } from "@/lib/soft-delete";
+import { sanitizeNotificationTypes } from "@/lib/notification-types";
 
 const EDIT_PAST_ROLE_NAMES = new Set(["Admin", "Kế toán tổng hợp"]);
 
@@ -82,7 +83,7 @@ export async function POST(request: Request) {
     const action = body.action || "CREATE_ROLE";
 
     if (action === "CREATE_ROLE") {
-      const { name, actions } = body;
+      const { name, actions, notificationTypes } = body;
       if (!name || !name.trim()) {
         return NextResponse.json({ error: "Tên vai trò không được để trống" }, { status: 400 });
       }
@@ -99,6 +100,7 @@ export async function POST(request: Request) {
         data: {
           name: name.trim(),
           actions: sanitizeRoleActions(name, actions),
+          notificationTypes: sanitizeNotificationTypes(notificationTypes),
         },
       });
 
@@ -173,7 +175,7 @@ export async function PUT(request: Request) {
     if (!auth.ok) return auth.response;
 
     const body = await request.json();
-    const { roleId, name, actions } = body;
+    const { roleId, name, actions, notificationTypes } = body;
 
     if (!roleId || !name || !name.trim()) {
       return NextResponse.json({ error: "Thiếu mã vai trò hoặc tên vai trò" }, { status: 400 });
@@ -187,6 +189,8 @@ export async function PUT(request: Request) {
       data: {
         name: name.trim(),
         actions: sanitizeRoleActions(name, actions),
+        // Client cũ không gửi trường này thì giữ nguyên lựa chọn đang có.
+        ...(notificationTypes !== undefined ? { notificationTypes: sanitizeNotificationTypes(notificationTypes) } : {}),
       },
     });
 

@@ -2330,6 +2330,8 @@ model Role {
   name       String   @unique
   actions    String[]
   menuAccess String[]
+  /// Loại thông báo vai trò này nhận (lib/notification-types) — tick ở Phân quyền; vd PR_PENDING.
+  notificationTypes String[] @default([])
   users      User[]
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
@@ -2446,4 +2448,51 @@ model AssetStocktakeLine {
 
   @@index([sessionId])
   @@index([assetId])
+}
+
+/// Thông báo trong app (khách 27/11/2026: báo người duyệt khi có PR mới — học theo HRM).
+/// Một dòng cho mỗi người nhận. `resolvedAt` = chứng từ đã được xử lý (duyệt / từ chối / huỷ) nên
+/// thông báo không còn tính vào số chờ xử lý của mọi người nhận.
+model AppNotification {
+  id         String    @id @default(uuid())
+  userId     String
+  type       String
+  title      String
+  body       String?
+  url        String?
+  entityType String?
+  entityId   String?
+  /// Chống trùng theo người nhận (vd PR_PENDING:<id>) — gửi lại thì làm mới dòng cũ.
+  dedupeKey  String?
+  readAt     DateTime?
+  resolvedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, createdAt])
+  @@index([entityType, entityId])
+}
+
+/// Đăng ký nhận thông báo đẩy (Web Push) của từng trình duyệt / điện thoại.
+model WebPushSubscription {
+  id            String    @id @default(uuid())
+  userId        String
+  endpoint      String    @unique
+  p256dh        String
+  auth          String
+  userAgent     String?
+  lastSuccessAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+/// Khoá VAPID ký thông báo đẩy — tự sinh lần đầu nếu .env không khai PUSH_VAPID_*. Đổi khoá = mọi
+/// thiết bị phải bật lại thông báo.
+model WebPushVapidKey {
+  id         Int      @id @default(1)
+  publicKey  String
+  privateKey String
+  createdAt  DateTime @default(now())
 }

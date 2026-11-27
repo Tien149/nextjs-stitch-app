@@ -8,12 +8,14 @@ import { reportTabSectionLabel } from "@/lib/report-tab-groups";
 import { ALL_APP_ACTIONS, appMenuItems, type AppAction, type DemoSession, SESSION_KEY, moduleTabs, moduleSubTabs, isSubTabEntry, subTabEntry } from "@/lib/auth-demo";
 import { logout } from "@/lib/session-client";
 import CopyableText from "@/components/CopyableText";
+import { NOTIFICATION_TYPES } from "@/lib/notification-types";
 
 type RoleItem = {
   id: string;
   name: string;
   actions: AppAction[];
   menuAccess?: string[];
+  notificationTypes?: string[];
   _count?: { users: number };
 };
 
@@ -49,9 +51,10 @@ export default function PermissionsPage() {
   // Modal State for Role Creation / Editing
   const [isRoleModalOpen, setIsRoleModalOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<RoleItem | null>(null);
-  const [roleForm, setRoleForm] = useState<{ name: string; actions: AppAction[] }>({
+  const [roleForm, setRoleForm] = useState<{ name: string; actions: AppAction[]; notificationTypes: string[] }>({
     name: "",
     actions: ["view"],
+    notificationTypes: [],
   });
   const [savingRole, setSavingRole] = useState(false);
   const [roleFormError, setRoleFormError] = useState("");
@@ -150,14 +153,14 @@ export default function PermissionsPage() {
   // Role Modal Handlers
   const handleOpenCreateRoleModal = () => {
     setEditingRole(null);
-    setRoleForm({ name: "", actions: ["view", "create"] });
+    setRoleForm({ name: "", actions: ["view", "create"], notificationTypes: [] });
     setRoleFormError("");
     setIsRoleModalOpen(true);
   };
 
   const handleOpenEditRoleModal = (role: RoleItem) => {
     setEditingRole(role);
-    setRoleForm({ name: role.name, actions: role.actions || ["view"] });
+    setRoleForm({ name: role.name, actions: role.actions || ["view"], notificationTypes: role.notificationTypes || [] });
     setRoleFormError("");
     setIsRoleModalOpen(true);
   };
@@ -207,8 +210,8 @@ export default function PermissionsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           isEdit
-            ? { roleId: editingRole.id, name: roleForm.name, actions: roleForm.actions }
-            : { action: "CREATE_ROLE", name: roleForm.name, actions: roleForm.actions }
+            ? { roleId: editingRole.id, name: roleForm.name, actions: roleForm.actions, notificationTypes: roleForm.notificationTypes }
+            : { action: "CREATE_ROLE", name: roleForm.name, actions: roleForm.actions, notificationTypes: roleForm.notificationTypes }
         ),
       });
 
@@ -662,6 +665,12 @@ export default function PermissionsPage() {
                           {act}
                         </span>
                       ))}
+                      {NOTIFICATION_TYPES.filter((type) => (role.notificationTypes || []).includes(type.key)).map((type) => (
+                        <span key={type.key} className="text-[11px] rounded bg-amber-50 px-2 py-1 font-semibold text-amber-800 border border-amber-200 inline-flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[13px]">notifications</span>
+                          {type.label}
+                        </span>
+                      ))}
                     </div>
                   </div>
 
@@ -1065,6 +1074,43 @@ export default function PermissionsPage() {
                     );
                   })}
                 </div>
+              </div>
+
+              {/* Nhận thông báo (khách 27/11/2026): vai trò tick loại nào thì người thuộc vai trò đó nhận ở chuông + điện thoại. */}
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[16px]">notifications</span>
+                  Nhận thông báo
+                </label>
+                {NOTIFICATION_TYPES.map((type) => {
+                  const isChecked = roleForm.notificationTypes.includes(type.key);
+                  return (
+                    <label
+                      key={type.key}
+                      className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer select-none transition ${
+                        isChecked ? "bg-amber-50/70 border-amber-200 text-amber-950" : "bg-slate-50/50 border-slate-200 text-slate-600 hover:bg-slate-100/60"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() =>
+                          setRoleForm((prev) => ({
+                            ...prev,
+                            notificationTypes: isChecked
+                              ? prev.notificationTypes.filter((key) => key !== type.key)
+                              : [...prev.notificationTypes, type.key],
+                          }))
+                        }
+                        className="mt-0.5 rounded text-amber-600 focus:ring-amber-500"
+                      />
+                      <div>
+                        <p className="text-xs font-bold">{type.label}</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">{type.desc}</p>
+                      </div>
+                    </label>
+                  );
+                })}
               </div>
 
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-3">
