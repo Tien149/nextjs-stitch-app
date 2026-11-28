@@ -45,7 +45,7 @@ function branchVisible(session: DemoSession, codes: Array<string | null | undefi
 /** Người xem phải thấy được phiếu: cửa hàng chuyển HOẶC nhận, và kho (xuất hoặc nhận) nếu bị giới hạn kho. */
 async function assertEntityAccess(session: DemoSession, entityType: string, entityId: string) {
   const entity = entityType === DOC_IMAGE_TX
-    ? await prisma.inventoryTransaction.findUnique({ where: { id: entityId }, select: { code: true, branchCode: true, toBranchCode: true, warehouseCode: true, toWarehouseCode: true } })
+    ? await prisma.inventoryTransaction.findUnique({ where: { id: entityId }, select: { code: true, transactionType: true, branchCode: true, toBranchCode: true, warehouseCode: true, toWarehouseCode: true } })
     : await prisma.inventoryTransferRequest.findUnique({ where: { id: entityId }, select: { code: true, branchCode: true, toBranchCode: true, warehouseCode: true, toWarehouseCode: true } });
   if (!entity) businessError("Không tìm thấy phiếu.");
   if (!branchVisible(session, [entity.branchCode, entity.toBranchCode])) businessError("Phiếu nằm ngoài cửa hàng được phân công.");
@@ -145,8 +145,11 @@ export async function DELETE(request: Request) {
     const image = await prisma.documentImage.findUnique({ where: { id }, select: { id: true, entityType: true, entityId: true, fileName: true } });
     if (!image) businessError("Không tìm thấy ảnh.");
     const entity = await assertEntityAccess(auth.session, image.entityType, image.entityId);
+    // Ảnh bắt buộc: phiếu hủy, và điều chuyển KHÁC nhà hàng (nội bộ một nhà hàng xoá hết được).
+    const isWaste = "transactionType" in entity && entity.transactionType === "XUAT_HUY";
+    const crossBranch = Boolean(entity.toBranchCode) && entity.toBranchCode!.toUpperCase() !== entity.branchCode.toUpperCase();
     const remaining = await prisma.documentImage.count({ where: { entityType: image.entityType, entityId: image.entityId } });
-    if (remaining <= 1) businessError("Phiếu bắt buộc có hình ảnh — thêm ảnh khác trước rồi mới xoá ảnh này.");
+    if ((isWaste || crossBranch) && remaining <= 1) businessError("Phiếu bắt buộc có hình ảnh — thêm ảnh khác trước rồi mới xoá ảnh này.");
     await prisma.documentImage.delete({ where: { id } });
     await writeAuditLog({ session: auth.session, module: menuHref, action: "DELETE_DOCUMENT_IMAGE", entityType: image.entityType, entityId: image.entityId, entityCode: entity.code, branchCode: entity.branchCode, metadata: { fileName: image.fileName } });
     return NextResponse.json({ ok: true });

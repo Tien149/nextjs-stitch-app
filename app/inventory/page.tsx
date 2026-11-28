@@ -3851,7 +3851,7 @@ export default function InventoryPage() {
                     <span className="status bg-slate-100">{movementTypeLabel(row.displayType)}</span>
                     {row.transaction.transactionType === "XUAT_HUY" && row.transaction.subType ? <small>{wasteSubTypeLabel(row.transaction.subType)}</small> : null}
                     {active === "outbound" && ["XUAT_HUY", "DIEU_CHUYEN"].includes(row.transaction.transactionType) && (
-                      <div className="mt-1"><DocumentPhotosButton entityType="InventoryTransaction" entityId={row.transaction.id} code={row.transaction.code} count={photoCounts?.[row.transaction.id]} canAdd={canAddPhotos} canDelete={canEditItem} onChanged={refreshPhotoCounts} /></div>
+                      <div className="mt-1"><DocumentPhotosButton entityType="InventoryTransaction" entityId={row.transaction.id} code={row.transaction.code} count={photoCounts?.[row.transaction.id]} canAdd={canAddPhotos} canDelete={canEditItem} onChanged={refreshPhotoCounts} required={row.transaction.transactionType === "XUAT_HUY" || (!!row.transaction.toBranchCode && row.transaction.toBranchCode !== row.transaction.branchCode)} /></div>
                     )}
                   </Cell>
                   <Cell>{storeLabel(row.branchCode)}</Cell>
@@ -3928,8 +3928,8 @@ export default function InventoryPage() {
           {canCreate && (
             <form onSubmit={(e) => {
               e.preventDefault();
-              if (transferPhotos.length === 0) {
-                setMessage("Phiếu điều chuyển bắt buộc có hình ảnh — bấm “Chụp / chọn” để thêm ít nhất 1 ảnh.");
+              if (transferCrossBranch && transferPhotos.length === 0) {
+                setMessage("Điều chuyển sang nhà hàng khác bắt buộc có hình ảnh — bấm “Chụp / chọn” để thêm ít nhất 1 ảnh.");
                 return;
               }
               void send({
@@ -4037,7 +4037,8 @@ export default function InventoryPage() {
               <Input label="Ghi chú">
                 <input className="control" value={transferForm.note} onChange={(e) => setTransferForm({ ...transferForm, note: e.target.value })} />
               </Input>
-              <DocumentPhotoPicker label="Hình ảnh hàng điều chuyển" photos={transferPhotos} onChange={setTransferPhotos} />
+              {/* Ảnh bắt buộc khi chuyển khác nhà hàng; nội bộ một nhà hàng thì tuỳ chọn (khách 28/11/2026). */}
+              <DocumentPhotoPicker label={transferCrossBranch ? "Hình ảnh hàng điều chuyển" : "Hình ảnh hàng điều chuyển (không bắt buộc khi chuyển nội bộ)"} required={transferCrossBranch} photos={transferPhotos} onChange={setTransferPhotos} />
               <button className="primary-button w-full">
                 <span className="material-symbols-outlined text-lg">sync_alt</span>
                 Gửi phiếu điều chuyển (chờ duyệt)
@@ -4110,7 +4111,7 @@ export default function InventoryPage() {
                   <tr key={row.id} data-doc-code={row.code} className={`border-t border-slate-100 ${row.code === focusCode ? focusRowClass : ""}`}>
                     <Cell>
                       <CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small><ExplosionBadge status={row.explosionStatus} hidden={!canSeeExplosion} />
-                      <div className="mt-1"><DocumentPhotosButton entityType="InventoryTransaction" entityId={row.id} code={row.code} count={photoCounts?.[row.id]} canAdd={canAddPhotos} canDelete={canEditItem} onChanged={refreshPhotoCounts} /></div>
+                      <div className="mt-1"><DocumentPhotosButton entityType="InventoryTransaction" entityId={row.id} code={row.code} count={photoCounts?.[row.id]} canAdd={canAddPhotos} canDelete={canEditItem} onChanged={refreshPhotoCounts} required={crossBranch} /></div>
                     </Cell>
                     <Cell>
                       <b>{warehouseText(row.warehouseCode)} → {warehouseText(row.toWarehouseCode)}</b>

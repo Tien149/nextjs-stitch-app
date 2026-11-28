@@ -18,7 +18,7 @@ import { averageCostByItem } from "@/lib/inventory-average-cost";
 import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
 import { computeRecipeUnitCosts, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
-import { DOC_IMAGE_TRANSFER_REQUEST, DOC_IMAGE_TX, requireDocImages, saveDocImages } from "@/lib/document-images";
+import { DOC_IMAGE_TRANSFER_REQUEST, DOC_IMAGE_TX, parseDocImages, requireDocImages, saveDocImages } from "@/lib/document-images";
 import type { DemoSession } from "@/lib/auth-demo";
 import { executeExplosion, rerunExplosions, type AffectedExplosionRun } from "@/lib/inventory-explosion";
 import { loadMissingRecipeReport } from "@/lib/missing-recipes";
@@ -2623,8 +2623,11 @@ export async function POST(request: Request) {
       const inputLines = linesFrom(body.lines);
       if (inputLines.length === 0) businessError("Cần ít nhất một dòng hàng điều chuyển");
       if (await isPeriodLocked(requestDate, branchCode)) businessError("Kỳ kế toán của cửa hàng chuyển đã khóa");
-      // Bắt buộc có ảnh (khách 28/11/2026) — ảnh gắn vào phiếu chờ duyệt để bên nhận xem trước khi duyệt.
-      const transferImages = requireDocImages(body.images, "Phiếu điều chuyển");
+      // Ảnh bắt buộc khi chuyển KHÁC nhà hàng; nội bộ một nhà hàng thì tuỳ chọn (khách 28/11/2026).
+      // Ảnh gắn vào phiếu chờ duyệt để bên nhận xem trước khi duyệt.
+      const transferImages = toBranchCode !== branchCode.toUpperCase()
+        ? requireDocImages(body.images, "Phiếu điều chuyển sang nhà hàng khác")
+        : parseDocImages(body.images);
 
       const requestedCode = cleanText(body.code);
       if (requestedCode && await findDeletedByUnique("InventoryTransaction", { code: requestedCode })) {
@@ -2868,9 +2871,11 @@ export async function POST(request: Request) {
     }
     if (inputLines.length === 0) businessError("Cần ít nhất một dòng nguyên liệu");
     // Phiếu hủy hàng / điều chuyển bắt buộc có ảnh (khách 28/11/2026); file import không qua đây.
-    const docImages = transactionType === "XUAT_HUY" || transactionType === "DIEU_CHUYEN"
-      ? requireDocImages(body.images, transactionType === "XUAT_HUY" ? "Phiếu hủy hàng" : "Phiếu điều chuyển")
-      : [];
+    const docImages = transactionType === "XUAT_HUY"
+      ? requireDocImages(body.images, "Phiếu hủy hàng")
+      : transactionType === "DIEU_CHUYEN" && destinationBranchCode && destinationBranchCode !== branchCode.toUpperCase()
+        ? requireDocImages(body.images, "Phiếu điều chuyển sang nhà hàng khác")
+        : parseDocImages(body.images);
 
     const allocationMonths = allocationMonthsFrom(body.allocationMonths);
     const requestedTransactionCode = cleanText(body.code);

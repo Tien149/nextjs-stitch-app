@@ -41,7 +41,7 @@ export function useDocumentPhotoCounts(entityType: PhotoEntityType, ids: string[
   return { counts: state.key === key ? state.counts : null, refresh };
 }
 
-export function DocumentPhotosButton({ entityType, entityId, code, count, canAdd, canDelete, onChanged }: {
+export function DocumentPhotosButton({ entityType, entityId, code, count, canAdd, canDelete, onChanged, required = true }: {
   entityType: PhotoEntityType;
   entityId: string;
   code: string;
@@ -49,9 +49,11 @@ export function DocumentPhotosButton({ entityType, entityId, code, count, canAdd
   canAdd: boolean;
   canDelete: boolean;
   onChanged?: () => void;
+  /** Phiếu bắt buộc có ảnh (hủy hàng, điều chuyển khác nhà hàng) — thiếu ảnh thì nút tô vàng. */
+  required?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const missing = count === 0;
+  const missing = count === 0 && required;
   return (
     <>
       <button
@@ -61,7 +63,7 @@ export function DocumentPhotosButton({ entityType, entityId, code, count, canAdd
         className={`inline-flex items-center gap-1 whitespace-nowrap rounded-lg border px-2 py-1 text-[11px] font-bold ${missing ? "border-amber-200 bg-amber-50 text-amber-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}
       >
         <span className="material-symbols-outlined text-sm">{missing ? "no_photography" : "photo_library"}</span>
-        {count === null || count === undefined ? "Ảnh" : missing ? "Chưa có ảnh" : `Ảnh (${count})`}
+        {count === null || count === undefined || count === 0 ? (missing ? "Chưa có ảnh" : "Ảnh") : `Ảnh (${count})`}
       </button>
       {open && (
         <PhotoGallery

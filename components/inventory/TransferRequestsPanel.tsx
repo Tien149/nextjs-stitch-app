@@ -148,7 +148,7 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                 <td className="cell whitespace-nowrap">
                   <CopyableText value={request.code}><b>{request.code}</b></CopyableText>
                   <small className="block text-slate-500">Chuyển {new Date(request.requestDate).toLocaleDateString("vi-VN")}{request.createdBy ? ` · ${request.createdBy}` : ""}</small>
-                  <div className="mt-1"><DocumentPhotosButton entityType="InventoryTransferRequest" entityId={request.id} code={request.code} count={photoCounts?.[request.id]} canAdd={canAddPhotos} canDelete={canDeletePhotos} onChanged={refreshPhotoCounts} /></div>
+                  <div className="mt-1"><DocumentPhotosButton entityType="InventoryTransferRequest" entityId={request.id} code={request.code} count={photoCounts?.[request.id]} canAdd={canAddPhotos} canDelete={canDeletePhotos} onChanged={refreshPhotoCounts} required={request.toBranchCode !== request.branchCode} /></div>
                 </td>
                 <td className="cell">
                   <b>{request.warehouseCode} → {request.toWarehouseCode}</b>
