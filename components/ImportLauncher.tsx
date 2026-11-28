@@ -84,7 +84,7 @@ export function ImportLauncher({ tabIds, autoOpenTabIds = [], masterType = "", o
     setOpen(null);
     onClosed?.();
   };
-  const buttonClass = `inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 font-bold text-blue-700 shadow-sm hover:bg-blue-100 ${compact ? "h-8 px-2.5 text-xs" : "h-9 px-3 text-sm"}`;
+  const buttonClass = `inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-blue-200 bg-blue-50 font-bold text-blue-700 shadow-sm hover:bg-blue-100 ${compact ? "h-8 px-2.5 text-xs" : "h-9 px-3 text-sm"}`;
 
   return (
     <div ref={pickerRef} className="relative inline-block" data-no-export>

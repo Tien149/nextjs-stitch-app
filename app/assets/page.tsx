@@ -764,23 +764,23 @@ export default function AssetsPage() {
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-800">
-      <header className="sticky top-0 z-20 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm">
-        <div className="flex items-center gap-3">
-          <div>
-            <h1 className="text-xl font-bold text-slate-900">Quản lý Tài sản & CCDC</h1>
-            <p className="text-xs text-slate-500">
-              Tổng hợp Tài sản cố định và CCDC, quản lý theo Cửa hàng, Kho/Vị trí & tiến độ phân bổ.
-            </p>
-          </div>
+      {/* Điện thoại: khung đầu trang + 4 ô số gọn lại, khách 28/11/2026 ("cho nó nhỏ dùm chị khung chỗ này"). */}
+      <header className="sticky top-0 z-20 bg-white border-b border-slate-200 px-4 py-2.5 sm:px-6 sm:py-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 shadow-sm">
+        <div className="min-w-0">
+          <h1 className="text-base sm:text-xl font-bold text-slate-900 whitespace-nowrap">Quản lý Tài sản & CCDC</h1>
+          <p className="hidden sm:block text-xs text-slate-500">
+            Tổng hợp Tài sản cố định và CCDC, quản lý theo Cửa hàng, Kho/Vị trí & tiến độ phân bổ.
+          </p>
         </div>
-        <div className="flex items-center gap-3">
-          <ImportLauncher tabIds={["assets"]} onClosed={() => void loadAssets()} />
+        <div className="flex items-center gap-2 sm:gap-3">
+          <ImportLauncher tabIds={["assets"]} compact onClosed={() => void loadAssets()} />
           <button
             onClick={() => router.push("/assets/operations")}
-            className="rounded-lg bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 text-sm font-bold inline-flex items-center gap-2 transition-colors shadow-sm"
+            className="h-8 rounded-lg bg-blue-600 hover:bg-blue-700 text-white px-2.5 sm:px-4 text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors shadow-sm"
           >
-            <span className="material-symbols-outlined text-lg">settings_suggest</span>
-            Vận hành & Khấu hao
+            <span className="material-symbols-outlined text-base sm:text-lg">settings_suggest</span>
+            <span className="sm:hidden">Vận hành</span>
+            <span className="hidden sm:inline">Vận hành & Khấu hao</span>
           </button>
           <p className="hidden sm:block text-xs font-bold text-slate-500">{displayRoleName(user?.role)}</p>
         </div>
@@ -788,26 +788,26 @@ export default function AssetsPage() {
 
       <main className="w-full max-w-[1720px] mx-auto px-4 sm:px-6 py-6 space-y-6">
         {/* KPI Stats Grid */}
-        <StickyFilterBar className="!mb-0">
-        <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-1">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Tổng nguyên giá</p>
-            <p className="text-xl font-extrabold text-slate-900">{money(kpis.totalOriginalCost)} đ</p>
-            <p className="text-[11px] text-slate-400">Tổng cộng {kpis.totalCount} tài sản/CCDC</p>
+        <StickyFilterBar className="!mb-0 max-sm:static max-sm:py-2">
+        <section className="grid grid-cols-2 md:grid-cols-4 gap-2 sm:gap-4">
+          <div className="bg-white px-3 py-2 sm:p-4 rounded-xl border border-slate-200 shadow-sm space-y-0.5 sm:space-y-1">
+            <p className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider truncate">Tổng nguyên giá</p>
+            <p className="text-sm sm:text-xl font-extrabold whitespace-nowrap text-slate-900">{money(kpis.totalOriginalCost)} đ</p>
+            <p className="hidden sm:block text-[11px] text-slate-400">Tổng cộng {kpis.totalCount} tài sản/CCDC</p>
           </div>
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-1">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Đã phân bổ / khấu hao</p>
-            <p className="text-xl font-extrabold text-blue-600">{money(kpis.totalAllocatedAmount)} đ</p>
-            <p className="text-[11px] text-slate-400">Tích lũy từ phiếu khấu hao</p>
+          <div className="bg-white px-3 py-2 sm:p-4 rounded-xl border border-slate-200 shadow-sm space-y-0.5 sm:space-y-1">
+            <p className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider truncate">Đã phân bổ / khấu hao</p>
+            <p className="text-sm sm:text-xl font-extrabold whitespace-nowrap text-blue-600">{money(kpis.totalAllocatedAmount)} đ</p>
+            <p className="hidden sm:block text-[11px] text-slate-400">Tích lũy từ phiếu khấu hao</p>
           </div>
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-1">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Giá trị còn lại</p>
-            <p className="text-xl font-extrabold text-emerald-600">{money(kpis.totalRemainingValue)} đ</p>
-            <p className="text-[11px] text-slate-400">Giá trị thực tế còn lại</p>
+          <div className="bg-white px-3 py-2 sm:p-4 rounded-xl border border-slate-200 shadow-sm space-y-0.5 sm:space-y-1">
+            <p className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider truncate">Giá trị còn lại</p>
+            <p className="text-sm sm:text-xl font-extrabold whitespace-nowrap text-emerald-600">{money(kpis.totalRemainingValue)} đ</p>
+            <p className="hidden sm:block text-[11px] text-slate-400">Giá trị thực tế còn lại</p>
           </div>
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-1">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Trạng thái tài sản</p>
-            <div className="flex items-center gap-2 pt-0.5 text-xs font-semibold">
+          <div className="bg-white px-3 py-2 sm:p-4 rounded-xl border border-slate-200 shadow-sm space-y-0.5 sm:space-y-1">
+            <p className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider truncate">Trạng thái tài sản</p>
+            <div className="flex flex-wrap items-center gap-x-2 pt-0.5 text-[11px] sm:text-xs font-semibold">
               <span className="text-emerald-700">{kpis.inUseCount} đang dùng</span>
               <span className="text-slate-300">•</span>
               <span className="text-amber-700">{kpis.fullyAllocatedCount} hết PB</span>
