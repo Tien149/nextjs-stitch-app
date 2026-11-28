@@ -104,7 +104,7 @@ export const MENU_GROUPS: MenuLayoutGroup[] = [
     // 5 nhóm báo cáo (khách 25/11/2026) — lib/report-tab-groups. Số dư đầu kỳ vào Báo cáo tài chính.
     sections: [
       { links: REPORT_TAB_GROUPS.filter((group) => group.id !== "finance").map((group) => reportGroupLink(group.id)) },
-      { label: "Báo cáo tài chính", links: [{ kind: "tab", base: "/reports", tab: "balance", name: "Bảng cân đối", icon: "balance" }, { kind: "menu", href: "/opening-balances" }] },
+      { label: "Báo cáo tài chính", links: [{ kind: "tab", base: "/reports", tab: "balance", name: "Bảng cân đối", icon: "balance" }, { kind: "tab", base: "/reports", tab: "legacy-books", name: "Sổ sách kế toán trước 08/2026", icon: "folder_zip" }, { kind: "menu", href: "/opening-balances" }] },
     ],
   },
   {

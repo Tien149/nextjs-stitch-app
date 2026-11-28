@@ -2546,3 +2546,60 @@ model WebPushVapidKey {
   privateKey String
   createdAt  DateTime @default(now())
 }
+
+/// Sổ sách kế toán trước 08/2026 (khách 28/11/2026): kho lưu file Excel cũ để tra cứu — chỉ lưu
+/// trữ, KHÔNG đi vào báo cáo. File gốc giữ nguyên (tải lại được), mỗi dòng của mỗi sheet một bản
+/// ghi để tìm nhanh trên mọi file. Xoá là xoá hẳn (không có deletedAt), dòng xoá theo.
+model LegacyBookFile {
+  id          String   @id @default(uuid())
+  fileName    String
+  mimeType    String?
+  fileSize    Int
+  content     Bytes
+  branchCode  String   @default("ALL")
+  periodLabel String   @default("")
+  note        String   @default("")
+  sheetsJson  Json
+  rowCount    Int      @default(0)
+  uploadedBy  String?
+  createdAt   DateTime @default(now())
+
+  rows LegacyBookRow[]
+
+  @@index([branchCode])
+  @@index([createdAt])
+}
+
+model LegacyBookRow {
+  id         String @id @default(uuid())
+  fileId     String
+  sheetIndex Int
+  sheetName  String
+  rowNo      Int
+  cells      Json
+  searchText String
+
+  file LegacyBookFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([fileId, sheetIndex, rowNo])
+}
+
+/// Ảnh chứng từ (khách 28/11/2026): phiếu hủy hàng và phiếu điều chuyển BẮT BUỘC có ảnh lúc lập.
+/// Ảnh nén ở trình duyệt (JPEG ≤ 1600px) rồi lưu thẳng DB (bytea) — sao lưu pg_dump là có ảnh.
+/// entityType: InventoryTransaction (phiếu hủy / điều chuyển ghi thẳng) | InventoryTransferRequest
+/// (điều chuyển chờ duyệt — phiếu kho sinh ra từ nó tra ảnh qua dispatchTransactionId/transactionId).
+model DocumentImage {
+  id         String   @id @default(uuid())
+  entityType String
+  entityId   String
+  fileName   String
+  mimeType   String
+  fileSize   Int
+  width      Int?
+  height     Int?
+  content    Bytes
+  uploadedBy String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+}

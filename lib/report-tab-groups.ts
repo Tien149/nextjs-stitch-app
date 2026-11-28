@@ -18,7 +18,7 @@ export const REPORT_TAB_GROUPS: ReportTabGroup[] = [
   { id: "budget", label: "Ngân sách", icon: "account_balance", tabs: ["budget", "payroll-budget"] },
   { id: "revenue", label: "Báo cáo doanh thu", icon: "point_of_sale", tabs: ["revenue-ledger", "sales-analysis"] },
   { id: "pnl", label: "P&L", icon: "query_stats", tabs: ["pnl", "daily-pnl", "yoy"] },
-  { id: "finance", label: "Báo cáo tài chính", icon: "balance", tabs: ["balance"] },
+  { id: "finance", label: "Báo cáo tài chính", icon: "balance", tabs: ["balance", "legacy-books"] },
 ];
 
 /** Tab của /reports hiện ở chỗ khác trên menu — nhãn dùng cho dòng tiêu đề ở màn Phân quyền. */

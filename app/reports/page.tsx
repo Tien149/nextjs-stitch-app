@@ -29,6 +29,7 @@ import RevenueTrendTab from "@/components/reports/RevenueTrendTab";
 import SalesAnalysisTab from "@/components/reports/SalesAnalysisTab";
 import type { SalesAnalysisData } from "@/lib/sales-analysis-server";
 import DailyPnlTab from "@/components/reports/DailyPnlTab";
+import LegacyBooksTab from "@/components/reports/LegacyBooksTab";
 import type { DailyPnlData } from "@/lib/daily-pnl-server";
 import { statValueTextClass } from "@/components/reports/report-ui";
 import { isRevenueGroupCategory } from "@/lib/voucher-rules";
@@ -398,7 +399,7 @@ export default function ReportsPage() {
 
   const loadData = useCallback(async () => {
     const seq = ++loadSeqRef.current;
-    if (active === "revenue-ledger" && !ledgerArmed) {
+    if ((active === "revenue-ledger" && !ledgerArmed) || active === "legacy-books") {
       setTabLoading(false);
       return;
     }
@@ -858,6 +859,8 @@ export default function ReportsPage() {
     // hai dải trắng hai bên mà số vẫn bị bóp. Nới bằng các màn Kho / Chứng từ đang dùng.
     <ModuleFrame title="Báo cáo & BI" subtitle="GĐ4 - Dashboard, báo cáo vận hành, ngân sách, kỳ kế toán và nhật ký" role={user?.role} contentClassName="max-w-[1680px]">
       <StickyFilterBar>
+      {/* Sổ sách kế toán trước 08/2026 là kho file, không theo kỳ/cửa hàng của báo cáo — bộ lọc riêng nằm trong tab. */}
+      {active !== "legacy-books" && (<>
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Kỳ báo cáo">
           <MonthInput className="mt-1.5 w-40" value={filterDraft.period} onChange={(value) => updateFilters({ period: value })} ariaLabel="Kỳ báo cáo" />
@@ -933,6 +936,7 @@ export default function ReportsPage() {
         </button>
       </div>
       <div className="mb-3" />
+      </>)}
       {/* Bọc chung để thanh tab vẫn sát đáy khi chỗ trống rỗng; tab DT theo ca & món gửi hàng lọc Nhóm doanh thu vào chỗ trống. */}
       <div className="[&>:first-child]:mb-0">
         <ModuleTabs
@@ -2041,6 +2045,15 @@ export default function ReportsPage() {
             </Table>
           </section>
         </div>
+      )}
+
+      {active === "legacy-books" && (
+        <LegacyBooksTab
+          user={user}
+          canCreate={user ? canPerformMenuAction(user, href, "create") : false}
+          canEdit={user ? canPerformMenuAction(user, href, "edit") : false}
+          canDelete={user ? canPerformMenuAction(user, href, "delete") : false}
+        />
       )}
 
       {!tabLoading && balance && (

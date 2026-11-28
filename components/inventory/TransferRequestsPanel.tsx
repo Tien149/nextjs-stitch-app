@@ -8,6 +8,7 @@ import { quantity as qty } from "@/lib/format-number";
 import { vnDateTimeParts, vnDateTimeValue } from "@/lib/date-range";
 
 import { ActionIcon } from "@/components/ActionIcon";
+import { DocumentPhotosButton, useDocumentPhotoCounts } from "@/components/DocumentPhotos";
 /**
  * Khung "Phiếu điều chuyển chờ duyệt" ở tab Điều chuyển (khách chốt 03/10/2026) — xem
  * lib/inventory-transfer-request.ts. Nhà hàng chuyển lập phiếu (trừ kho xuất ngay, hàng đi đường);
@@ -47,6 +48,9 @@ type Props = {
   warehouseName: (code: string) => string;
   /** POST /api/inventory; trang tự báo thành công + tải lại. Lỗi trả về để hiện ngay trong hộp thoại. */
   onAction: (body: object, success: string) => Promise<{ ok: boolean; error?: string }>;
+  /** Ảnh chứng từ (bắt buộc lúc lập, khách 28/11/2026) — bên nhận xem trước khi duyệt. */
+  canAddPhotos?: boolean;
+  canDeletePhotos?: boolean;
 };
 
 // Ngày / giờ hiện tại theo giờ Việt Nam — giờ nhận mặc định là lúc bấm (kiểm kê chốt theo giờ, 26/10/2026).
@@ -59,7 +63,8 @@ type Dialog =
   | { kind: "return"; request: TransferRequest; reason: string }
   | { kind: "edit"; request: TransferRequest; date: string; time: string; note: string; referenceCode: string; quantities: string[] };
 
-export default function TransferRequestsPanel({ requests, warehouseName, onAction }: Props) {
+export default function TransferRequestsPanel({ requests, warehouseName, onAction, canAddPhotos = false, canDeletePhotos = false }: Props) {
+  const { counts: photoCounts, refresh: refreshPhotoCounts } = useDocumentPhotoCounts("InventoryTransferRequest", requests.map((request) => request.id));
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState<TransferRequest | null>(null);
@@ -143,6 +148,7 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                 <td className="cell whitespace-nowrap">
                   <CopyableText value={request.code}><b>{request.code}</b></CopyableText>
                   <small className="block text-slate-500">Chuyển {new Date(request.requestDate).toLocaleDateString("vi-VN")}{request.createdBy ? ` · ${request.createdBy}` : ""}</small>
+                  <div className="mt-1"><DocumentPhotosButton entityType="InventoryTransferRequest" entityId={request.id} code={request.code} count={photoCounts?.[request.id]} canAdd={canAddPhotos} canDelete={canDeletePhotos} onChanged={refreshPhotoCounts} /></div>
                 </td>
                 <td className="cell">
                   <b>{request.warehouseCode} → {request.toWarehouseCode}</b>

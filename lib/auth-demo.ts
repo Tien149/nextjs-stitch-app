@@ -387,6 +387,7 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
     { id: "daily-pnl", label: "Báo cáo theo ngày" },
     { id: "yoy", label: "Biến động YoY" },
     { id: "balance", label: "Bảng cân đối" },
+    { id: "legacy-books", label: "Sổ sách kế toán trước 08/2026" },
     { id: "daily-cash", label: "Thu chi ngày" },
     { id: "cash-source", label: "Nguồn tiền" },
     { id: "cashflow", label: "Dự báo dòng tiền" },
@@ -482,7 +483,7 @@ export function allowedSubTabs(session: DemoSession | null | undefined, path: st
 /** Biểu tượng hiển thị của từng tab, tách khỏi khai báo quyền để giữ moduleTabs gọn. */
 export const moduleTabIcons: Record<string, string> = {
   dashboard: "dashboard", operations: "fact_check", budget: "price_check", "payroll-budget": "groups", "daily-cash": "receipt", "cash-source": "savings", "revenue-ledger": "point_of_sale", "sales-analysis": "restaurant_menu", "revenue-settlement": "rule",
-  activity: "history", pnl: "finance", "daily-pnl": "calendar_view_day", yoy: "query_stats", cashflow: "timeline", balance: "account_balance",
+  activity: "history", pnl: "finance", "daily-pnl": "calendar_view_day", yoy: "query_stats", cashflow: "timeline", balance: "account_balance", "legacy-books": "folder_zip",
   cashbook: "account_balance_wallet", accruals: "calendar_month", expenses: "payments", closing: "lock",
   requests: "assignment", quotes: "compare_arrows", "price-lists": "sell", orders: "local_shipping", templates: "playlist_add_check",
   stock: "inventory", transactions: "swap_horiz", inbound: "download", outbound: "upload", transfer: "sync_alt", items: "category", recipes: "menu_book",

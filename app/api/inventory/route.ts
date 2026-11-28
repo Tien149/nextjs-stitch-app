@@ -18,6 +18,7 @@ import { averageCostByItem } from "@/lib/inventory-average-cost";
 import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
 import { computeRecipeUnitCosts, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
+import { DOC_IMAGE_TRANSFER_REQUEST, DOC_IMAGE_TX, requireDocImages, saveDocImages } from "@/lib/document-images";
 import type { DemoSession } from "@/lib/auth-demo";
 import { executeExplosion, rerunExplosions, type AffectedExplosionRun } from "@/lib/inventory-explosion";
 import { loadMissingRecipeReport } from "@/lib/missing-recipes";
@@ -2622,6 +2623,8 @@ export async function POST(request: Request) {
       const inputLines = linesFrom(body.lines);
       if (inputLines.length === 0) businessError("Cần ít nhất một dòng hàng điều chuyển");
       if (await isPeriodLocked(requestDate, branchCode)) businessError("Kỳ kế toán của cửa hàng chuyển đã khóa");
+      // Bắt buộc có ảnh (khách 28/11/2026) — ảnh gắn vào phiếu chờ duyệt để bên nhận xem trước khi duyệt.
+      const transferImages = requireDocImages(body.images, "Phiếu điều chuyển");
 
       const requestedCode = cleanText(body.code);
       if (requestedCode && await findDeletedByUnique("InventoryTransaction", { code: requestedCode })) {
@@ -2645,6 +2648,7 @@ export async function POST(request: Request) {
             createdBy: auth.session.name,
           },
         });
+        await saveDocImages(tx, DOC_IMAGE_TRANSFER_REQUEST, request.id, transferImages, auth.session.name);
         // Trừ kho xuất ngay — phiếu chuyển đi sang kho "Hàng đi đường" (khách 26/10/2026).
         return dispatchTransferRequest(tx, request.id);
       }, { timeout: 60000 });
@@ -2863,6 +2867,10 @@ export async function POST(request: Request) {
       });
     }
     if (inputLines.length === 0) businessError("Cần ít nhất một dòng nguyên liệu");
+    // Phiếu hủy hàng / điều chuyển bắt buộc có ảnh (khách 28/11/2026); file import không qua đây.
+    const docImages = transactionType === "XUAT_HUY" || transactionType === "DIEU_CHUYEN"
+      ? requireDocImages(body.images, transactionType === "XUAT_HUY" ? "Phiếu hủy hàng" : "Phiếu điều chuyển")
+      : [];
 
     const allocationMonths = allocationMonthsFrom(body.allocationMonths);
     const requestedTransactionCode = cleanText(body.code);
@@ -2924,6 +2932,7 @@ export async function POST(request: Request) {
           createdBy: auth.session.name,
           lines: inputLines,
         });
+        await saveDocImages(tx, DOC_IMAGE_TX, transfer.transaction.id, docImages, auth.session.name);
         return transfer.transaction;
       }
       const posted = await postInventoryTransaction(tx, {
@@ -2943,6 +2952,7 @@ export async function POST(request: Request) {
         pnlItemCode: issuePnlItemCode,
         lines: inputLines,
       });
+      await saveDocImages(tx, DOC_IMAGE_TX, posted.id, docImages, auth.session.name);
       // Nhập mua có khai NCC thì sinh khoản phải trả, đúng luật của phiếu nhập từ file import.
       await createPurchasePayable(tx, posted, { dueDate: paymentDueDate });
       // Xuất đồng phục khai phân bổ N tháng: lịch PB-<mã phiếu> (lib/uniform-allocation).

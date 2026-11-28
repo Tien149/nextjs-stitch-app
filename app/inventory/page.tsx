@@ -53,6 +53,8 @@ import { vnDateTimeValue } from "@/lib/date-range";
 import { ActionIcon } from "@/components/ActionIcon";
 import { ShowMoreRows, useRowLimit } from "@/components/ShowMoreRows";
 import { outputConversionRateProblem } from "@/lib/recipe-output-rate";
+import DocumentPhotoPicker, { photosPayload, type PickedPhoto } from "@/components/DocumentPhotoPicker";
+import { DocumentPhotosButton, useDocumentPhotoCounts } from "@/components/DocumentPhotos";
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; goodsGroup?: string | null; taxItemCode?: string | null; expensePnlItemCode?: string | null; minStock: number; requiresImage: boolean; status?: string | null; note?: string | null; unitConversions?: UnitConversion[] };
 type ItemGroup = { id: string; code: string; name: string; group: string | null; subGroup: string | null };
@@ -552,6 +554,9 @@ export default function InventoryPage() {
   const [stocktakeStep, setStocktakeStep] = useState<"count" | "process" | null>(null);
   /** Lọc nhà hàng / kho / ngày dùng chung cho các tab kiểm kê và các khung bên dưới (khách 16/10/2026). */
   const [stocktakeFilter, setStocktakeFilter] = useState<StocktakeFilter>(EMPTY_STOCKTAKE_FILTER);
+  // Ảnh chứng từ bắt buộc của phiếu hủy / điều chuyển (khách 28/11/2026).
+  const [wastePhotos, setWastePhotos] = useState<PickedPhoto[]>([]);
+  const [transferPhotos, setTransferPhotos] = useState<PickedPhoto[]>([]);
   const [wasteForm, setWasteForm] = useState({ wasteType: "HET_HAN_SU_DUNG", mode: "ITEMS", recipeId: "", productQuantity: "1", branchCode: "HCM", warehouseCode: "KHO_HCM", transactionDate: today(), referenceCode: "", note: "" });
   const [wasteRows, setWasteRows] = useState([{ itemId: "", quantity: "1", unitCode: "", note: "" }]);
   
@@ -1058,6 +1063,13 @@ export default function InventoryPage() {
       || (transaction.toBranchCode || transaction.branchCode).toUpperCase() === transferStore.toUpperCase())
     && transactionMatchesSearch(transaction, transferKeyword)
   ));
+  // Số ảnh của phiếu đang hiện (hủy hàng, điều chuyển, phiếu hủy/điều chuyển ở danh sách Xuất kho).
+  const photoTransactionIds = active === "waste" ? wasteTransactions.map((row) => row.id)
+    : active === "transfer" ? transferTransactions.map((row) => row.id)
+      : active === "outbound" ? outboundRows.filter((row) => ["XUAT_HUY", "DIEU_CHUYEN"].includes(row.transaction.transactionType)).map((row) => row.transaction.id)
+        : [];
+  const { counts: photoCounts, refresh: refreshPhotoCounts } = useDocumentPhotoCounts("InventoryTransaction", photoTransactionIds);
+  const canAddPhotos = canCreate || canEditItem;
   // Ô chọn kho lấy từ chính các phiếu trong khoảng ngày (có cả kho đã ngưng / kho nhà hàng
   // khác), gọi tên theo danh mục kho nếu có.
   const transferWarehouseOptions = (pick: (transaction: Transaction) => string | null, selected: string) => {
@@ -3838,6 +3850,9 @@ export default function InventoryPage() {
                   <Cell>
                     <span className="status bg-slate-100">{movementTypeLabel(row.displayType)}</span>
                     {row.transaction.transactionType === "XUAT_HUY" && row.transaction.subType ? <small>{wasteSubTypeLabel(row.transaction.subType)}</small> : null}
+                    {active === "outbound" && ["XUAT_HUY", "DIEU_CHUYEN"].includes(row.transaction.transactionType) && (
+                      <div className="mt-1"><DocumentPhotosButton entityType="InventoryTransaction" entityId={row.transaction.id} code={row.transaction.code} count={photoCounts?.[row.transaction.id]} canAdd={canAddPhotos} canDelete={canEditItem} onChanged={refreshPhotoCounts} /></div>
+                    )}
                   </Cell>
                   <Cell>{storeLabel(row.branchCode)}</Cell>
                   <Cell>{row.transaction.transactionType === "DIEU_CHUYEN" ? `${warehouseText(row.transaction.warehouseCode)} → ${warehouseText(row.transaction.toWarehouseCode)}` : warehouseText(row.warehouseCode)}</Cell>
@@ -3906,14 +3921,21 @@ export default function InventoryPage() {
           requests={data.transferRequests || []}
           warehouseName={(code) => transferDestinationOptions.find((warehouse) => warehouse.code === code)?.name || code}
           onAction={postTransferRequest}
+          canAddPhotos={canAddPhotos}
+          canDeletePhotos={canEditItem}
         />
         <div className="grid grid-cols-1 *:min-w-0 lg:grid-cols-[420px_minmax(0,1fr)] gap-5">
           {canCreate && (
             <form onSubmit={(e) => {
               e.preventDefault();
+              if (transferPhotos.length === 0) {
+                setMessage("Phiếu điều chuyển bắt buộc có hình ảnh — bấm “Chụp / chọn” để thêm ít nhất 1 ảnh.");
+                return;
+              }
               void send({
                 action: "TRANSFER_STOCK",
                 ...transferForm,
+                images: photosPayload(transferPhotos),
                 // Trừ kho xuất theo NGÀY GIỜ lên phiếu (26/10/2026): để trống giờ mà lập cho hôm nay thì lấy giờ hiện tại.
                 transactionDate: vnDateTimeValue(transferForm.transactionDate, transferForm.transactionTime || (transferForm.transactionDate === today() ? new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(11, 16) : "")),
                 lines: transferRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, inputQuantity: row.quantity, inputUnitCode: row.unitCode || undefined })),
@@ -3922,6 +3944,7 @@ export default function InventoryPage() {
                 // Gửi xong khung trở về phiếu mới trống để lập tiếp.
                 setTransferRows([{ itemId: "", quantity: "1", unitCode: "" }]);
                 setTransferForm((form) => ({ ...form, transactionTime: "", referenceCode: "", note: "" }));
+                setTransferPhotos([]);
               });
             }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Điều chuyển hàng hóa</h2>
@@ -4014,6 +4037,7 @@ export default function InventoryPage() {
               <Input label="Ghi chú">
                 <input className="control" value={transferForm.note} onChange={(e) => setTransferForm({ ...transferForm, note: e.target.value })} />
               </Input>
+              <DocumentPhotoPicker label="Hình ảnh hàng điều chuyển" photos={transferPhotos} onChange={setTransferPhotos} />
               <button className="primary-button w-full">
                 <span className="material-symbols-outlined text-lg">sync_alt</span>
                 Gửi phiếu điều chuyển (chờ duyệt)
@@ -4084,7 +4108,10 @@ export default function InventoryPage() {
                 const crossBranch = !!row.toBranchCode && row.toBranchCode !== row.branchCode;
                 return (
                   <tr key={row.id} data-doc-code={row.code} className={`border-t border-slate-100 ${row.code === focusCode ? focusRowClass : ""}`}>
-                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small><ExplosionBadge status={row.explosionStatus} hidden={!canSeeExplosion} /></Cell>
+                    <Cell>
+                      <CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small><ExplosionBadge status={row.explosionStatus} hidden={!canSeeExplosion} />
+                      <div className="mt-1"><DocumentPhotosButton entityType="InventoryTransaction" entityId={row.id} code={row.code} count={photoCounts?.[row.id]} canAdd={canAddPhotos} canDelete={canEditItem} onChanged={refreshPhotoCounts} /></div>
+                    </Cell>
                     <Cell>
                       <b>{warehouseText(row.warehouseCode)} → {warehouseText(row.toWarehouseCode)}</b>
                       <small>{storeLabel(row.branchCode)} → {storeLabel(row.toBranchCode || row.branchCode)}</small>
@@ -5773,21 +5800,30 @@ export default function InventoryPage() {
           {canCreate && (
             <form onSubmit={(e) => {
               e.preventDefault();
+              if (wastePhotos.length === 0) {
+                setMessage("Phiếu hủy hàng bắt buộc có hình ảnh — bấm “Chụp / chọn” để thêm ít nhất 1 ảnh.");
+                return;
+              }
+              const images = photosPayload(wastePhotos);
               if (wasteForm.mode === "RECIPE") {
-                void send({ action: "RECORD_WASTE", ...wasteForm }, "Đã xuất hủy nguyên liệu theo định lượng món.").then((saved) => {
-                  if (saved) setWasteForm((form) => ({ ...form, productQuantity: "1", referenceCode: "", note: "" }));
+                void send({ action: "RECORD_WASTE", ...wasteForm, images }, "Đã xuất hủy nguyên liệu theo định lượng món.").then((saved) => {
+                  if (!saved) return;
+                  setWasteForm((form) => ({ ...form, productQuantity: "1", referenceCode: "", note: "" }));
+                  setWastePhotos([]);
                 });
                 return;
               }
               void send({
                 action: "RECORD_WASTE",
                 ...wasteForm,
+                images,
                 recipeId: "",
                 lines: wasteRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, inputQuantity: row.quantity, inputUnitCode: row.unitCode || undefined, note: row.note })),
               }, "Đã ghi nhận phiếu xuất hủy.").then((saved) => {
                 if (!saved) return;
                 setWasteRows([{ itemId: "", quantity: "1", unitCode: "", note: "" }]);
                 setWasteForm((form) => ({ ...form, referenceCode: "", note: "" }));
+                setWastePhotos([]);
               });
             }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Ghi nhận hủy hàng</h2>
@@ -5891,6 +5927,8 @@ export default function InventoryPage() {
               <Input label="Ghi chú">
                 <textarea className="control h-20 resize-none" value={wasteForm.note} onChange={(e) => setWasteForm({ ...wasteForm, note: e.target.value })} />
               </Input>
+
+              <DocumentPhotoPicker label="Hình ảnh hàng hủy" photos={wastePhotos} onChange={setWastePhotos} />
 
               <button className="primary-button w-full">
                 <span className="material-symbols-outlined text-lg">delete_sweep</span>Ghi nhận hủy
@@ -6059,7 +6097,10 @@ export default function InventoryPage() {
                         <input type="checkbox" aria-label={`Chọn ${row.code}`} checked={selectedWasteIds.includes(row.id)} onChange={() => toggleWasteSelection(row.id)} />
                       </Cell>
                     )}
-                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
+                    <Cell>
+                      <CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small>
+                      <div className="mt-1"><DocumentPhotosButton entityType="InventoryTransaction" entityId={row.id} code={row.code} count={photoCounts?.[row.id]} canAdd={canAddPhotos} canDelete={canEditItem} onChanged={refreshPhotoCounts} /></div>
+                    </Cell>
                     <Cell><span className={`status ${row.subType ? "bg-rose-50 text-rose-700" : "bg-slate-100 text-slate-600"}`}>{wasteSubTypeLabel(row.subType)}</span></Cell>
                     <Cell>{storeLabel(row.branchCode)}<small>{row.warehouseCode}</small></Cell>
                     <Cell>{row.lines.map((line) => `${line.item.name}: ${qty(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
